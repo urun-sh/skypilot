@@ -24,24 +24,26 @@ from sky.utils import resources_utils
 
 def test_gcp_rtxpro6000_instance_type_mapping():
     # RTXPRO6000 (GCP G4) maps to every g4-standard-* shape GCP bundles the GPU
-    # with. All four of g4-standard-{6,12,24,48} carry exactly one GPU, so a
-    # 1-GPU request must not be forced onto the 48-vCPU host (8x the price of
-    # g4-standard-6 for the same accelerator). Mirrors the L4/G2 entry.
+    # with, at the FRACTIONAL GPU counts GCP documents (CodeRabbit: mapping
+    # g4-standard-6/12/24 as 1 GPU let an RTXPRO6000:1 request select a
+    # fractional-GPU shape, which is not a full GPU).
+    #   g4-standard-6  = 1/8 GPU  (0.125)
+    #   g4-standard-12 = 1/4 GPU  (0.25)
+    #   g4-standard-24 = 1/2 GPU  (0.5)
+    #   g4-standard-48 = 1 GPU    (1)
     assert gcp_catalog._ACC_INSTANCE_TYPE_DICTS['RTXPRO6000'] == {
-        1: [
-            'g4-standard-6',
-            'g4-standard-12',
-            'g4-standard-24',
-            'g4-standard-48',
-        ],
+        0.125: ['g4-standard-6'],
+        0.25: ['g4-standard-12'],
+        0.5: ['g4-standard-24'],
+        1: ['g4-standard-48'],
         2: ['g4-standard-96'],
         4: ['g4-standard-192'],
         8: ['g4-standard-384'],
     }
     expected = {
-        'g4-standard-6': 1,
-        'g4-standard-12': 1,
-        'g4-standard-24': 1,
+        'g4-standard-6': 0.125,
+        'g4-standard-12': 0.25,
+        'g4-standard-24': 0.5,
         'g4-standard-48': 1,
         'g4-standard-96': 2,
         'g4-standard-192': 4,

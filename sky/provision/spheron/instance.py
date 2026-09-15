@@ -358,8 +358,7 @@ def query_instances(
         sky_status = _STATUS_MAP[raw_status]
         if sky_status is None:
             continue  # gone
-        if non_terminated_only and sky_status == status_lib.ClusterStatus.STOPPED:
-            continue
+
         result[str(deployment.get("id"))] = (sky_status, None)
     return result
 
