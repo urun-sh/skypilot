@@ -97,9 +97,11 @@ class Spheron(clouds.Cloud):
 
     @classmethod
     def _unsupported_features_for_resources(
-        cls, resources: "resources_lib.Resources"
+        cls,
+        resources: "resources_lib.Resources",
+        region: Optional[str] = None,
     ) -> Dict[clouds.CloudImplementationFeatures, str]:
-        del resources
+        del resources, region
         return cls._CLOUD_UNSUPPORTED_FEATURES
 
     @classmethod
@@ -119,8 +121,9 @@ class Spheron(clouds.Cloud):
         use_spot: bool,
         region: Optional[str],
         zone: Optional[str],
+        resources: Optional["resources_lib.Resources"] = None,
     ) -> List[clouds.Region]:
-        del accelerators
+        del accelerators, resources
         assert zone is None, "Spheron does not support zones."
         regions = spheron_catalog.get_region_zones_for_instance_type(
             instance_type, use_spot
@@ -268,8 +271,23 @@ class Spheron(clouds.Cloud):
         return True, None
 
     @classmethod
-    def check_credentials(cls) -> Tuple[bool, Optional[str]]:
-        return cls._check_compute_credentials()
+    def check_credentials(
+        cls, cloud_capability: clouds.CloudCapability
+    ) -> Tuple[bool, Optional[str]]:
+        """Check Spheron credentials for the requested capability.
+
+        MUST accept ``cloud_capability``: ``sky check`` calls this with the
+        capability positionally, so a no-arg override raises TypeError, the
+        cloud is reported DISABLED, and every launch fails with "Task requires
+        spheron which is not enabled" -- with nothing pointing at the real
+        cause. Storage is unsupported (see _CLOUD_UNSUPPORTED_FEATURES), so
+        only COMPUTE can be satisfied.
+        """
+        if cloud_capability == clouds.CloudCapability.COMPUTE:
+            return cls._check_compute_credentials()
+        return False, (
+            f"Spheron does not support {cloud_capability.value}."
+        )
 
     # -- provisioning ------------------------------------------------------
 
