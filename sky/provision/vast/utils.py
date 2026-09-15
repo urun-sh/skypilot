@@ -201,7 +201,6 @@ def launch(name: str,
     # even when using a template
     skypilot_onstart = [
         'touch ~/.no_auto_tmux',
-        f'echo "{vast.vast().client.api_key}" > ~/.vast_api_key',
     ]
 
     # Inject SSH public key into authorized_keys if provided
