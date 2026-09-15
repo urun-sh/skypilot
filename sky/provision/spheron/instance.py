@@ -345,7 +345,22 @@ def query_instances(
     provider_config: Optional[Dict[str, Any]] = None,
     non_terminated_only: bool = True,
 ) -> Dict[str, Tuple[Optional[status_lib.ClusterStatus], Optional[str]]]:
-    del cluster_name, provider_config
+    # `non_terminated_only` is DELIBERATELY NOT a filter here, and that is a
+    # KNOWN DIVERGENCE from sky/provision/shadeform/instance.py, which does drop
+    # STOPPED under this flag. Stated rather than left silent:
+    #
+    #   * STOPPED is not TERMINATED. A stopped Spheron deployment still exists
+    #     and still holds (and bills for) its disks, so a caller reporting or
+    #     reaping capacity must be able to see it. Hiding it is how an orphan
+    #     bills unnoticed.
+    #   * Deployments that are genuinely GONE are already excluded above, by the
+    #     `_STATUS_MAP[raw_status] is None` branch -- so this function never
+    #     returns a terminated instance regardless of this flag.
+    #
+    # It is `del`'d rather than ignored so the divergence is explicit at the
+    # one place a reader would look for it; an accepted-but-unused parameter
+    # would be a silent no-op, which this repo does not allow.
+    del cluster_name, provider_config, non_terminated_only
     client = _client()
     result: Dict[str, Tuple[Optional[status_lib.ClusterStatus], Optional[str]]] = {}
     for deployment in _deployments_for_cluster(client, cluster_name_on_cloud):
