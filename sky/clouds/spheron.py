@@ -146,9 +146,9 @@ class Spheron(clouds.Cloud):
         regions = cls.regions_with_offering(
             instance_type, accelerators, use_spot, zone=None,
             region=region)
-        if not regions:
-            return
-        yield None
+        for r in regions:
+            assert r.zones is None, r
+            yield r.zones
 
     @classmethod
     def get_vcpus_mem_from_instance_type(
