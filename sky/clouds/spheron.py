@@ -142,8 +142,12 @@ class Spheron(clouds.Cloud):
         accelerators: Optional[Dict[str, int]] = None,
         use_spot: bool = False,
     ) -> Iterator[None]:
-        del num_nodes, region, instance_type, accelerators, use_spot
-        # Spheron has no zone concept; one pass with no zone.
+        del num_nodes
+        regions = cls.regions_with_offering(
+            instance_type, accelerators, use_spot, zone=None,
+            region=region)
+        if not regions:
+            return
         yield None
 
     @classmethod
