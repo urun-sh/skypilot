@@ -1,4 +1,4 @@
-"""Behavioral regression: the georegion completion shim must survive the real SDK.
+"""Behavioral regression: the georegion shim must survive the real SDK.
 
 Tests the actual `queryFormatter` path (not just the dict patch) and the
 fetcher's CSV generation against a MOCKED offer list — no live API, no

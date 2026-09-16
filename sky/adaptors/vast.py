@@ -124,6 +124,49 @@ def _patch_sdk_regions():
         vastai_sdk._regions_rev.setdefault(code, token)
 
 
+def _patch_sdk_instances_endpoint():
+    """Route the instance-LIST call off vast.ai's deprecated v0 endpoint.
+
+    2026-09-16: GET /api/v0/instances (the collection) answers
+    `HTTP 410 Gone: "Use /api/v1/instances/ instead"`. vastai-sdk 0.2.5
+    swallows the HTTPError with a bare `except: pass` and returns the
+    empty-captured-stdout sentinel, so every caller sees an EMPTY
+    instance list: `sky status` reports nothing and the provisioner's
+    readiness loop polls forever (verified live: instance running with
+    ssh_port assigned, poll stuck at `(0/1)`).
+
+    Per-id v0 routes still work (show/create/start/stop/destroy all
+    probed alive on both v0 and v1), so the rewrite is scoped to the
+    collection call only — subpath == '/instances'.
+
+    VERSION-GUARDED, NOT SILENT: same contract as the georegion patch —
+    if `vastai.vast.apiurl` moves or disappears, raise rather than let
+    the catalog silently regress to a 410.
+    """
+    from vastai import vast as _vast_cli
+    if not hasattr(_vast_cli, 'apiurl'):
+        raise RuntimeError(
+            'vastai-sdk internal vast.apiurl not found — the SDK has '
+            'changed shape. The v1 instances-endpoint shim needs review. '
+            'Expected vastai-sdk 0.2.x (pinned 0.2.5 in '
+            'skypilot-controller).')
+    if getattr(_vast_cli.apiurl, '_skypilot_v1_instances', False):
+        return  # already patched — idempotent
+    _orig_apiurl = _vast_cli.apiurl
+
+    def apiurl(args, subpath, query_args=None):
+        """Wrap vastai.vast.apiurl; rewrite only the dead collection URL."""
+        url = _orig_apiurl(args, subpath, query_args)
+        if subpath == '/instances':
+            # The collection endpoint is dead on v0; per-id routes stay v0.
+            return url.replace('/api/v0/instances?',
+                               '/api/v1/instances/?', 1)
+        return url
+
+    apiurl._skypilot_v1_instances = True
+    _vast_cli.apiurl = apiurl
+
+
 def import_package(func):
 
     @functools.wraps(func)
@@ -135,6 +178,7 @@ def import_package(func):
                 import vastai_sdk as _vast  # pylint: disable=import-outside-toplevel
                 _vast_sdk = _vast.VastAI()
                 _patch_sdk_regions()
+                _patch_sdk_instances_endpoint()
             except ImportError as e:
                 raise ImportError(f'Fail to import dependencies for vast: {e}\n'
                                   'Try pip install "skypilot[vast]"') from None
