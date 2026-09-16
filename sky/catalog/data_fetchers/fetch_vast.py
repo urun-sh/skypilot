@@ -20,7 +20,16 @@ _map = {
     'TeslaT4': 'T4',
     'TeslaP100': 'P100',
     'QRTX6000': 'RTX6000',
-    'QRTX8000': 'RTX8000'
+    'QRTX8000': 'RTX8000',
+    # RTX PRO 6000 variants: after whitespace strip + suffix regex, these
+    # still carry 'PRO' (the regex expects RTX\d0\d0, but the GPU name
+    # is 'RTX PRO 6000 S' → 'RTXPRO6000S' which doesn't match). The
+    # platform's accelerator token for the 98GB Blackwell part is
+    # RTXPRO6000 (matching the Karpenter/EC2 naming for g4-standard-48+).
+    'RTXPRO6000S': 'RTXPRO6000',
+    'RTXPRO6000D': 'RTXPRO6000',
+    'RTXPRO6000MaxQ': 'RTXPRO6000',
+    'RTXPRO6000Max-Q': 'RTXPRO6000',
 }
 
 
@@ -142,13 +151,27 @@ if __name__ == '__main__':
             stub = (f'{instance["InstanceType"]} '
                     f'{instance["Region"][-2:]} {hosting_type}')
             if stub in seen:
+                # DUPLICATE stub: update the spot price to the max bid
+                # across the group. Only the FIRST row for this stub is
+                # in csvList; subsequent ones update spot price in place.
                 printstub = f'{stub}#print'
                 if printstub not in seen:
                     instance['SpotPrice'] = f'{maxBid:.2f}'
                     csvList.append(instance)
                     seen.add(printstub)
             else:
+                # FIRST occurrence of this (InstanceType, Region,
+                # HostingType) stub: EMIT the row. The original code
+                # only added it to `seen` without appending — every
+                # unique instance type was silently dropped, producing
+                # a header-only CSV even with live offers. Vast
+                # instance types encode CPU/RAM, so most marketplace
+                # offers are unique; the two-offer dedup test exposed
+                # this as the root cause of the empty catalog (the
+                # second occurrence was needed to emit the first stub's
+                # row).
                 seen.add(stub)
+                csvList.append(instance)
 
     os.makedirs('vast', exist_ok=True)
     with open('vast/vms.csv', 'w', newline='', encoding='utf-8') as csvfile:
