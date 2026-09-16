@@ -162,11 +162,24 @@ class Offer:
             for option in self.os_options:
                 if needle.lower() in option.lower():
                     return option
-        if prefer_substrings:
-            raise SpheronError(
-                f"offer {self.offer_id!r} has no OS matching "
-                f"{prefer_substrings}; available: {self.os_options}"
-            )
+        # PREFERENCE, NOT A REQUIREMENT. Spheron's massed-compute GPU offers
+        # list exactly one OS -- "Ubuntu Server 22.04" -- and no cuda-named
+        # image at all, so raising here made EVERY Spheron GPU offer
+        # unprovisionable:
+        #
+        #   SpheronError: offer 'gpu_1x_pro_6000_blackwell_us-central-9' has no
+        #   OS matching ['cuda']; available: ['Ubuntu Server 22.04']
+        #
+        # The original fear -- a CUDA-less image boots fine and fails at import
+        # ~90 minutes in -- is already covered ONE LAYER DOWN, and for free:
+        # urun's bootstrap runs `runtime-gpu-probe`, a $0
+        # `docker run --rm --gpus all <base> nvidia-smi -L` that must list at
+        # least one GPU or the bootstrap refuses LOUDLY before the paid runtime
+        # boot (skypilot-controller runner/bootstrap.py). So a driverless image
+        # fails fast and free there, not expensively at import.
+        #
+        # Ubuntu Server 22.04 is also the image this lane was measured against
+        # (see templates/spheron-ray.yml.j2's header: ssh_user `ubuntu`).
         return self.os_options[0]
 
 
