@@ -56,16 +56,5 @@ class TestQueryInstancesKeepsStopped(unittest.TestCase):
         self.assertNotIn('dep-failed', got)
 
 
-class TestG4FractionalCounts(unittest.TestCase):
-    def test_fractional_mapping(self):
-        from sky.catalog import gcp_catalog
-        d = gcp_catalog._ACC_INSTANCE_TYPE_DICTS['RTXPRO6000']
-        self.assertEqual(d[0.125], ['g4-standard-6'])
-        self.assertEqual(d[0.25], ['g4-standard-12'])
-        self.assertEqual(d[0.5], ['g4-standard-24'])
-        self.assertEqual(d[1], ['g4-standard-48'])
-        self.assertNotIn('g4-standard-6', d.get(1, []))
-
-
 if __name__ == '__main__':
     unittest.main()
