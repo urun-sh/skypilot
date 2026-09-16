@@ -149,7 +149,12 @@ class Offer:
             minimum_runtime_minutes=raw.get("minimumRuntimeMinutes"),
         )
 
-    def pick_os(self, prefer_substrings: Optional[List[str]] = None) -> str:
+    def pick_os(
+        self,
+        prefer_substrings: Optional[List[str]] = None,
+        *,
+        required: bool = True,
+    ) -> str:
         """Choose an OS image from this offer's own options.
 
         Fails hard when nothing matches rather than guessing: an OS string the
@@ -162,24 +167,27 @@ class Offer:
             for option in self.os_options:
                 if needle.lower() in option.lower():
                     return option
-        # PREFERENCE, NOT A REQUIREMENT. Spheron's massed-compute GPU offers
-        # list exactly one OS -- "Ubuntu Server 22.04" -- and no cuda-named
-        # image at all, so raising here made EVERY Spheron GPU offer
-        # unprovisionable:
+        # `required=True` (the DEFAULT) keeps this a strict primitive: asking
+        # for an OS the offer does not list is a caller error and raises. Some
+        # Spheron providers DO ship cuda images -- e.g. sesterce offers
+        # "Ubuntu Server 22.04 LTS R570 CUDA 12.8" -- so a silent fallback
+        # would hide a genuinely wrong preference.
         #
+        # `required=False` is for the one caller that must tolerate absence:
+        # massed-compute's GPU offers list exactly one OS ("Ubuntu Server
+        # 22.04") and no cuda image at all, so requiring one made EVERY such
+        # offer unprovisionable:
         #   SpheronError: offer 'gpu_1x_pro_6000_blackwell_us-central-9' has no
         #   OS matching ['cuda']; available: ['Ubuntu Server 22.04']
-        #
-        # The original fear -- a CUDA-less image boots fine and fails at import
-        # ~90 minutes in -- is already covered ONE LAYER DOWN, and for free:
-        # urun's bootstrap runs `runtime-gpu-probe`, a $0
-        # `docker run --rm --gpus all <base> nvidia-smi -L` that must list at
-        # least one GPU or the bootstrap refuses LOUDLY before the paid runtime
-        # boot (skypilot-controller runner/bootstrap.py). So a driverless image
-        # fails fast and free there, not expensively at import.
-        #
-        # Ubuntu Server 22.04 is also the image this lane was measured against
-        # (see templates/spheron-ray.yml.j2's header: ssh_user `ubuntu`).
+        # That is safe ONLY because the CUDA-less risk is caught one layer down
+        # and for free: urun's bootstrap runs `runtime-gpu-probe`, a $0
+        # `docker run --rm --gpus all <base> nvidia-smi -L` that refuses loudly
+        # BEFORE the paid runtime boot.
+        if prefer_substrings and required:
+            raise SpheronError(
+                f"offer {self.offer_id!r} has no OS matching "
+                f"{prefer_substrings}; available: {self.os_options}"
+            )
         return self.os_options[0]
 
 

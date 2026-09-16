@@ -99,11 +99,30 @@ class TestPickOsFallsBackInsteadOfRaising(unittest.TestCase):
         o = self._offer(["Ubuntu Server 22.04", "Ubuntu 22.04 CUDA 12.4"])
         self.assertIn("CUDA", o.pick_os(["cuda"]))
 
-    def test_falls_back_to_the_only_os_instead_of_raising(self):
+    def test_strict_by_default_still_raises(self):
+        """The DEFAULT stays strict. Some Spheron providers do ship cuda images
+        (sesterce lists "Ubuntu Server 22.04 LTS R570 CUDA 12.8"), so a blanket
+        fallback would hide a genuinely wrong preference -- and would break
+        skypilot-controller's runner/test_spheron_api.py, which asserts that
+        asking for an absent OS raises."""
         from sky.adaptors import spheron
         o = self._offer(["Ubuntu Server 22.04"])
-        # Must NOT raise: this is the exact shape that blocked every launch.
-        self.assertEqual(o.pick_os(["cuda"]), "Ubuntu Server 22.04")
+        with self.assertRaises(spheron.SpheronError):
+            o.pick_os(["cuda"])
+
+    def test_required_false_falls_back_to_the_only_os(self):
+        """The ONE caller that must tolerate absence: massed-compute GPU offers
+        list only "Ubuntu Server 22.04", which made every such offer
+        unprovisionable. Safe because the bootstrap's $0 runtime-gpu-probe
+        gates a driverless image before any paid boot."""
+        from sky.adaptors import spheron
+        o = self._offer(["Ubuntu Server 22.04"])
+        self.assertEqual(o.pick_os(["cuda"], required=False), "Ubuntu Server 22.04")
+
+    def test_required_false_still_prefers_cuda_when_offered(self):
+        from sky.adaptors import spheron
+        o = self._offer(["AlmaLinux 9 Plain", "Ubuntu Server 22.04 LTS R570 CUDA 12.8"])
+        self.assertIn("CUDA", o.pick_os(["cuda"], required=False))
 
     def test_still_fails_hard_when_the_offer_lists_no_os_at_all(self):
         from sky.adaptors import spheron
