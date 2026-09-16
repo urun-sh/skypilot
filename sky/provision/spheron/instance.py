@@ -170,7 +170,14 @@ def run_instances(
         request = api.DeploymentRequest.from_offer(
             offer,
             region=region,
-            operating_system=offer.pick_os(["cuda"] if offer.gpu_count else None),
+            # required=False: PREFER a cuda image, accept the offer's own OS
+            # when it lists none. massed-compute GPU offers carry only
+            # "Ubuntu Server 22.04", and the bootstrap's $0 runtime-gpu-probe
+            # (nvidia-smi -L) is what actually gates a driverless image --
+            # before any paid boot.
+            operating_system=offer.pick_os(
+                ["cuda"] if offer.gpu_count else None, required=False
+            ),
             ssh_key_id=ssh_key_id,
             # REQUIRED despite the manual calling it optional -- see module docstring.
             team_id=client.current_team_id(),
