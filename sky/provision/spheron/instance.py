@@ -28,6 +28,7 @@ with "Please login as the user ubuntu rather than the user root."
 from __future__ import annotations
 
 import os
+import time
 import typing
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -258,6 +259,89 @@ def stop_instances(
     )
 
 
+#: Spheron enforces a MINIMUM RUNTIME (20min on every offer observed to date) and
+#: REFUSES a terminate inside it -- ``DELETE /api/deployments/<id>`` answers
+#: ``HTTP 400: Minimum runtime not met``. It does NOT bill-and-allow.
+#:
+#: Ceiling for how long we will sit waiting that window out. The provider's own
+#: ``timeRemaining`` drives the actual sleep; this only bounds a provider that
+#: reports nonsense, so a teardown can never hang forever.
+_TERMINATE_WINDOW_CEILING_S = 25 * 60
+
+#: Gap between attempts once ``timeRemaining`` is unavailable or already 0.
+_TERMINATE_RETRY_INTERVAL_S = 30
+
+
+def _terminate_when_permitted(client: Any, deployment_id: str) -> None:
+    """Terminate ``deployment_id``, waiting out the provider minimum if needed.
+
+    WHY THIS LOOPS (measured live, dev-usw2 2026-09-22): the previous code
+    issued ONE unguarded ``terminate_deployment`` on the belief -- stated in its
+    own comment -- that "the provider minimum is billed regardless". That is not
+    what Spheron does. Inside the minimum it answers
+
+        DELETE /api/deployments/6ab2951a31986a7ab30df151
+          HTTP 400: Minimum runtime not met
+
+    which raised out of teardown and left the instance RUNNING. Nothing retried:
+    SkyPilot had already dropped the cluster record, so ``sky status`` showed
+    nothing while the VM billed on. Three instances leaked this way in one night
+    (144min, 131min, ~67min) and were only ever found by querying the provider
+    API by hand; the orphan reconciler that would have caught them runs in
+    dry-run.
+
+    Waiting is the correct behaviour precisely BECAUSE the minimum is billed:
+    the money is already spent, so the only thing left to protect is not paying
+    for the time AFTER it. Proven on the live instance this was written for --
+    attempts at timeRemaining 3/2/1min were refused, the attempt at 0min
+    succeeded.
+    """
+    deadline = time.monotonic() + _TERMINATE_WINDOW_CEILING_S
+    while True:
+        wait_s = _TERMINATE_RETRY_INTERVAL_S
+        try:
+            check = client.can_terminate(deployment_id)
+            if check.get("canTerminate"):
+                client.terminate_deployment(deployment_id)
+                logger.info(f"spheron: terminated {deployment_id}")
+                return
+            remaining = check.get("timeRemaining")
+            logger.info(
+                f"spheron: {deployment_id} not yet terminable "
+                f"({check.get('reason')}); minimumRuntime="
+                f"{check.get('minimumRuntime')}min, timeRemaining={remaining}min "
+                "-- waiting out the provider minimum rather than leaking the "
+                "instance"
+            )
+            if isinstance(remaining, (int, float)) and remaining > 0:
+                # +5s so we wake just AFTER the window opens, not on its edge.
+                wait_s = min(float(remaining) * 60 + 5, _TERMINATE_WINDOW_CEILING_S)
+        except api.SpheronError as exc:
+            # The check itself failing must not skip the terminate: try it, and
+            # only keep waiting if the provider says the minimum is the reason.
+            logger.info(
+                f"spheron: can-terminate check failed for {deployment_id}: {exc}"
+            )
+            try:
+                client.terminate_deployment(deployment_id)
+                logger.info(f"spheron: terminated {deployment_id}")
+                return
+            except api.SpheronError as term_exc:
+                if "minimum runtime" not in str(term_exc).lower():
+                    raise
+                logger.info(
+                    f"spheron: {deployment_id} refused "
+                    f"({term_exc}); waiting out the provider minimum"
+                )
+        if time.monotonic() >= deadline:
+            raise api.SpheronError(
+                f"spheron: {deployment_id} still refusing termination after "
+                f"{_TERMINATE_WINDOW_CEILING_S // 60}min -- refusing to return "
+                "success and leak a BILLING instance; the caller must retry"
+            )
+        time.sleep(wait_s)
+
+
 def terminate_instances(
     cluster_name_on_cloud: str,
     provider_config: Optional[Dict[str, Any]] = None,
@@ -287,21 +371,7 @@ def terminate_instances(
         )
     for deployment in live:
         deployment_id = str(deployment.get("id"))
-        try:
-            check = client.can_terminate(deployment_id)
-            if not check.get("canTerminate"):
-                logger.info(
-                    f"spheron: {deployment_id} not yet terminable "
-                    f"({check.get('reason')}); minimumRuntime="
-                    f"{check.get('minimumRuntime')}min, timeRemaining="
-                    f"{check.get('timeRemaining')}min. Issuing terminate anyway "
-                    "-- the provider minimum is billed regardless."
-                )
-        except api.SpheronError as exc:
-            logger.info(
-                f"spheron: can-terminate check failed for {deployment_id}: {exc}"
-            )
-        client.terminate_deployment(deployment_id)
+        _terminate_when_permitted(client, deployment_id)
 
 
 def get_cluster_info(
