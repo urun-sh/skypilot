@@ -129,3 +129,58 @@ class TestPickOsFallsBackInsteadOfRaising(unittest.TestCase):
         o = self._offer([])
         with self.assertRaises(spheron.SpheronError):
             o.pick_os(["cuda"])
+
+
+class TestEnsureKeyHasNoSilentFallback(unittest.TestCase):
+    """`_ensure_key` must trust ONLY the substituted `node_config['PublicKey']`.
+
+    MEASURED on dev-usw2 2026-09-24: the controller's `~/.ssh/sky-key.pub` does
+    not exist (SkyPilot 0.13 keeps keys under `~/.sky/clients/<hash>/ssh/`), so
+    the old fallback was dead code that could only ever mask a substitution
+    failure. The placeholder case is the real hazard: it is TRUTHY, so it slips
+    past a bare falsiness check and fails later at the API, far from the cause.
+    """
+
+    def _config(self, public_key):
+        return mock.Mock(node_config={'PublicKey': public_key})
+
+    def test_substituted_key_is_forwarded(self):
+        from sky.provision.spheron import instance
+        client = mock.Mock()
+        client.ensure_ssh_key.return_value = 'key-id'
+        result = instance._ensure_key(client, self._config('ssh-rsa AAAAB3Nza real'))
+        self.assertEqual(result, 'key-id')
+        client.ensure_ssh_key.assert_called_once_with('skypilot',
+                                                      'ssh-rsa AAAAB3Nza real')
+
+    def test_unsubstituted_placeholder_is_rejected(self):
+        """The whole point: the literal placeholder must NOT be uploaded."""
+        from sky.adaptors import spheron
+        from sky.provision.spheron import instance
+        client = mock.Mock()
+        with self.assertRaises(spheron.SpheronError):
+            instance._ensure_key(
+                client, self._config(instance._SSH_PUBLIC_KEY_PLACEHOLDER))
+        client.ensure_ssh_key.assert_not_called()
+
+    def test_missing_key_is_rejected(self):
+        from sky.adaptors import spheron
+        from sky.provision.spheron import instance
+        client = mock.Mock()
+        for value in (None, '', '   '):
+            with self.assertRaises(spheron.SpheronError):
+                instance._ensure_key(client, self._config(value))
+        client.ensure_ssh_key.assert_not_called()
+
+    def test_ssh_dir_is_never_consulted(self):
+        """Even with a readable ~/.ssh/sky-key.pub, absence must still fail."""
+        from sky.adaptors import spheron
+        from sky.provision.spheron import instance
+        client = mock.Mock()
+        opener = mock.mock_open(read_data='ssh-rsa STALE-DISK-KEY')
+        with mock.patch('os.path.exists', return_value=True), \
+             mock.patch('builtins.open', opener):
+            with self.assertRaises(spheron.SpheronError):
+                instance._ensure_key(client, self._config(None))
+        opener.assert_not_called()
+        client.ensure_ssh_key.assert_not_called()

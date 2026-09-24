@@ -217,16 +217,36 @@ def _resolve_offer(
     )
 
 
+#: The literal the ray template carries until `configure_ssh_info` rewrites it.
+_SSH_PUBLIC_KEY_PLACEHOLDER = "skypilot:ssh_public_key_content"
+
+
 def _ensure_key(client: api.SpheronClient, config: common.ProvisionConfig) -> str:
+    """The public key for this deployment, or a loud failure.
+
+    `node_config['PublicKey']` is the ONE canonical source: backend_utils puts
+    Spheron on the generic `auth.configure_ssh_info` path, which calls
+    `auth_utils.get_or_generate_keys()` and substitutes the real key into the
+    template's `skypilot:ssh_public_key_content` placeholder.
+
+    There is deliberately NO `~/.ssh/sky-key.pub` fallback. SkyPilot keeps its
+    keypair under `~/.sky/clients/<user-hash>/ssh/`, so that path never existed
+    on this controller -- reading it could only ever mask a real substitution
+    failure with a key the deployment was not provisioned against.
+
+    The placeholder check is the point: if substitution did NOT run, the value
+    is still the literal `skypilot:ssh_public_key_content`, which is TRUTHY. A
+    bare `if not public_key` waves it through, `ensure_ssh_key` uploads garbage,
+    and the deployment fails far from the cause with an unrelated-looking error.
+    """
     public_key = (config.node_config or {}).get("PublicKey")
-    if not public_key:
-        path = os.path.expanduser("~/.ssh/sky-key.pub")
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as handle:
-                public_key = handle.read().strip()
-    if not public_key:
+    if isinstance(public_key, str):
+        public_key = public_key.strip()
+    if not public_key or public_key == _SSH_PUBLIC_KEY_PLACEHOLDER:
         raise api.SpheronError(
-            "no SSH public key available; a Spheron deployment without one is "
+            "node_config['PublicKey'] is missing or was never substituted "
+            f"(got {public_key!r}); auth.configure_ssh_info must run before "
+            "provisioning -- a Spheron deployment without a real public key is "
             "unreachable"
         )
     return client.ensure_ssh_key("skypilot", public_key)
