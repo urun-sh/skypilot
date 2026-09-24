@@ -333,13 +333,17 @@ def _terminate_when_permitted(client: Any, deployment_id: str) -> None:
                     f"spheron: {deployment_id} refused "
                     f"({term_exc}); waiting out the provider minimum"
                 )
-        if time.monotonic() >= deadline:
+        remaining_deadline_s = deadline - time.monotonic()
+        if remaining_deadline_s <= 0:
             raise api.SpheronError(
                 f"spheron: {deployment_id} still refusing termination after "
                 f"{_TERMINATE_WINDOW_CEILING_S // 60}min -- refusing to return "
                 "success and leak a BILLING instance; the caller must retry"
             )
-        time.sleep(wait_s)
+        # Never sleep PAST the deadline: a provider timeRemaining near the
+        # ceiling would otherwise overshoot it and the deadline check above
+        # would only fire on the NEXT wake. Clamping keeps the raise prompt.
+        time.sleep(min(wait_s, remaining_deadline_s))
 
 
 def terminate_instances(

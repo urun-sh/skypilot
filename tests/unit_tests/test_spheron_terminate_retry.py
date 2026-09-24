@@ -53,4 +53,22 @@ except SpheronError as e:
     assert "leak a BILLING instance" in str(e), str(e)
     assert c.terminated == []
     print("  PASS raises rather than leaking when the window never opens")
+# 4. the retry sleep is CLAMPED to the remaining deadline: a provider
+#    timeRemaining near the ceiling must never push the sleep past it (the
+#    deadline check would otherwise fire only on the next wake).
+slept.clear()
+c = FakeClient([13, 13, 13, 13, 13])
+ns4 = {"api": api, "logger": logger, "time": types.SimpleNamespace(
+    monotonic=lambda: next(ticks4), sleep=lambda s: slept.append(s)), "Any": object}
+ticks4 = iter([0.0, 601.0, 1201.0, 1501.0, 1799.0])
+exec(compile(block, "<patch4>", "exec"), ns4)
+fn4 = ns4["_terminate_when_permitted"]
+try:
+    fn4(c, "dep-4"); raise AssertionError("returned success while still live")
+except SpheronError:
+    # Second wait: timeRemaining suggests 785s but only 299s remain before
+    # the 25min deadline (1500s) at monotonic 1201.
+    assert slept[1] <= 1500.0 - 1201.0 + 0.001, slept
+    assert c.terminated == []
+    print("  PASS retry sleeps clamp to the remaining deadline; sleeps=%s" % [int(x) for x in slept])
 print("ALL PASS")
