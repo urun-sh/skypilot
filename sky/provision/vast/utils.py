@@ -111,26 +111,23 @@ def launch(name: str,
     # `ports` is currently unused. Keep it in the signature for caller
     # compatibility and future use (port-forwarding is handled separately).
     del ports
-    cpu_ram = float(instance_type.split('-')[-1])
+    cpu_ram = float(instance_type.split('-')[-1]) / 1024
     gpu_name = instance_type.split('-')[1].replace('_', ' ')
     num_gpus = int(instance_type.split('-')[0].replace('x', ''))
 
     query = [
         'chunked=true',
         'georegion=true',
-        'type=ondemand',
         f'geolocation="{region[-2:]}"',
         f'disk_space>={disk_size}',
         f'num_gpus={num_gpus}',
         f'gpu_name="{gpu_name}"',
-        f'cpu_ram>={cpu_ram}',
-        'cuda_max_good>=13.0',
-        'duration>=259200',
-        'direct_port_count>=1',
+        f'cpu_ram>="{cpu_ram}"',
     ]
     if secure_only:
         query.append('datacenter=true')
         query.append('hosting_type>=1')
+    query_str = ' '.join(query)
 
     instance_list = vast.vast().search_offers(query=query_str)
 
@@ -178,12 +175,12 @@ def launch(name: str,
             'Private docker registry requested but no login credentials '
             'were provided.')
 
-    # Vast interruptible capacity is bid/price based and stops (billing disk)
-    # when outbid. The uRun Vast lane is destroy-only and on-demand-only.
-    if preemptible:
-        raise RuntimeError('Vast interruptible instances are not supported; use on-demand capacity')
-    if 'bid_price' in launch_params or 'price' in launch_params:
-        raise RuntimeError('Vast on-demand launches must not pass price/bid_price')
+    # Handle price/bid_price - user can override
+    # Vast.ai SDK uses 'price' since SDK v6+; normalize bid_price for compat
+    if 'bid_price' in launch_params:
+        launch_params['price'] = launch_params.pop('bid_price')
+    if 'price' not in launch_params and preemptible:
+        launch_params['price'] = instance_touse.get('min_bid')
 
     # Handle onstart_cmd - read from file if onstart path provided
     user_onstart_cmd = launch_params.pop('onstart_cmd', None)
