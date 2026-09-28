@@ -111,18 +111,34 @@ def launch(name: str,
     # `ports` is currently unused. Keep it in the signature for caller
     # compatibility and future use (port-forwarding is handled separately).
     del ports
-    cpu_ram = float(instance_type.split('-')[-1]) / 1024
+    # uRun lane requirements: on-demand KVM VMs only (never the plain
+    # unprivileged container offers), CUDA-13 capable driver for the cu130
+    # wheels, contracts lasting at least 3 days, direct SSH ports for the
+    # SkyPilot provision loop, >=96 GB host RAM for the qwen3.6-27b bf16
+    # boot, and Secure Cloud datacenters only.
+    if not secure_only:
+        raise RuntimeError(
+            'Vast launches must set sky config vast.datacenter_only=true '
+            '(Secure Cloud); community hosts can read the instance disk')
+    cpu_ram = float(instance_type.split('-')[-1])
     gpu_name = instance_type.split('-')[1].replace('_', ' ')
     num_gpus = int(instance_type.split('-')[0].replace('x', ''))
 
     query = [
         'chunked=true',
         'georegion=true',
+        'type=ondemand',
+        'vm=true',
+        'vms_enabled=true',
         f'geolocation="{region[-2:]}"',
         f'disk_space>={disk_size}',
         f'num_gpus={num_gpus}',
         f'gpu_name="{gpu_name}"',
-        f'cpu_ram>="{cpu_ram}"',
+        f'cpu_ram>={cpu_ram}',
+        'cpu_ram>=98304',
+        'cuda_max_good>=13.0',
+        'duration>=259200',
+        'direct_port_count>=1',
     ]
     if secure_only:
         query.append('datacenter=true')
@@ -175,12 +191,12 @@ def launch(name: str,
             'Private docker registry requested but no login credentials '
             'were provided.')
 
-    # Handle price/bid_price - user can override
-    # Vast.ai SDK uses 'price' since SDK v6+; normalize bid_price for compat
-    if 'bid_price' in launch_params:
-        launch_params['price'] = launch_params.pop('bid_price')
-    if 'price' not in launch_params and preemptible:
-        launch_params['price'] = instance_touse.get('min_bid')
+    # Vast interruptible capacity is bid/price based and stops (billing disk)
+    # when outbid. The uRun Vast lane is destroy-only and on-demand-only.
+    if preemptible:
+        raise RuntimeError('Vast interruptible instances are not supported; use on-demand capacity')
+    if 'bid_price' in launch_params or 'price' in launch_params:
+        raise RuntimeError('Vast on-demand launches must not pass price/bid_price')
 
     # Handle onstart_cmd - read from file if onstart path provided
     user_onstart_cmd = launch_params.pop('onstart_cmd', None)

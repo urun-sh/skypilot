@@ -184,8 +184,8 @@ def stop_instances(
     provider_config: Optional[Dict[str, Any]] = None,
     worker_only: bool = False,
 ) -> None:
-    return action_instances('stop', cluster_name_on_cloud, provider_config,
-                            worker_only)
+    """Vast stop keeps billing storage; destroy instead of stopping."""
+    return terminate_instances(cluster_name_on_cloud, provider_config, worker_only)
 
 
 def terminate_instances(
