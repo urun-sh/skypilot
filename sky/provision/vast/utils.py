@@ -128,7 +128,11 @@ def launch(name: str,
         'chunked=true',
         'georegion=true',
         'type=ondemand',
-        'vm=true',
+        # 'vm=true' REMOVED: the bundles API rejects `vm` as a search key
+        # (measured 2026-09-29: HTTP 400 "vm is not a valid search key").
+        # The server-side KVM filter is vms_enabled (measured: 200 with
+        # {"vms_enabled":{"eq":True}}); the per-offer `vm` field is not
+        # filterable. Keeping vm=true 400s EVERY launch query.
         'vms_enabled=true',
         f'geolocation="{region[-2:]}"',
         f'disk_space>={disk_size}',
