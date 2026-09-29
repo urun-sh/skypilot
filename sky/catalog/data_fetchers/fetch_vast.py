@@ -88,9 +88,18 @@ if __name__ == '__main__':
     #     in order to ensure that machines with
     #     small disk pools aren't listed
     #
+    # THE CATALOG MUST SHOW ONLY WHAT THE LANE CAN RENT. The launch path
+    # (sky/provision/vast/utils.py) refuses anything except Secure-Cloud
+    # (datacenter + hosting_type >= 1) on-demand KVM VMs (vms_enabled;
+    # `vm` is not a filterable key), so a catalog that lists container or
+    # interruptible or community offers lets the QUOTE admit candidates
+    # the LAUNCH must refuse — quotes and placement must agree (the
+    # 2026-09-29 Australia container rows were exactly this mismatch).
     offerList = vast.vast().search_offers(
         query=('georegion = true chunked = true '
-               'inet_down >= 100 disk_space >= 80'),
+               'inet_down >= 100 disk_space >= 80 '
+               'type = ondemand vms_enabled = true '
+               'datacenter = true hosting_type >= 1'),
         limit=10000)
 
     priceMap: Dict[str, List] = collections.defaultdict(list)

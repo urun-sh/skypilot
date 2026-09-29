@@ -139,10 +139,15 @@ def launch(name: str,
         f'num_gpus={num_gpus}',
         f'gpu_name="{gpu_name}"',
         f'cpu_ram>={cpu_ram}',
-        'cpu_ram>=98304',
         'cuda_max_good>=13.0',
         'duration>=259200',
         'direct_port_count>=1',
+        # Host-RAM floor 64 GB: enough for the VM bootstrap (docker +
+        # tailscale + juicefs + KV-cache headroom for a 27B bf16 GPU
+        # server). The previous 96 GB invention excluded the only
+        # affordable Secure-Cloud KVM RTX 6000D offer (94.4 GB) measured
+        # 2026-09-29.
+        'cpu_ram>=65536',
     ]
     if secure_only:
         query.append('datacenter=true')
