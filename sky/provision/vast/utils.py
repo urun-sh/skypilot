@@ -156,6 +156,22 @@ def launch(name: str,
 
     instance_list = vast.vast().search_offers(query=query_str)
 
+    # REGION IS FILTERED CLIENT-SIDE, NOT IN THE QUERY: the API exact-matches
+    # geolocation against the full "Country, CC, GEO" string, so
+    # geolocation="EU" matches NOTHING (measured 2026-09-30: the live launch
+    # refused "Failed acquire resources in all zones in EU" while the EU
+    # offer was present — the same full-string-vs-token mismatch the
+    # catalog fetcher's Region emission hit). The catalog's Region IS the
+    # trailing georegion token (fetch_vast.py), so filter each offer's
+    # geolocation trailing token against it.
+    region_token = str(region or '').split(',')[-1].strip()
+    if region_token:
+        instance_list = [
+            offer for offer in instance_list
+            if str(offer.get('geolocation') or '').split(',')[-1].strip()
+            == region_token
+        ]
+
     if isinstance(instance_list, int) or len(instance_list) == 0:
         raise RuntimeError('Failed to create instances, could not find an '
                            'offer that satisfies the requirements '
