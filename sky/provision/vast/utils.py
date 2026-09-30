@@ -134,7 +134,11 @@ def launch(name: str,
         # {"vms_enabled":{"eq":True}}); the per-offer `vm` field is not
         # filterable. Keeping vm=true 400s EVERY launch query.
         'vms_enabled=true',
-        f'geolocation="{region[-2:]}"',
+        # NO geolocation TERM: the API exact-matches it against the full
+        # "Country, CC, GEO" string, so geolocation="EU" matches NOTHING
+        # (measured 2026-09-30: the live launch refused "Failed acquire
+        # resources in all zones in EU" while the EU offer was present).
+        # Region is filtered client-side after the search (below).
         f'disk_space>={disk_size}',
         f'num_gpus={num_gpus}',
         f'gpu_name="{gpu_name}"',
