@@ -102,6 +102,19 @@ if __name__ == '__main__':
                'datacenter = true hosting_type >= 1'),
         limit=10000)
 
+    # With georegion = true the API's geolocation is a full
+    # "Country, CC, GEO" string. Region MUST be the trailing georegion
+    # token (EU/NA/...) alone: the controller's residency filter
+    # exact-matches Region against the budget policy's allowedRegions
+    # tokens, and its launch path reads region[-2:] — a full-string
+    # Region matched NEITHER (measured 2026-09-30: the live claim
+    # refused "region Czechia, CZ, EU not in budget.allowedRegions
+    # [NA, EU, ...]" against a policy that DID list EU).
+    for offer in offerList:
+        geo = str(offer.get('geolocation') or '').strip()
+        if geo:
+            offer['geolocation'] = geo.split(',')[-1].strip()
+
     priceMap: Dict[str, List] = collections.defaultdict(list)
     for offer in offerList:
         entry = {}
