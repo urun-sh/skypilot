@@ -14,6 +14,17 @@ from sky.adaptors import vast
 
 logger = sky_logging.init_logger(__name__)
 
+# The SDK's search_offers silently prepends its own default filter
+# (verified=true external=false rentable=true rented=false) unless
+# no_default=True. Vast does not set `verified` on Secure-Cloud datacenter
+# offers (verified=None on every live RTX PRO 6000 Max-Q, measured
+# 2026-10-01: the defaulted search returned 4 offers, the same query with
+# no_default returned 16 incl. the Max-Q), so the default hid the one
+# rentable KVM GPU this lane serves. Every search passes no_default=True and
+# states the remaining three terms explicitly; datacenter=true +
+# hosting_type>=1 are the lane's trust filter.
+SEARCH_BASE_TERMS = 'rentable=true rented=false external=false'
+
 
 def list_instances() -> Dict[str, Dict[str, Any]]:
     """Lists instances associated with API key."""
@@ -144,26 +155,33 @@ def launch(name: str,
         # (measured 2026-09-30: the live launch refused "Failed acquire
         # resources in all zones in EU" while the EU offer was present).
         # Region is filtered client-side after the search (below).
+        # UNITS: the SDK's parse_query scales cpu_ram/gpu_ram by 1000 (GB)
+        # and duration by 86400 (days) before sending (vastai offers_mult),
+        # so terms are written in GB and days. Raw API units here asked for
+        # cpu_ram>=65536 GB and duration>=259200 days, matching nothing
+        # (measured 2026-10-01: the lane's full query returned 0 offers;
+        # in GB/days it returned the live CZ RTX PRO 6000 Max-Q).
         f'disk_space>={disk_size}',
         f'num_gpus={num_gpus}',
         f'gpu_name="{gpu_name}"',
-        f'cpu_ram>={cpu_ram}',
-        'cuda_max_good>=13.0',
-        'duration>=259200',
-        'direct_port_count>=1',
-        # Host-RAM floor 64 GB: enough for the VM bootstrap (docker +
+        # Host-RAM floor: the instance type's own RAM (catalog MB -> GB),
+        # never below 64 GB — enough for the VM bootstrap (docker +
         # tailscale + juicefs + KV-cache headroom for a 27B bf16 GPU
         # server). The previous 96 GB invention excluded the only
         # affordable Secure-Cloud KVM RTX 6000D offer (94.4 GB) measured
         # 2026-09-29.
-        'cpu_ram>=65536',
+        f'cpu_ram>={max(64.0, cpu_ram / 1024):g}',
+        'cuda_max_good>=13.0',
+        # Contract lasts at least 3 days.
+        'duration>=3',
+        'direct_port_count>=1',
     ]
     if secure_only:
         query.append('datacenter=true')
         query.append('hosting_type>=1')
-    query_str = ' '.join(query)
+    query_str = ' '.join([SEARCH_BASE_TERMS] + query)
 
-    instance_list = vast.vast().search_offers(query=query_str)
+    instance_list = vast.vast().search_offers(query=query_str, no_default=True)
 
     # REGION IS FILTERED CLIENT-SIDE, NOT IN THE QUERY: the API exact-matches
     # geolocation against the full "Country, CC, GEO" string, so
