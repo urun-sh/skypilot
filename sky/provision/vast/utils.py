@@ -120,9 +120,14 @@ def launch(name: str,
         raise RuntimeError(
             'Vast launches must set sky config vast.datacenter_only=true '
             '(Secure Cloud); community hosts can read the instance disk')
-    cpu_ram = float(instance_type.split('-')[-1])
-    gpu_name = instance_type.split('-')[1].replace('_', ' ')
-    num_gpus = int(instance_type.split('-')[0].replace('x', ''))
+    # Instance type is '{n}x-{gpu_name}-{cpu_cores}-{cpu_ram}' with spaces in
+    # gpu_name stubbed to '_' (fetch_vast.create_instance_type). gpu_name may
+    # itself contain '-' ('RTX PRO 6000 Max-Q'), so only the first and last
+    # two fields are fixed.
+    type_fields = instance_type.split('-')
+    num_gpus = int(type_fields[0].replace('x', ''))
+    gpu_name = '-'.join(type_fields[1:-2]).replace('_', ' ')
+    cpu_ram = float(type_fields[-1])
 
     query = [
         'chunked=true',
