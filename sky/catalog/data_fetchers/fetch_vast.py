@@ -24,12 +24,20 @@ _map = {
     # RTX PRO 6000 variants: after whitespace strip + suffix regex, these
     # still carry 'PRO' (the regex expects RTX\d0\d0, but the GPU name
     # is 'RTX PRO 6000 S' → 'RTXPRO6000S' which doesn't match). The
-    # platform's accelerator token for the 98GB Blackwell part is
+    # platform's accelerator token for the 96GB-class Blackwell part is
     # RTXPRO6000 (matching the Karpenter/EC2 naming for g4-standard-48+).
     'RTXPRO6000S': 'RTXPRO6000',
     'RTXPRO6000D': 'RTXPRO6000',
     'RTXPRO6000MaxQ': 'RTXPRO6000',
     'RTXPRO6000Max-Q': 'RTXPRO6000',
+    'RTXPRO6000WS': 'RTXPRO6000',
+    # 'RTX 6000D' is the China-market Blackwell RTX PRO 6000 SKU, the same
+    # uRun rtx6000 class. Without this entry the suffix rule below strips
+    # the D and files it under RTX6000 next to the 24GB Turing Quadro RTX
+    # 6000 ('Q RTX 6000' -> QRTX6000 -> RTX6000), so no single accelerator
+    # covered the Blackwell family (measured 2026-09-30: the only KVM offer
+    # flipped from a 6000D to a PRO 6000 Max-Q within hours).
+    'RTX6000D': 'RTXPRO6000',
 }
 
 
@@ -138,7 +146,8 @@ if __name__ == '__main__':
 
         gpu = re.sub('Ada', '-Ada', re.sub(r'\s', '', offer['gpu_name']))
         gpu = re.sub(r'(Ti|PCIE|SXM4|SXM|NVL)$', '', gpu)
-        gpu = re.sub(r'(RTX\d0\d0)(S|D)$', r'\1', gpu)
+        if gpu not in _map:
+            gpu = re.sub(r'(RTX\d0\d0)(S|D)$', r'\1', gpu)
 
         if gpu in _map:
             gpu = _map[gpu]

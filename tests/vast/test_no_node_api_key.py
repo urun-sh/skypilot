@@ -32,9 +32,9 @@ class TestVastOnstartNeverWritesApiKey(unittest.TestCase):
         a recognizable sentinel and assert that sentinel never reaches the
         `create_instance` call's onstart_cmd.
 
-        instance_type is a SkyPilot invention: '{xN}-{gpu_name}-{cpu_ram_gb}'
-        (see utils.launch's own docstring and vast_catalog.py). 'x1-RTX_6000-192'
-        parses as 1 GPU, "RTX 6000", 192 GB / 1024 = 187.5 GB CPU RAM.
+        instance_type is a SkyPilot invention:
+        '{n}x-{gpu_name}-{cpu_cores}-{cpu_ram}' (fetch_vast.create_instance_type).
+        '1x-RTX_6000D-32-65536' parses as 1 GPU, "RTX 6000D", 65536 MB CPU RAM.
         """
         sentinel = 'sk-vast-SECRET-KEY-should-never-appear'
         fake_client = mock.Mock()
@@ -42,9 +42,10 @@ class TestVastOnstartNeverWritesApiKey(unittest.TestCase):
 
         fake_offer = {
             'id': 12345,
-            'gpu_name': 'RTX 6000',
+            'gpu_name': 'RTX 6000D',
             'num_gpus': 1,
-            'cpu_ram': 192000,
+            'cpu_ram': 65536,
+            'geolocation': 'Czechia, CZ, EU',
             'dph_total': 1.50,
             'min_bid': 1.50,
         }
@@ -69,8 +70,8 @@ class TestVastOnstartNeverWritesApiKey(unittest.TestCase):
             vast_mod.vast.return_value = fake_client
             utils.launch(
                 name='test-cluster',
-                instance_type='x1-RTX_6000-192',
-                region='US',
+                instance_type='1x-RTX_6000D-32-65536',
+                region='EU',
                 disk_size=64,
                 image_name='nvidia/cuda',
                 ports=[22],
