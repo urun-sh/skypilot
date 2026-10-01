@@ -14,6 +14,7 @@ import re
 from typing import Any, Dict, List
 
 from sky.adaptors import vast
+from sky.provision.vast import utils as vast_utils
 
 _map = {
     'TeslaV100': 'V100',
@@ -103,12 +104,17 @@ if __name__ == '__main__':
     # interruptible or community offers lets the QUOTE admit candidates
     # the LAUNCH must refuse — quotes and placement must agree (the
     # 2026-09-29 Australia container rows were exactly this mismatch).
+    # no_default=True + SEARCH_BASE_TERMS: the SDK's implicit verified=true
+    # default hides Secure-Cloud offers (see vast_utils.SEARCH_BASE_TERMS);
+    # the catalog and the launch search must share one base filter.
     offerList = vast.vast().search_offers(
-        query=('georegion = true chunked = true '
+        query=(f'{vast_utils.SEARCH_BASE_TERMS} '
+               'georegion = true chunked = true '
                'inet_down >= 100 disk_space >= 80 '
                'type = ondemand vms_enabled = true '
                'datacenter = true hosting_type >= 1'),
-        limit=10000)
+        limit=10000,
+        no_default=True)
 
     # With georegion = true the API's geolocation is a full
     # "Country, CC, GEO" string. Region MUST be the trailing georegion
