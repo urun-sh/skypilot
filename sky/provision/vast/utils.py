@@ -25,6 +25,20 @@ logger = sky_logging.init_logger(__name__)
 # hosting_type>=1 are the lane's trust filter.
 SEARCH_BASE_TERMS = 'rentable=true rented=false external=false'
 
+# Vast boots a KVM VM only for images from this repository
+# (docs.vast.ai/guides/instances/virtual-machines); every other image is a
+# Docker container.
+VM_IMAGE_REPO = 'docker.io/vastai/kvm'
+
+
+def is_vm_image(image: Optional[str]) -> bool:
+    """Whether `image` makes Vast boot a KVM VM instead of a container."""
+    name = str(image or '').strip()
+    if name.startswith('docker:'):
+        name = name[len('docker:'):]
+    return (name == VM_IMAGE_REPO or name.startswith(VM_IMAGE_REPO + ':') or
+            name.startswith('vastai/kvm:'))
+
 
 def list_instances() -> Dict[str, Dict[str, Any]]:
     """Lists instances associated with API key."""
@@ -287,7 +301,19 @@ def launch(name: str,
 
     if user_onstart_cmd:
         skypilot_onstart.append(user_onstart_cmd)
-    launch_params['onstart_cmd'] = ';'.join(skypilot_onstart)
+    # KVM VM images (docker.io/vastai/kvm) run onstart inside the guest,
+    # where Vast requires an interpreter shebang (docs.vast.ai/
+    # linux-virtual-machines: "the interpreter must be specified by a
+    # shebang"); a ';'-joined Docker-style line is not a valid VM script.
+    # VMs also need the direct SSH mapping: the proxy host does not serve
+    # VMs (measured 2026-10-01: proxy refused, direct 22/tcp authenticated).
+    if is_vm_image(launch_params.get('image') or image_name):
+        launch_params['onstart_cmd'] = '\n'.join(['#!/bin/bash'] +
+                                                 skypilot_onstart)
+        launch_params['ssh'] = True
+        launch_params['direct'] = True
+    else:
+        launch_params['onstart_cmd'] = ';'.join(skypilot_onstart)
 
     # Handle env - Vast.ai SDK requires env as a dict, not a CLI-style string.
     # Merge user-provided env (dict or legacy string) with skypilot metadata.
