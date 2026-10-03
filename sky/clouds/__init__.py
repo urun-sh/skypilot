@@ -22,6 +22,7 @@ from sky.clouds.gcp import GCP
 from sky.clouds.hyperbolic import Hyperbolic
 from sky.clouds.ibm import IBM
 from sky.clouds.kubernetes import Kubernetes
+from sky.clouds.latitude import Latitude
 from sky.clouds.lambda_cloud import Lambda
 from sky.clouds.mithril import Mithril
 from sky.clouds.nebius import Nebius
@@ -57,6 +58,7 @@ __all__ = [
     'RunPod',
     'Shadeform',
     'Spheron',
+    'Latitude',
     'Vast',
     'OCI',
     'Verda',

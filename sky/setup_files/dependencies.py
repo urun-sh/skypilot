@@ -279,6 +279,9 @@ cloud_dependencies: Dict[str, List[str]] = {
     'shadeform': [],  # No dependencies needed for shadeform
     # Spheron talks to app.spheron.ai over urllib from sky/adaptors/spheron.py.
     'spheron': [],
+    # Latitude.sh talks to api.latitude.sh over urllib from
+    # sky/adaptors/latitude.py.
+    'latitude': [],
     'slurm': ['python-hostlist'],
     'yotta': [],  # No dependencies needed for Yotta
     'verda': [],  # No dependencies needed for verda

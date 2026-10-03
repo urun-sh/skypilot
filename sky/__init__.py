@@ -164,6 +164,7 @@ Paperspace = clouds.Paperspace
 PrimeIntellect = clouds.PrimeIntellect
 RunPod = clouds.RunPod
 Vast = clouds.Vast
+Latitude = clouds.Latitude
 Vsphere = clouds.Vsphere
 Fluidstack = clouds.Fluidstack
 Nebius = clouds.Nebius

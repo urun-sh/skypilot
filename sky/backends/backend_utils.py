@@ -1393,6 +1393,10 @@ def _add_auth_to_cluster_config(cloud: clouds.Cloud, tmp_yaml_path: str):
             # differs only because it ALSO uploads to the account, and even it
             # ends with `return configure_ssh_info(config)`.
             clouds.Spheron,
+            # Latitude registers its SSH key per-deployment too
+            # (sky/provision/latitude/instance.py matches key MATERIAL), so
+            # it takes the same generic configure_ssh_info path as Spheron.
+            clouds.Latitude,
         )):
         config = auth.configure_ssh_info(config)
     elif isinstance(cloud, clouds.GCP):
