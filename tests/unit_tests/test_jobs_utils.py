@@ -9,6 +9,7 @@ import pytest
 from sky.backends import cloud_vm_ray_backend
 from sky.exceptions import ClusterDoesNotExist
 from sky.jobs import utils
+from sky.skylet import job_lib
 
 # String path for mock.patch — can't use the constant directly because
 # mock.patch needs the dotted path to the attribute being patched.
@@ -104,9 +105,9 @@ async def test_get_job_status_timeout(mock_get_handle, mock_logger):
         f'Expected timeout around {timeout_override}s, '
         f'but took {elapsed_time}s')
 
-    # Verify only one attempt was made (no retry in get_job_status)
-    # === Checking the job status... ===
-    assert mock_logger.info.call_count == 1
+    # No status logline is emitted when the fetch fails - the caller logs the
+    # transient error reason instead.
+    assert mock_logger.info.call_count == 0
 
 
 @pytest.mark.asyncio
@@ -135,8 +136,166 @@ async def test_get_job_status_returns_error_reason_on_failure(
     assert error_reason is not None, 'Expected error reason on failure'
     assert 'timed out' in error_reason
 
-    # Verify only one attempt was made (no retry in get_job_status)
-    assert mock_logger.info.call_count == 1
+    # No status logline is emitted when the fetch fails - the caller logs the
+    # transient error reason instead.
+    assert mock_logger.info.call_count == 0
+
+
+def _info_messages(mock_logger):
+    """The messages passed to logger.info(), in order."""
+    return [call.args[0] for call in mock_logger.info.call_args_list]
+
+
+@mock.patch('sky.jobs.utils.logger')
+def test_job_status_logger_collapses_repeats(mock_logger):
+    """Repeated statuses are logged once, then flushed with a count."""
+    status_logger = utils.JobStatusLogger()
+    for _ in range(5):
+        status_logger.log('Job status: JobStatus.RUNNING')
+
+    assert _info_messages(mock_logger) == ['Job status: JobStatus.RUNNING']
+
+    # The last occurrence of the run is kept, so the time the status was last
+    # observed is still recoverable from the log.
+    status_logger.flush()
+    messages = _info_messages(mock_logger)
+    assert len(messages) == 2
+    assert messages[1].startswith('Job status: JobStatus.RUNNING (unchanged '
+                                  'for ')
+    assert '5 checks' in messages[1]
+
+    # Nothing left to flush.
+    status_logger.flush()
+    assert len(_info_messages(mock_logger)) == 2
+
+
+@mock.patch('sky.jobs.utils.logger')
+def test_job_status_logger_flushes_on_status_change(mock_logger):
+    """A new status flushes the previous run before being logged."""
+    status_logger = utils.JobStatusLogger()
+    status_logger.log('Job status: JobStatus.SETTING_UP')
+    for _ in range(3):
+        status_logger.log('Job status: JobStatus.RUNNING')
+    status_logger.log('Job status: JobStatus.FAILED')
+
+    messages = _info_messages(mock_logger)
+    assert messages[0] == 'Job status: JobStatus.SETTING_UP'
+    assert messages[1] == 'Job status: JobStatus.RUNNING'
+    assert '3 checks' in messages[2]
+    assert messages[3] == 'Job status: JobStatus.FAILED'
+    assert len(messages) == 4
+
+
+@mock.patch('sky.jobs.utils.logger')
+def test_job_status_logger_logs_nothing_mid_run(mock_logger):
+    """An unchanged status is never re-emitted while the run is open."""
+    status_logger = utils.JobStatusLogger()
+    for _ in range(500):
+        status_logger.log('Job status: JobStatus.RUNNING')
+
+    assert _info_messages(mock_logger) == ['Job status: JobStatus.RUNNING']
+
+
+@mock.patch('sky.jobs.utils.logger')
+def test_job_status_logger_flush_is_idempotent(mock_logger):
+    """Flushing an already-flushed run does not repeat the tail line."""
+    status_logger = utils.JobStatusLogger()
+    for _ in range(3):
+        status_logger.log('Job status: JobStatus.RUNNING')
+
+    # reset() flushes; the polling loop exiting then flushes again.
+    status_logger.reset()
+    status_logger.flush()
+
+    messages = _info_messages(mock_logger)
+    assert len(messages) == 2
+    assert '3 checks' in messages[1]
+
+
+@mock.patch('sky.jobs.utils.logger')
+def test_job_status_logger_single_observation_not_repeated(mock_logger):
+    """A run seen exactly once is not followed by a redundant tail line."""
+    status_logger = utils.JobStatusLogger()
+    status_logger.log('Job status: JobStatus.RUNNING')
+    status_logger.flush()
+
+    assert _info_messages(mock_logger) == ['Job status: JobStatus.RUNNING']
+
+
+@mock.patch('sky.jobs.utils.logger')
+def test_job_status_logger_reset(mock_logger):
+    """After a reset, an identical status is logged in full again."""
+    status_logger = utils.JobStatusLogger()
+    status_logger.log('Job status: JobStatus.RUNNING')
+    status_logger.log('Job status: JobStatus.RUNNING')
+    status_logger.reset()
+    status_logger.log('Job status: JobStatus.RUNNING')
+
+    messages = _info_messages(mock_logger)
+    assert messages[0] == 'Job status: JobStatus.RUNNING'
+    assert '2 checks' in messages[1]
+    assert messages[2] == 'Job status: JobStatus.RUNNING'
+    assert len(messages) == 3
+
+
+@pytest.mark.asyncio
+@mock.patch('sky.jobs.utils.logger')
+@mock.patch('sky.global_user_state.get_handle_from_cluster_name')
+async def test_get_job_status_collapses_repeats(mock_get_handle, mock_logger):
+    """get_job_status routes its result through the status logger."""
+    mock_handle = mock.MagicMock(
+        spec=cloud_vm_ray_backend.CloudVmRayResourceHandle)
+    mock_get_handle.return_value = mock_handle
+
+    mock_backend = mock.MagicMock(spec=cloud_vm_ray_backend.CloudVmRayBackend)
+    mock_backend.get_job_status.return_value = {1: job_lib.JobStatus.RUNNING}
+
+    status_logger = utils.JobStatusLogger()
+    for _ in range(4):
+        job_status, error_reason = await utils.get_job_status(
+            backend=mock_backend,
+            cluster_name='test-cluster',
+            job_id=1,
+            status_logger=status_logger)
+        assert job_status == job_lib.JobStatus.RUNNING
+        assert error_reason is None
+
+    assert _info_messages(mock_logger) == [
+        f'Job status: {job_lib.JobStatus.RUNNING}'
+    ]
+
+    mock_backend.get_job_status.return_value = {1: job_lib.JobStatus.SUCCEEDED}
+    await utils.get_job_status(backend=mock_backend,
+                               cluster_name='test-cluster',
+                               job_id=1,
+                               status_logger=status_logger)
+
+    messages = _info_messages(mock_logger)
+    assert len(messages) == 3
+    assert '4 checks' in messages[1]
+    assert messages[2] == f'Job status: {job_lib.JobStatus.SUCCEEDED}'
+
+
+@pytest.mark.asyncio
+@mock.patch('sky.jobs.utils.logger')
+@mock.patch('sky.global_user_state.get_handle_from_cluster_name')
+async def test_get_job_status_logs_every_poll_without_logger(
+        mock_get_handle, mock_logger):
+    """Without a status logger, every poll result is logged."""
+    mock_handle = mock.MagicMock(
+        spec=cloud_vm_ray_backend.CloudVmRayResourceHandle)
+    mock_get_handle.return_value = mock_handle
+
+    mock_backend = mock.MagicMock(spec=cloud_vm_ray_backend.CloudVmRayBackend)
+    mock_backend.get_job_status.return_value = {1: job_lib.JobStatus.RUNNING}
+
+    for _ in range(3):
+        await utils.get_job_status(backend=mock_backend,
+                                   cluster_name='test-cluster',
+                                   job_id=1)
+
+    assert _info_messages(mock_logger) == (
+        [f'Job status: {job_lib.JobStatus.RUNNING}'] * 3)
 
 
 @mock.patch('sky.utils.controller_utils.warn_jobs_consolidation_mode_intent')
@@ -1305,3 +1464,114 @@ class TestCleanupExpiredApiAccessTokens:
     def test_no_expired_tokens_is_noop(self, mock_get_expired):
         mock_get_expired.return_value = []
         assert utils.cleanup_expired_api_access_tokens() == 0
+
+
+def _make_window(min_elapsed_seconds=60, min_retries=3):
+    return utils.TransientStatusCheckWindow(
+        min_elapsed_seconds=min_elapsed_seconds, min_retries=min_retries)
+
+
+class TestTransientStatusCheckWindow:
+    """A run of failed status checks ends only when *both* budgets are spent.
+
+    Either budget alone is unreliable. A single status-check round can outlast
+    the time budget by itself, because the cluster-status refresh that runs
+    before recovery performs its own retried probes -- so a time-only budget
+    can be spent before even one retry happens, and the job is recovered
+    having never been retried. Conversely, a burst of checks that each fail
+    immediately can exhaust a retry-only budget within seconds, long before a
+    transient condition has had a chance to clear.
+    """
+
+    def test_fresh_window_is_not_exhausted(self):
+        window = _make_window()
+        assert not window.active
+        assert not window.exhausted
+        assert window.retries == 0
+        assert window.elapsed == 0.0
+
+    def test_time_alone_does_not_exhaust_the_window(self):
+        clock = {'t': 1000.0}
+        with mock.patch.object(time, 'time', side_effect=lambda: clock['t']):
+            window = _make_window(min_elapsed_seconds=60, min_retries=3)
+            window.record_failure()
+            # One round that takes far longer than the whole time budget.
+            clock['t'] += 10_000
+            assert window.elapsed >= 60
+            assert window.retries == 0
+            assert not window.exhausted, (
+                'a slow round must not spend the window before any retry')
+
+    def test_retries_alone_do_not_exhaust_the_window(self):
+        clock = {'t': 1000.0}
+        with mock.patch.object(time, 'time', side_effect=lambda: clock['t']):
+            window = _make_window(min_elapsed_seconds=60, min_retries=3)
+            window.record_failure()
+            # Failures that each return immediately: the clock barely moves.
+            for _ in range(5):
+                window.next_backoff()
+            assert window.retries >= 3
+            assert window.elapsed < 60
+            assert not window.exhausted, (
+                'a burst of fast failures must not spend the window early')
+
+    def test_both_budgets_spent_exhausts_the_window(self):
+        clock = {'t': 1000.0}
+        with mock.patch.object(time, 'time', side_effect=lambda: clock['t']):
+            window = _make_window(min_elapsed_seconds=60, min_retries=3)
+            window.record_failure()
+            for _ in range(3):
+                window.next_backoff()
+            clock['t'] += 61
+            assert window.exhausted
+
+    def test_reset_clears_both_budgets(self):
+        clock = {'t': 1000.0}
+        with mock.patch.object(time, 'time', side_effect=lambda: clock['t']):
+            window = _make_window(min_elapsed_seconds=60, min_retries=1)
+            window.record_failure()
+            window.next_backoff()
+            clock['t'] += 61
+            assert window.exhausted
+            window.reset()
+            assert not window.active
+            assert window.retries == 0
+            assert window.elapsed == 0.0
+            assert not window.exhausted
+
+    def test_backoff_never_overshoots_the_time_budget(self):
+        clock = {'t': 1000.0}
+        with mock.patch.object(time, 'time', side_effect=lambda: clock['t']):
+            window = _make_window(min_elapsed_seconds=60, min_retries=100)
+            window.record_failure()
+            clock['t'] += 59.5
+            # Only 0.5s of the time budget is left, so the sleep is clamped to
+            # it: the window must be re-evaluated as soon as the budget
+            # expires rather than sleeping past it.
+            assert window.next_backoff() == pytest.approx(0.5)
+            clock['t'] += 10
+            # Past the time budget the retry budget is what remains, so the
+            # plain backoff applies instead of a clamp to a negative value.
+            assert window.next_backoff() > 0
+
+    def test_budgets_are_read_from_config(self):
+        overrides = {
+            ('jobs', 'status_check', 'min_elapsed_seconds'): 600,
+            ('jobs', 'status_check', 'min_retries'): 10,
+        }
+        clock = {'t': 1000.0}
+        with mock.patch.object(
+                utils.skypilot_config,
+                'get_nested',
+                side_effect=lambda keys, default_value, **kwargs: overrides.get(
+                    tuple(keys), default_value)), \
+             mock.patch.object(time, 'time', side_effect=lambda: clock['t']):
+            window = utils.TransientStatusCheckWindow()
+            window.record_failure()
+            for _ in range(9):
+                window.next_backoff()
+            clock['t'] += 601
+            assert not window.exhausted, (
+                'the configured retry budget was not honored')
+            window.next_backoff()
+            assert window.exhausted
