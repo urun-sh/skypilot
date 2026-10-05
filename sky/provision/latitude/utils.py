@@ -34,6 +34,10 @@ SSH_KEY_NAME = "skypilot"
 # their own toolchain, which we do not want fighting ours.
 DEFAULT_OS = "ubuntu_24_04_x64_lts"
 
+# Steady-state re-exports: the instance module's adoption guard refuses
+# boxes in these states through `utils.STATUS_OFF` / `utils.STATUS_RESCUE_MODE`.
+STATUS_OFF = latitude_api.STATUS_OFF
+STATUS_RESCUE_MODE = latitude_api.STATUS_RESCUE_MODE
 # Re-exports: the instance module speaks these through `utils.` so the
 # adapter boundary stays one line.
 LatitudeClient = latitude_api.LatitudeClient

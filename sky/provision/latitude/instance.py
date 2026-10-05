@@ -130,6 +130,21 @@ def run_instances(
                 "terminate it before relaunching (not auto-retried — "
                 "report and decide)"
             )
+        if status in (utils.STATUS_OFF, utils.STATUS_RESCUE_MODE):
+            # Adopted boxes in these steady states can never reach `on` on
+            # their own: `off` is a hard power-off and `rescue_mode` is a
+            # rescue boot, and this integration never issues power_on /
+            # exit-rescue. Waiting would block the full poll timeout
+            # (25 min) before failing — the same dead wait the Spheron
+            # lane's stopped-guard exists to prevent (CodeRabbit on the
+            # PR). Transitional slugs (queued/starting_deploy/...) stay
+            # unmapped and keep waiting.
+            raise utils.LatitudeError(
+                f"server {server.get('id')} for cluster "
+                f"{cluster_name_on_cloud!r} is {status!r}; it cannot become "
+                "`on` on its own and this integration does not power boxes "
+                "back on — terminate it before relaunching"
+            )
     else:
         node_config = config.node_config
         plan = node_config.get("InstanceType")
@@ -201,21 +216,27 @@ def wait_instances(
     """No-op: run_instances already blocks until `on`."""
     del region, cluster_name_on_cloud, state
 
-
 def stop_instances(
-    region: str,
-    cluster_name: str,
     cluster_name_on_cloud: str,
     provider_config: Optional[Dict[str, Any]] = None,
     worker_only: bool = False,
 ) -> None:
-    """Latitude has no bill-preserving stop: terminate instead.
+    """STOP is refused, not silently destroy-terminated (CodeRabbit on the PR).
 
-    power_off does NOT stop hourly billing — only DELETE does — so a stop
-    that quietly keeps billing is the worst of both worlds. This mirrors the
-    Vast lane's destroy-only stance.
+    The dispatch contract (sky/provision/__init__.py stop_instances wrapper
+    after `provider_name` is stripped) is this signature — the
+    `(region, cluster_name, ...)` shape copied from vast does not BIND and
+    would TypeError at dispatch. Latitude declares STOP unsupported in
+    Latitude._CLOUD_UNSUPPORTED_FEATURES (power_off does NOT stop hourly
+    billing — only DELETE does), so SkyPilot never routes here; if anything
+    ever does, refuse loudly rather than terminating the box as a "stop",
+    which destroys the disk while the caller believed it was preserved.
     """
-    terminate_instances(cluster_name_on_cloud, provider_config, worker_only)
+    del cluster_name_on_cloud, provider_config, worker_only
+    raise NotImplementedError(
+        "stop is unsupported on Latitude: power_off keeps billing hourly, "
+        "and DELETE destroys the disk. Use terminate_instances for teardown."
+    )
 
 
 def terminate_instances(
@@ -225,6 +246,15 @@ def terminate_instances(
 ) -> None:
     """Terminate the cluster's servers (see module docstring: DELETE or bill)."""
     del provider_config, worker_only  # single-node lane; the head is the cluster
+    if not str(cluster_name_on_cloud or "").strip():
+        # An empty identity filters NOTHING on Latitude: list_servers would
+        # return EVERY server on the team and this loop would delete the
+        # whole account's fleet (CodeRabbit on the PR). Refuse loudly.
+        raise utils.LatitudeError(
+            "refusing to terminate with an empty cluster_name_on_cloud: "
+            "that filters nothing and would delete every server on the "
+            "account"
+        )
     client = _client()
     for server in client.list_servers(hostname=cluster_name_on_cloud):
         if not _is_live(server):

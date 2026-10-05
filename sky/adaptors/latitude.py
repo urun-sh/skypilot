@@ -74,6 +74,7 @@ MAX_PAGES = 100
 # module docstring). Anything not mapped here is transitional.
 STATUS_ON = "on"
 STATUS_OFF = "off"
+STATUS_RESCUE_MODE = "rescue_mode"
 STATUS_FAILED_DEPLOYMENT = "failed_deployment"
 
 # The provider's own documented poll cadence for deploys ("10-15s"); going
@@ -219,9 +220,14 @@ class LatitudeClient:
     def _interpret(self, status: int, raw: bytes, method: str, path: str):
         # Never include the URL query or headers in an error: no key leakage.
         where = f"{method} {path}"
-        if status == 204 or not raw:
-            return None
         if status < 400:
+            # The empty-body success path lives UNDER the status check: a
+            # 4xx/5xx with an empty body is a FAILURE (raise below), never
+            # a silent None — the exact bug class where a provider's
+            # 500/401 with an empty body would read as "done" while the
+            # server keeps billing (CodeRabbit on the PR).
+            if status == 204 or not raw:
+                return None
             try:
                 return json.loads(raw)
             except json.JSONDecodeError as exc:

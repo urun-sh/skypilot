@@ -308,6 +308,77 @@ class TestProvisioner(unittest.TestCase):
         self.assertEqual(info.ssh_user, "root")
 
 
+    def test_stop_instances_is_refused_not_terminate(self):
+        """STOP is declared unsupported (power_off keeps billing hourly):
+        it must raise, never silently DELETE the box — and it must BIND to
+        the dispatch contract (CodeRabbit on the PR: the vast-copied
+        `(region, cluster_name, ...)` signature TypeErrors at dispatch)."""
+        import inspect
+
+        for fn in (provision.stop_instances, provision.terminate_instances):
+            sig = inspect.signature(fn)
+            self.assertEqual(
+                list(sig.parameters),
+                ["cluster_name_on_cloud", "provider_config", "worker_only"],
+                msg=f"{fn.__name__} must bind the dispatch contract",
+            )
+
+        stub = _StubClient(servers=[
+            _server_row("srv_a", "sky-lat-abc", "on")
+        ])
+        with mock.patch.object(provision.utils, "client_from_env",
+                               return_value=stub):
+            with self.assertRaises(NotImplementedError):
+                provision.stop_instances("sky-lat-abc")
+        self.assertEqual(stub.deleted, [])
+
+    def test_terminate_refuses_an_empty_cluster_name(self):
+        """An empty identity filters NOTHING: list_servers would return the
+        whole team's fleet and the loop would delete it (CodeRabbit on the
+        PR). Refuse loudly; delete nothing."""
+        stub = _StubClient(servers=[
+            _server_row("srv_a", "sky-lat-abc", "on")
+        ])
+        with mock.patch.object(provision.utils, "client_from_env",
+                               return_value=stub):
+            with self.assertRaises(provision.utils.LatitudeError) as ctx:
+                provision.terminate_instances("   ")
+        self.assertIn("empty cluster_name_on_cloud", str(ctx.exception))
+        self.assertEqual(stub.deleted, [])
+
+    def test_adoption_refuses_off_and_rescue_mode_without_waiting(self):
+        """Adopted boxes in `off`/`rescue_mode` can never reach `on` on their
+        own and this integration never issues power_on / exit-rescue: fail
+        fast instead of blocking the full poll timeout (CodeRabbit on the
+        PR). Transitional slugs keep waiting."""
+        for status in ("off", "rescue_mode"):
+            stub = _StubClient(servers=[
+                _server_row("srv_9", "sky-lat-abc", status)
+            ])
+            with mock.patch.object(provision.utils, "client_from_env",
+                                   return_value=stub):
+                with self.assertRaises(provision.utils.LatitudeError) as ctx:
+                    provision.run_instances(
+                        "ASH", "ignored", "sky-lat-abc",
+                        _config({"InstanceType": "g4-rtx6kpro-large"}))
+            self.assertIn(status, str(ctx.exception))
+            self.assertEqual(stub.created_servers, [])
+
+    def test_adoption_still_waits_on_transitional_statuses(self):
+        """A mapped transitional adoption (`deploying`) still waits for `on`
+        rather than failing fast — only steady dead states refuse."""
+        stub = _StubClient(servers=[
+            _server_row("srv_9", "sky-lat-abc", "deploying")
+        ])
+        with mock.patch.object(provision.utils, "client_from_env",
+                               return_value=stub):
+            record = provision.run_instances(
+                "ASH", "ignored", "sky-lat-abc",
+                _config({"InstanceType": "g4-rtx6kpro-large"}))
+        self.assertEqual(record.head_instance_id, "srv_9")
+        self.assertEqual(record.created_instance_ids, [])
+
+
 class TestCloudWiring(unittest.TestCase):
     """The registration points an out-of-tree/in-tree cloud must not miss —
     each of these was a real lane-killing bug on a previous carry

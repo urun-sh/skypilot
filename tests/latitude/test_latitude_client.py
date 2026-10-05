@@ -115,6 +115,25 @@ class TestClientErrors(unittest.TestCase):
         # ...then a loud failure, not a silent empty answer.
         self.assertEqual(ctx.exception.retry_after_s, 0.5)
 
+    def test_error_with_empty_body_still_raises(self):
+        # A 4xx/5xx with an empty body must raise, never read as "done"
+        # while the server keeps billing (CodeRabbit on the PR).
+        transport = _Transport([(500, b"")])
+        client = api.LatitudeClient("k", transport=transport)
+        with self.assertRaises(api.LatitudeError):
+            client.delete_server("srv_x")
+
+    def test_401_with_empty_body_is_auth_error(self):
+        transport = _Transport([(401, b"")])
+        client = api.LatitudeClient("k", transport=transport)
+        with self.assertRaises(api.LatitudeAuthError):
+            client.get_profile()
+
+    def test_204_empty_body_is_success(self):
+        transport = _Transport([(204, b"")])
+        client = api.LatitudeClient("k", transport=transport)
+        self.assertIsNone(client.delete_server("srv_x"))
+
 
 class TestPagination(unittest.TestCase):
     def test_short_page_stops(self):
