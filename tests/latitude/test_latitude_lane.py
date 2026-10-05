@@ -305,7 +305,7 @@ class TestProvisioner(unittest.TestCase):
         inst, = info.instances["srv_a"]
         self.assertEqual(inst.external_ip, "198.51.100.5")
         self.assertEqual(inst.ssh_port, 22)
-        self.assertEqual(info.ssh_user, "root")
+        self.assertEqual(info.ssh_user, "ubuntu")
 
 
     def test_stop_instances_is_refused_not_terminate(self):

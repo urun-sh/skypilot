@@ -45,7 +45,13 @@ PROVIDER_NAME = "latitude"
 
 # Bare metal with the stock Ubuntu image: root over SSH, port 22, no NAT
 # port mapping (unlike Vast's proxy dance).
-SSH_USER = "root"
+# MEASURED 2026-10-05 (ENG-507 CPU smoke, m4-metal-small @ DAL): the stock
+# ubuntu_24_04_x64_lts image REFUSES root over SSH ("Permission denied
+# (publickey)", 12 retries) and authenticates the SAME key as `ubuntu`
+# with passwordless sudo — the massed-compute/Spheron convention, not the
+# skill manual's `ssh root@<primary_ipv4>`. SkyPilot sudo's for its setup,
+# so only the login name matters.
+SSH_USER = "ubuntu"
 SSH_PORT = 22
 
 # The literal the ray template carries until `configure_ssh_info` substitutes

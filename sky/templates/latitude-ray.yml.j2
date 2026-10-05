@@ -4,9 +4,11 @@
 # broker with no VPC/subnet/security-group to bootstrap -- and differs in
 # exactly two ways:
 #
-#   * ssh_user is `root`: Latitude bare metal answers as root on port 22
-#     with the stock Ubuntu image (Spheron's massed-compute image refuses
-#     root and demands `ubuntu`; Vast KVM guests also run as root).
+#   * ssh_user is `ubuntu`: MEASURED 2026-10-05 (ENG-507 CPU smoke), the
+#     stock ubuntu_24_04_x64_lts image REFUSES root over SSH and
+#     authenticates the same key as `ubuntu` with passwordless sudo —
+#     the massed-compute/Spheron convention, not the manual's
+#     `ssh root@<primary_ipv4>`.
 #   * node_config carries `latitude_operating_system` (the lane's fixed OS
 #     default, threaded from Latitude.make_deploy_resources_variables) next
 #     to InstanceType (the Latitude plan slug).
@@ -28,7 +30,7 @@ provider:
   disable_launch_config_check: true
 
 auth:
-  ssh_user: root
+  ssh_user: ubuntu
   ssh_private_key: {{ssh_private_key}}
 
 available_node_types:
