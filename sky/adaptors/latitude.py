@@ -124,6 +124,21 @@ def _jsonapi_data(payload: Any, where: str) -> List[Dict[str, Any]]:
                             f"{type(payload).__name__}")
     return payload["data"]
 
+def _jsonapi_object(payload: Any, where: str) -> Dict[str, Any]:
+    """A JSON:API single-object envelope, or a loud typed failure.
+
+    `_call(...) or {}` passes a non-empty LIST or STRING through unchanged,
+    and the caller's `payload.get("data")` would then die with a bare
+    AttributeError — an unclassified exception every LatitudeError-only
+    caller misses (CodeRabbit on the PR). A top-level payload that is not
+    an object is schema breakage: fail loud, typed.
+    """
+    if not isinstance(payload, dict):
+        raise LatitudeError(
+            f"{where}: expected a JSON:API object, got "
+            f"{type(payload).__name__}")
+    return payload
+
 
 class LatitudeClient:
     """Thin, explicit client. One method per endpoint we actually use."""
@@ -230,7 +245,10 @@ class LatitudeClient:
                 return None
             try:
                 return json.loads(raw)
-            except json.JSONDecodeError as exc:
+            # ValueError covers JSONDecodeError AND UnicodeDecodeError (a
+            # non-UTF-8 gateway page is a ValueError, not a JSONDecodeError)
+            # so no raw exception escapes a LatitudeError-only caller.
+            except ValueError as exc:
                 raise LatitudeError(
                     f"{where}: response was not JSON ({exc})"
                 ) from exc
@@ -240,7 +258,7 @@ class LatitudeClient:
             parsed = json.loads(raw)
             if isinstance(parsed, dict) and isinstance(parsed.get("errors"), list):
                 errors = [e for e in parsed["errors"] if isinstance(e, dict)]
-        except (json.JSONDecodeError, AttributeError):
+        except (ValueError, AttributeError):
             pass
         first = errors[0] if errors else {}
         detail = str(first.get("detail") or first.get("title") or "")[:300]
@@ -291,7 +309,8 @@ class LatitudeClient:
     # -- account ----------------------------------------------------------
 
     def get_profile(self) -> Dict[str, Any]:
-        payload = self._call("GET", "/user/profile") or {}
+        payload = _jsonapi_object(
+            self._call("GET", "/user/profile") or {}, "GET /user/profile")
         data = payload.get("data")
         return data if isinstance(data, dict) else {}
 
@@ -305,10 +324,10 @@ class LatitudeClient:
         attributes: Dict[str, Any] = {"name": name}
         if description:
             attributes["description"] = description
-        payload = self._call(
+        payload = _jsonapi_object(self._call(
             "POST", "/projects",
             body={"data": {"type": "projects", "attributes": attributes}},
-        ) or {}
+        ) or {}, "POST /projects")
         data = payload.get("data")
         if not isinstance(data, dict) or not data.get("id"):
             raise LatitudeError(f"POST /projects returned no id: {sorted(payload)}")
@@ -351,12 +370,12 @@ class LatitudeClient:
         return self._paginate("/ssh_keys")
 
     def create_ssh_key(self, name: str, public_key: str) -> Dict[str, Any]:
-        payload = self._call(
+        payload = _jsonapi_object(self._call(
             "POST", "/ssh_keys",
             body={"data": {"type": "ssh_keys",
                            "attributes": {"name": name,
                                           "public_key": public_key}}},
-        ) or {}
+        ) or {}, "POST /ssh_keys")
         data = payload.get("data")
         if not isinstance(data, dict) or not data.get("id"):
             raise LatitudeError(f"POST /ssh_keys returned no id: {sorted(payload)}")
@@ -394,7 +413,7 @@ class LatitudeClient:
         ssh_key_ids: List[str],
         billing: str = "hourly",
     ) -> Dict[str, Any]:
-        payload = self._call(
+        payload = _jsonapi_object(self._call(
             "POST", "/servers",
             body={"data": {"type": "servers",
                            "attributes": {
@@ -406,14 +425,16 @@ class LatitudeClient:
                                "ssh_keys": ssh_key_ids,
                                "billing": billing,
                            }}},
-        ) or {}
+        ) or {}, "POST /servers")
         data = payload.get("data")
         if not isinstance(data, dict) or not data.get("id"):
             raise LatitudeError(f"POST /servers returned no id: {sorted(payload)}")
         return data
 
     def get_server(self, server_id: str) -> Dict[str, Any]:
-        payload = self._call("GET", f"/servers/{server_id}") or {}
+        payload = _jsonapi_object(
+            self._call("GET", f"/servers/{server_id}") or {},
+            f"GET /servers/{server_id}")
         data = payload.get("data")
         if not isinstance(data, dict):
             raise LatitudeError(f"GET /servers/{server_id}: no data object")

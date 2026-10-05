@@ -135,6 +135,30 @@ class TestClientErrors(unittest.TestCase):
         self.assertIsNone(client.delete_server("srv_x"))
 
 
+    def test_non_dict_payload_raises_typed_error(self):
+        # A top-level LIST/STRING payload would otherwise die with a bare
+        # AttributeError inside .get("data") — an unclassified exception
+        # every LatitudeError-only caller misses (CodeRabbit on the PR).
+        for payload in ([{"id": "x"}], "just-a-string", 42):
+            body = json.dumps(payload).encode("utf-8")
+            transport = _Transport([(200, body)])
+            client = api.LatitudeClient("k", transport=transport)
+            with self.assertRaises(api.LatitudeError) as ctx:
+                client.get_profile()
+            self.assertIn("expected a JSON:API object", str(ctx.exception))
+
+    def test_non_utf8_body_raises_typed_error(self):
+        # UnicodeDecodeError is a ValueError, NOT a JSONDecodeError: without
+        # the ValueError catch a binary gateway page would escape raw instead
+        # of as LatitudeError (CodeRabbit on the PR). Both success and
+        # failure bodies must classify.
+        raw = b"\xff\xfe\x00\x00garbage\xff"
+        for status in (200, 500):
+            transport = _Transport([(status, raw)])
+            client = api.LatitudeClient("k", transport=transport)
+            with self.assertRaises(api.LatitudeError):
+                client.get_profile()
+
 class TestPagination(unittest.TestCase):
     def test_short_page_stops(self):
         # A "full" page is exactly PAGE_SIZE rows; pagination continues
