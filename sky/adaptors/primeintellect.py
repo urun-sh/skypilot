@@ -172,6 +172,23 @@ class PrimeintellectRateLimited(PrimeintellectError):
     """429 that exhausted its bounded retries."""
 
 
+
+class PrimeintellectOfferPriceExceedsCeilingError(PrimeintellectError):
+    """Every live offer matching the request exceeds the claim's proven
+    price ceiling (eng-493's vast lesson, the CodeRabbit-#519 finding).
+
+    A HUMAN decision, deliberately distinguishable from a stockout: the
+    stock came back but repriced above the ceiling the quote proved, so
+    renting any survivor would spend money the budget never approved.
+    Capacity-shaped retry logic must NOT catch this.
+    """
+
+    def __init__(self, message: str, *, cheapest_whole_box: Optional[float],
+                 ceiling_whole_box: Optional[float]):
+        super().__init__(message, code='offer_price_exceeds_ceiling')
+        self.cheapest_whole_box = cheapest_whole_box
+        self.ceiling_whole_box = ceiling_whole_box
+
 class PrimeintellectValidationError(PrimeintellectError):
     """422 — the request body failed validation.
 
@@ -740,10 +757,13 @@ class PrimeIntellectClient:
         gpu_type: str,
         gpu_count: int,
         data_center: Optional[str] = None,
+        provider: Optional[str] = None,
         max_price_per_gpu: Optional[float] = None,
+        max_whole_box_price: Optional[float] = None,
         vm_class_only: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Live in-stock offers matching (gpuType, count[, dataCenter][, cap]).
+        """Live in-stock offers matching (gpuType, count[, dataCenter]
+        [, provider][, cap]).
 
         This is the launch-time re-resolution: offers are a live market
         (the probe watched the list flip 2->0->2 within minutes), so the
@@ -752,6 +772,15 @@ class PrimeIntellectClient:
         catalog-time snapshot. ``vm_class_only`` applies the VM-class
         upstream allowlist (the deployment model is per-upstream; a
         container-shaped upstream cannot run the bootstrap ladder).
+
+        ``provider`` is EXACT when given (the CodeRabbit-#519 finding): a
+        catalog token names the upstream the quote priced, so the
+        re-resolution must rent THAT upstream — a different VM-class
+        provider at a different price was never quoted and must fail
+        closed, not silently substitute. ``max_whole_box_price`` is the
+        claim's proven whole-box ceiling (the controller threads it as
+        ``max_hourly_cost_usd``, the vast eng-493 channel); the per-GPU
+        cap remains for callers that only know the per-GPU bound.
         Sorted by per-GPU price ascending, whole-box price as tiebreaker.
         """
         matches: List[Tuple[float, float, Dict[str, Any]]] = []
@@ -764,6 +793,9 @@ class PrimeIntellectClient:
             if data_center is not None and str(
                     offer.get('dataCenter') or '') != data_center:
                 continue
+            if provider is not None and str(
+                    offer.get('provider') or '') != provider:
+                continue  # the token named the upstream the quote priced
             if vm_class_only and not is_vm_class_upstream(
                     str(offer.get('provider') or '')):
                 continue
@@ -779,9 +811,70 @@ class PrimeIntellectClient:
             if max_price_per_gpu is not None:
                 if whole_box / max(gpu_count, 1) > max_price_per_gpu:
                     continue
+            if max_whole_box_price is not None:
+                if whole_box > max_whole_box_price:
+                    continue
             matches.append((whole_box / max(gpu_count, 1), whole_box, offer))
         matches.sort(key=lambda entry: (entry[0], entry[1]))
         return [offer for _, _, offer in matches]
+
+    def resolve_launch_offer(
+        self,
+        *,
+        gpu_type: str,
+        gpu_count: int,
+        data_center: str,
+        provider: str,
+        max_whole_box_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """The one offer the launch rents, or a typed, human-decision error.
+
+        The eng-493 vast discipline, primeintellect flavor: with a proven
+        ceiling, matching offers that all EXCEED it raise
+        ``PrimeintellectOfferPriceExceedsCeilingError`` — deliberately
+        distinguishable from a stockout so capacity-shaped retry logic
+        never catches it. Without a ceiling, no match is the stockout
+        refusal the caller reports.
+        """
+        under = self.find_offers(
+            gpu_type=gpu_type,
+            gpu_count=gpu_count,
+            data_center=data_center,
+            provider=provider,
+            max_whole_box_price=max_whole_box_price,
+        )
+        if under:
+            return under[0]
+        if max_whole_box_price is not None:
+            # Same query WITHOUT the ceiling: rows there mean the stock
+            # came back but repriced past what the quote proved.
+            any_match = self.find_offers(
+                gpu_type=gpu_type,
+                gpu_count=gpu_count,
+                data_center=data_center,
+                provider=provider,
+            )
+            if any_match:
+                cheapest = any_match[0]
+                prices = cheapest.get('prices') or {}
+                raw = prices.get('onDemand') if isinstance(prices, dict) else None
+                cheapest_whole_box = (float(raw)
+                                      if isinstance(raw, (int, float)) else None)
+                raise PrimeintellectOfferPriceExceedsCeilingError(
+                    f'every live {provider}:{gpu_type}x{gpu_count} offer in '
+                    f'{data_center} exceeds the claim\'s proven ceiling '
+                    f'${max_whole_box_price:.2f}/hr whole-box (cheapest '
+                    f'${cheapest_whole_box:.2f}); refusing to spend money '
+                    'the budget never approved — a human decision, not a '
+                    'stockout',
+                    cheapest_whole_box=cheapest_whole_box,
+                    ceiling_whole_box=max_whole_box_price,
+                )
+        raise PrimeintellectResourcesUnavailableError(
+            f'no in-stock {provider}:{gpu_type}x{gpu_count} offer in '
+            f'{data_center} (VM-class upstreams only); the offer behind '
+            'the catalog row went out of stock — fail closed rather than '
+            'rent a different shape')
 
     # -- polling ----------------------------------------------------------
 

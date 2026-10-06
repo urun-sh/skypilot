@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from sky.adaptors import primeintellect as _pi_api
 from sky.catalog.data_fetchers import fetch_primeintellect as fetcher
 
 
@@ -207,6 +208,39 @@ class _StubClient:
         self.calls.append(("find_offers", kwargs))
         return self.offers
 
+    def resolve_launch_offer(self, **kwargs):
+        self.calls.append(("resolve_launch_offer", kwargs))
+        provider = kwargs.get("provider")
+        rows = self.offers
+        if provider is not None:
+            rows = [o for o in rows
+                    if o.get("provider") == provider]
+        ceiling = kwargs.get("max_whole_box_price")
+        if ceiling is not None:
+            rows = [o for o in rows
+                    if o.get("prices", {}).get("onDemand",
+                                               float("inf")) <= ceiling]
+        if rows:
+            return sorted(
+                rows,
+                key=lambda o: o["prices"]["onDemand"])[0]
+        same_provider = [o for o in self.offers
+                         if o.get("provider") == provider]
+        if same_provider and ceiling is not None:
+            cheapest = min(same_provider,
+                           key=lambda o: o["prices"]["onDemand"])
+            # The REAL error classes: the provisioner's except clauses
+            # must catch these (the typed human-decision vs stockout
+            # distinction the eng-493 discipline rides on).
+            raise _pi_api.PrimeintellectOfferPriceExceedsCeilingError(
+                f"every live {provider} offer exceeds the claim's proven "
+                f"ceiling ${ceiling:.2f}/hr whole-box (cheapest "
+                f"${cheapest['prices']['onDemand']:.2f})",
+                cheapest_whole_box=float(cheapest["prices"]["onDemand"]),
+                ceiling_whole_box=float(ceiling))
+        raise _pi_api.PrimeintellectResourcesUnavailableError(
+            f"no in-stock {provider} offer (VM-class upstreams only)")
+
     def create_pod(self, name, offer):
         self.calls.append(("create_pod", name, offer["cloudId"]))
         if self.fail_create:
@@ -226,7 +260,7 @@ class _StubClient:
         self.pods = [p for p in self.pods if p["id"] != pod_id]
 
 
-def _config(node_config=None, count=1):
+def _config(node_config=None, count=1, provider_config=None):
     from sky.provision import common
     config = mock.Mock(spec=common.ProvisionConfig)
     config.count = count
@@ -234,6 +268,10 @@ def _config(node_config=None, count=1):
         "InstanceType": "dc_gnu:RTX_PRO_6000B_96GB:1",
         "PublicKey": "ssh-rsa AAAA real-key",
     }
+    # The vast eng-493 channel: the controller's create_instance_kwargs
+    # (carrying the proven max_hourly_cost_usd ceiling) reaches the
+    # provisioner through provider_config.
+    config.provider_config = provider_config if provider_config is not None else {}
     return config
 
 
@@ -259,15 +297,77 @@ class TestProvisioner(unittest.TestCase):
             record = instance.run_instances(
                 "us-east-1", "sky-test", "sky-test", _config())
         # The launch re-resolved against the LIVE list with the
-        # dataCenter token, and the pod carries the cluster's name.
-        find_call = [c for c in stub.calls if c[0] == "find_offers"]
-        self.assertEqual(find_call[0][1]["gpu_type"], "RTX_PRO_6000B_96GB")
-        self.assertEqual(find_call[0][1]["data_center"], "us-east-1")
+        # dataCenter token AND the token's provider, and the pod carries
+        # the cluster's name.
+        resolve_call = [c for c in stub.calls
+                        if c[0] == "resolve_launch_offer"]
+        self.assertEqual(resolve_call[0][1]["gpu_type"],
+                         "RTX_PRO_6000B_96GB")
+        self.assertEqual(resolve_call[0][1]["data_center"], "us-east-1")
+        self.assertEqual(resolve_call[0][1]["provider"], "dc_gnu")
+        self.assertIsNone(resolve_call[0][1]["max_whole_box_price"])
         create_call = [c for c in stub.calls if c[0] == "create_pod"]
         self.assertEqual(create_call[0][1], "sky-test-head")
         self.assertEqual(record.head_instance_id, "pod-new")
         self.assertEqual(record.provider_name, "primeintellect")
         self.assertEqual(record.created_instance_ids, ["pod-new"])
+
+    def test_create_threads_the_proven_price_ceiling(self):
+        # eng-493's vast discipline: the claim's proven whole-box ceiling
+        # rides in via node_config.max_hourly_cost_usd and reaches the
+        # re-resolution (a repriced live market must fail closed, not
+        # silently substitute).
+        from sky.provision.primeintellect import instance
+
+        stub = _StubClient(offers=[_offer(price=1.35)])
+        with self._patch_client(stub):
+            instance.run_instances(
+                "us-east-1", "sky-test", "sky-test",
+                _config(provider_config={
+                    "create_instance_kwargs": {
+                        "max_hourly_cost_usd": "1.46"}}))
+        resolve_call = [c for c in stub.calls
+                        if c[0] == "resolve_launch_offer"]
+        self.assertEqual(resolve_call[0][1]["max_whole_box_price"], 1.46)
+        # And the create happened: 1.35 <= 1.46 is rentable.
+        self.assertTrue([c for c in stub.calls if c[0] == "create_pod"])
+
+    def test_create_refuses_when_the_market_repriced_past_the_ceiling(self):
+        # The CodeRabbit-#519 finding, provisioner side: the stock came
+        # back but repriced above what the quote proved — a typed
+        # human-decision refusal, never a silent substitution and never
+        # a stockout-shaped retry.
+        from sky.provision.primeintellect import instance
+        from sky import exceptions
+
+        stub = _StubClient(offers=[_offer(price=3.00)])
+        with self._patch_client(stub):
+            with self.assertRaises(exceptions.ResourcesUnavailableError) as ctx:
+                instance.run_instances(
+                    "us-east-1", "sky-test", "sky-test",
+                    _config(provider_config={
+                        "create_instance_kwargs": {
+                            "max_hourly_cost_usd": "1.46"}}))
+        self.assertIn("exceeds", str(ctx.exception))
+        self.assertFalse([c for c in stub.calls
+                          if c[0] == "create_pod"])
+
+    def test_create_never_substitutes_a_different_upstream(self):
+        # The other half of the CodeRabbit-#519 finding: a dc_gnu token
+        # must rent dc_gnu. A CHEAPER offer from a different VM-class
+        # upstream (primecompute) exists, but it was never the quoted
+        # identity — the launch must fail closed rather than rent it.
+        from sky.provision.primeintellect import instance
+        from sky import exceptions
+
+        cheaper = _offer(provider="primecompute", price=0.90)
+        stub = _StubClient(offers=[cheaper])
+        with self._patch_client(stub):
+            with self.assertRaises(exceptions.ResourcesUnavailableError):
+                instance.run_instances(
+                    "us-east-1", "sky-test", "sky-test", _config())
+        self.assertFalse([c for c in stub.calls
+                          if c[0] == "create_pod"])
 
     def test_unsubstituted_public_key_placeholder_refused(self):
         from sky.provision.primeintellect import instance

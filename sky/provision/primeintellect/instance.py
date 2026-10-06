@@ -204,7 +204,7 @@ def run_instances(
                 'node_config is missing InstanceType (the Prime Intellect '
                 '"<provider>:<gpuType>:<count>" catalog token, e.g. '
                 'dc_gnu:RTX_PRO_6000B_96GB:1)')
-        _, gpu_type, gpu_count = (
+        provider, gpu_type, gpu_count = (
             fetch_primeintellect.parse_instance_type_token(str(token)))
 
         # node_config['PublicKey'] is the ONE canonical source:
@@ -233,25 +233,48 @@ def run_instances(
         # unreachable).
         client.ensure_ssh_key(utils.SSH_KEY_NAME, public_key)
 
-        # Launch-time offer re-resolution: the catalog token names the
-        # (provider, gpuType, count) triple; the concrete in-stock offer
-        # is found on the LIVE list (offers are a live market — a frozen
-        # cloudId is silent rot). `region` is the dataCenter token — the
+        # Launch-time offer re-resolution, BOUND to what the quote proved
+        # (the CodeRabbit-#519 finding, eng-493's vast discipline): the
+        # catalog token names the (provider, gpuType, count) triple, so
+        # the re-resolution rents THAT upstream exactly — a different
+        # VM-class provider at a different price was never quoted. The
+        # claim's proven whole-box ceiling rides in from the controller
+        # via the vast `max_hourly_cost_usd` channel (node_config;
+        # None when the controller proved no bound); a live market that
+        # repriced past it is a TYPED human-decision error, never a
+        # silent substitution. `region` is the dataCenter token — the
         # same token the catalog row's Region column carries and the
         # create body's dataCenterId takes.
-        offers = client.find_offers(gpu_type=gpu_type,
-                                    gpu_count=gpu_count,
-                                    data_center=region,
-                                    vm_class_only=True)
-        if not offers:
+        # The vast eng-493 channel: the template carries the controller's
+        # create_instance_kwargs into provider_config, and the proven
+        # whole-box ceiling rides at max_hourly_cost_usd inside it.
+        ceiling_raw = ((config.provider_config or {}).get(
+            'create_instance_kwargs', {}) or {}).get('max_hourly_cost_usd')
+        try:
+            ceiling = (None if ceiling_raw in (None, '')
+                       else float(ceiling_raw))
+        except (TypeError, ValueError) as exc:
+            raise utils.PrimeintellectError(
+                f'max_hourly_cost_usd {ceiling_raw!r} is not a number; the '
+                'claim\'s proven price ceiling must be a decimal string '
+                'from the controller') from exc
+        try:
+            offer = client.resolve_launch_offer(
+                gpu_type=gpu_type,
+                gpu_count=gpu_count,
+                data_center=region,
+                provider=provider,
+                max_whole_box_price=ceiling,
+            )
+        except utils.PrimeintellectOfferPriceExceedsCeilingError as exc:
+            # Repriced past the proven ceiling: a HUMAN decision, never
+            # a stockout-shaped retry and never a spend the budget did
+            # not approve.
             with ux_utils.print_exception_no_traceback():
-                raise exceptions.ResourcesUnavailableError(
-                    f'no in-stock Prime Intellect offer for {gpu_type!r} '
-                    f'x{gpu_count} in dataCenter {region!r} (VM-class '
-                    'upstreams only); the offer behind the catalog row went '
-                    'out of stock — fail closed rather than rent a '
-                    'different shape')
-        offer = offers[0]  # find_offers sorts by per-GPU price ascending
+                raise exceptions.ResourcesUnavailableError(str(exc)) from exc
+        except utils.PrimeintellectResourcesUnavailableError as exc:
+            with ux_utils.print_exception_no_traceback():
+                raise exceptions.ResourcesUnavailableError(str(exc)) from exc
         try:
             pod = client.create_pod(name=head_name, offer=offer)
         except utils.PrimeintellectResourcesUnavailableError as exc:

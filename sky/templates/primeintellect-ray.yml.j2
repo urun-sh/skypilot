@@ -34,13 +34,18 @@ cluster_name: {{cluster_name_on_cloud}}
 # The maximum number of workers nodes to launch in addition to the head node.
 max_workers: {{num_nodes - 1}}
 upscaling_speed: {{num_nodes - 1}}
-idle_timeout_minutes: 60
-
 provider:
   type: external
   module: sky.provision.primeintellect
   region: "{{region}}"
   disable_launch_config_check: true
+  {%- if create_instance_kwargs %}
+  # The claim's proven price ceiling rides here (the vast eng-493
+  # channel): the controller threads max_hourly_cost_usd through
+  # Resources cluster_config_overrides and the provisioner's launch-time
+  # offer re-resolution refuses any live offer above it.
+  create_instance_kwargs: {{create_instance_kwargs | tojson}}
+  {%- endif %}
 
 auth:
   ssh_user: root
