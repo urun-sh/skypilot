@@ -33,6 +33,8 @@ PrimeintellectAuthError = primeintellect_api.PrimeintellectAuthError
 PrimeintellectNotFoundError = primeintellect_api.PrimeintellectNotFoundError
 PrimeintellectResourcesUnavailableError = (
     primeintellect_api.PrimeintellectResourcesUnavailableError)
+PrimeintellectOfferPriceExceedsCeilingError = (
+    primeintellect_api.PrimeintellectOfferPriceExceedsCeilingError)
 STATUS_ACTIVE = primeintellect_api.STATUS_ACTIVE
 STATUS_ERROR = primeintellect_api.STATUS_ERROR
 STATUS_STOPPED = primeintellect_api.STATUS_STOPPED

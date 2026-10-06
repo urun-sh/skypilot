@@ -345,7 +345,15 @@ class TestCreatePod(unittest.TestCase):
 class TestFindOffers(unittest.TestCase):
 
     def _client(self, offers):
-        transport = _Transport([_page(offers)])
+        # The client's empty-200 retry discipline fires whenever a
+        # find_offers pass returns ZERO rows — honestly empty OR
+        # ceiling-filtered — at EMPTY_FETCH_RETRIES+1 fetches per pass,
+        # and resolve_launch_offer queries up to twice (with, then
+        # without, the ceiling). Stack enough canned pages for the worst
+        # case; a NONEMPTY page stops the pager early so the surplus is
+        # simply unused.
+        pages = [_page(offers)] * 2 * (api.EMPTY_FETCH_RETRIES + 1)
+        transport = _Transport(pages)
         return api.PrimeIntellectClient("pi_key", transport=transport)
 
     def test_vm_class_allowlist_drops_container_upstreams(self):
@@ -514,6 +522,86 @@ class TestTeardownAndAccessors(unittest.TestCase):
         client = api.PrimeIntellectClient("pi_key", transport=transport)
         live = client.list_pods(live_only=True)
         self.assertEqual([p["id"] for p in live], ["p1"])
+
+
+
+class TestResolveLaunchOffer(unittest.TestCase):
+    """The launch contract (CodeRabbit-#519 finding, fixed): the
+    re-resolution is PROVIDER-EXACT and honors the claim's proven
+    whole-box ceiling, with a typed human-decision error when the live
+    market repriced past it."""
+
+    def _client(self, offers):
+        # The client's empty-200 retry discipline fires whenever a
+        # find_offers pass returns ZERO rows — honestly empty OR
+        # ceiling-filtered — at EMPTY_FETCH_RETRIES+1 fetches per pass,
+        # and resolve_launch_offer queries up to twice (with, then
+        # without, the ceiling). Stack enough canned pages for the worst
+        # case; a NONEMPTY page stops the pager early so the surplus is
+        # simply unused.
+        pages = [_page(offers)] * 2 * (api.EMPTY_FETCH_RETRIES + 1)
+        transport = _Transport(pages)
+        return api.PrimeIntellectClient("pi_key", transport=transport)
+
+    def test_provider_exact_re_resolution(self):
+        # A dc_gnu request must rent dc_gnu even when a DIFFERENT
+        # VM-class upstream (primecompute) is cheaper: the token names
+        # the upstream the quote priced.
+        client = self._client([
+            _offer(provider="primecompute", price=0.90),
+            _offer(provider="dc_gnu", price=1.35),
+        ])
+        offer = client.resolve_launch_offer(
+            gpu_type="RTX_PRO_6000B_96GB", gpu_count=1,
+            data_center="us-east-1", provider="dc_gnu")
+        self.assertEqual(offer["provider"], "dc_gnu")
+        self.assertEqual(offer["prices"]["onDemand"], 1.35)
+
+    def test_under_ceiling_selects_the_cheapest(self):
+        client = self._client([
+            _offer(price=1.50, cloud_id="c1"),
+            _offer(price=1.35, cloud_id="c2"),
+        ])
+        offer = client.resolve_launch_offer(
+            gpu_type="RTX_PRO_6000B_96GB", gpu_count=1,
+            data_center="us-east-1", provider="dc_gnu",
+            max_whole_box_price=1.46)
+        self.assertEqual(offer["cloudId"], "c2")
+
+    def test_repriced_past_the_ceiling_is_a_typed_human_decision(self):
+        # Stock exists but every row is over the proven ceiling: the
+        # stockout-shaped retry path must NOT catch this.
+        client = self._client([_offer(price=3.00)])
+        with self.assertRaises(
+                api.PrimeintellectOfferPriceExceedsCeilingError) as ctx:
+            client.resolve_launch_offer(
+                gpu_type="RTX_PRO_6000B_96GB", gpu_count=1,
+                data_center="us-east-1", provider="dc_gnu",
+                max_whole_box_price=1.46)
+        self.assertEqual(ctx.exception.cheapest_whole_box, 3.00)
+        self.assertEqual(ctx.exception.ceiling_whole_box, 1.46)
+        self.assertEqual(ctx.exception.code, "offer_price_exceeds_ceiling")
+
+    def test_no_ceiling_no_match_is_the_stockout_refusal(self):
+        # Two find_offers passes (with, then without, the ceiling): a
+        # canned empty page per pass.
+        client = self._client([])
+        with self.assertRaises(
+                api.PrimeintellectResourcesUnavailableError):
+            client.resolve_launch_offer(
+                gpu_type="RTX_PRO_6000B_96GB", gpu_count=1,
+                data_center="us-east-1", provider="dc_gnu")
+
+    def test_ceiling_no_stock_stays_the_stockout_refusal(self):
+        # Zero rows WITH the ceiling and zero WITHOUT: that IS a sellout,
+        # not a reprice — the two-step query must not conflate them.
+        client = self._client([])
+        with self.assertRaises(
+                api.PrimeintellectResourcesUnavailableError):
+            client.resolve_launch_offer(
+                gpu_type="RTX_PRO_6000B_96GB", gpu_count=1,
+                data_center="us-east-1", provider="dc_gnu",
+                max_whole_box_price=1.46)
 
 
 if __name__ == "__main__":

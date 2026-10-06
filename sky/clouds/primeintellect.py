@@ -244,6 +244,23 @@ class PrimeIntellect(clouds.Cloud):
         else:
             custom_resources = None
 
+        # The claim's proven price ceiling rides the SAME channel vast
+        # built (eng-493): the controller injects
+        # create_instance_kwargs.max_hourly_cost_usd via Resources
+        # cluster_config_overrides, the template carries it into
+        # provider_config, and the provisioner's launch-time offer
+        # re-resolution refuses any live offer above it (a repriced
+        # market is a human decision, never a silent substitution).
+        # pylint: disable=import-outside-toplevel
+        from sky import skypilot_config
+        create_instance_kwargs = skypilot_config.get_effective_region_config(
+            cloud='primeintellect',
+            region=region.name,
+            keys=('create_instance_kwargs',),
+            default_value={},
+            override_configs=resources.cluster_config_overrides,
+        )
+
         # `region.name` is the dataCenter token (the same token the
         # catalog row's Region column carries and the create body's
         # dataCenterId takes); the provisioner re-resolves the LIVE offer
@@ -252,6 +269,7 @@ class PrimeIntellect(clouds.Cloud):
             'instance_type': resources.instance_type,
             'custom_resources': custom_resources,
             'region': region.name,
+            'create_instance_kwargs': create_instance_kwargs or {},
         }
 
     def _get_feasible_launchable_resources(
