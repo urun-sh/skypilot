@@ -525,6 +525,31 @@ class TestTeardownAndAccessors(unittest.TestCase):
 
 
 
+class TestTeamBilling(unittest.TestCase):
+
+    def test_create_pod_carries_the_team_block_when_given(self):
+        # The 2026-10-07 wallet-target ruling: pods bill the team whose id
+        # rides in the create body; without it the PERSONAL wallet pays.
+        offer = _offer()
+        transport = _Transport([
+            (200, json.dumps({"id": "p1"}).encode("utf-8")),
+        ])
+        client = api.PrimeIntellectClient("pi_key", transport=transport)
+        client.create_pod(name="x", offer=offer, team_id="team-123")
+        body = json.loads(transport.calls[0][3])
+        self.assertEqual(body["team"], {"teamId": "team-123"})
+
+    def test_create_pod_omits_the_team_block_when_none(self):
+        offer = _offer()
+        transport = _Transport([
+            (200, json.dumps({"id": "p1"}).encode("utf-8")),
+        ])
+        client = api.PrimeIntellectClient("pi_key", transport=transport)
+        client.create_pod(name="x", offer=offer)
+        body = json.loads(transport.calls[0][3])
+        self.assertNotIn("team", body)
+
+
 class TestResolveLaunchOffer(unittest.TestCase):
     """The launch contract (CodeRabbit-#519 finding, fixed): the
     re-resolution is PROVIDER-EXACT and honors the claim's proven

@@ -241,8 +241,8 @@ class _StubClient:
         raise _pi_api.PrimeintellectResourcesUnavailableError(
             f"no in-stock {provider} offer (VM-class upstreams only)")
 
-    def create_pod(self, name, offer):
-        self.calls.append(("create_pod", name, offer["cloudId"]))
+    def create_pod(self, name, offer, team_id=None):
+        self.calls.append(("create_pod", name, offer["cloudId"], team_id))
         if self.fail_create:
             raise self.fail_create
         pod = {"id": "pod-new", "name": name, "status": "ACTIVE",
@@ -490,6 +490,39 @@ class TestProvisioner(unittest.TestCase):
         self.assertEqual(statuses["p-a"][0], status_lib.ClusterStatus.UP)
         # Transitional rows are excluded under non_terminated_only.
         self.assertNotIn("p-b", statuses)
+
+
+    def test_create_bills_the_team_wallet_when_the_env_names_one(self):
+        # The 2026-10-07 wallet-target ruling: the funded money sits on the
+        # TEAM wallet; a pod WITHOUT a team block bills the PERSONAL one.
+        # PRIME_INTELLECT_TEAM_ID (a plain pod env var, set at arming like
+        # the key) must reach the create body.
+        from sky.provision.primeintellect import instance
+
+        stub = _StubClient(offers=[_offer()])
+        with self._patch_client(stub):
+            with mock.patch.dict(os.environ,
+                                 {"PRIME_INTELLECT_TEAM_ID": "team-123"}):
+                instance.run_instances(
+                    "us-east-1", "sky-test", "sky-test", _config())
+        create_call = [c for c in stub.calls if c[0] == "create_pod"]
+        self.assertEqual(create_call[0][3], "team-123")
+
+    def test_create_omits_the_team_block_when_the_env_is_unset(self):
+        # The default stays opt-in: no env, no team block (personal wallet
+        # billing — the pre-team behavior, kept so the change is a
+        # deployment knob, not a hardcode).
+        from sky.provision.primeintellect import instance
+
+        stub = _StubClient(offers=[_offer()])
+        env = {k: v for k, v in os.environ.items()
+               if k != "PRIME_INTELLECT_TEAM_ID"}
+        with self._patch_client(stub):
+            with mock.patch.dict(os.environ, env, clear=True):
+                instance.run_instances(
+                    "us-east-1", "sky-test", "sky-test", _config())
+        create_call = [c for c in stub.calls if c[0] == "create_pod"]
+        self.assertIsNone(create_call[0][3])
 
 
 class TestCloudWiring(unittest.TestCase):
