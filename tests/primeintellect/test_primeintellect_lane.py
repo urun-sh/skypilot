@@ -61,8 +61,13 @@ class TestFetcherRows(unittest.TestCase):
         self.assertEqual(row[4], 144)
         self.assertEqual(row[5], 1.35)  # whole-box price
         self.assertEqual(row[6], "us-east-1")  # the dataCenter token
-        self.assertIn("'AcceleratorName': 'RTXPRO6000'", row[7])
+        self.assertIn("'Name': 'RTXPRO6000'", row[7])
         self.assertIn("'SizeInMiB': 98304", row[7])  # 96 GB in MiB
+        # The legacy 'Gpus'-wrapped shape (the DeviceMemoryGiB pass in
+        # sky/catalog/common.py reads Gpus[0] — an unwrapped but
+        # well-formed dict raises an UNCAUGHT KeyError at quote time;
+        # observed live 2026-10-07).
+        self.assertIn("'Gpus': [{'Name': 'RTXPRO6000'", row[7])
         self.assertEqual(row[8], "")  # no spot tier
 
     def test_container_class_upstream_dropped(self):
@@ -99,7 +104,8 @@ class TestFetcherRows(unittest.TestCase):
         rows = list(fetcher.iter_rows([
             _offer(count=2, price=2.70, gpu_memory=192),
         ]))
-        self.assertIn("'SizeInMiB': 98304", rows[0][7])
+        self.assertIn("'Gpus': [{", rows[0][7])
+        self.assertIn("'SizeInMiB': 98304", rows[0][7])  # per-GPU: 192/2
         self.assertEqual(rows[0][5], 2.70)
 
     def test_accelerator_map_per_family(self):
