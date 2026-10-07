@@ -46,6 +46,7 @@ from typing import (Any, Dict, Iterable, Iterator, List, Optional, Sequence,
                     Tuple)
 
 from sky.adaptors import quantacloud as quantacloud_api
+from sky.catalog.data_fetchers import fetch_latitude
 
 CSV_COLUMNS = [
     'InstanceType',
@@ -163,15 +164,17 @@ def _offer_row(offer: Dict[str, Any]) -> Optional[List[Any]]:
     if not region:
         return None
     vram = gpu.get('vramGB')
-    # JSON with double quotes swapped for single quotes, the convention the
-    # other fetchers use for the GpuInfo column.
-    gpu_info = json.dumps({
-        'AcceleratorName': accelerator,
-        'AcceleratorCount': int(gpu_count),
-        'MemoryInfo': {
-            'SizeInMiB': int(vram * 1024) if vram else 0
-        },
-    }).replace('"', "'")
+    # The GpuInfo column carries the legacy 'Gpus'-WRAPPED shape that
+    # sky/catalog/common's DeviceMemoryGiB pass reads
+    # (row['Gpus'][0]['MemoryInfo']['SizeInMiB']) — a WELL-FORMED but
+    # unwrapped dict raises an UNCAUGHT KeyError there (the except only
+    # tolerates ast.literal_eval failures). fetch_latitude's _gpu_info_str
+    # is the ONE canonical builder (the vet tier flagged the first cut of
+    # this change as a third inline copy that could drift from common.py's
+    # contract). Observed live by the Prime lane 2026-10-07 ("catalog
+    # price quote failed: 'Gpus'", fork #39) — this is the quantacloud
+    # twin of that defect, surfaced by the read-only quote proof.
+    gpu_info = fetch_latitude._gpu_info_str(accelerator, int(gpu_count), vram)
     return [
         instance_type_token(slug, int(gpu_count)),
         accelerator,

@@ -108,6 +108,14 @@ class TestFetcherRows(unittest.TestCase):
         self.assertEqual(row[2], 1)
         self.assertEqual(row[5], 2.39)  # whole-box Price
         self.assertEqual(row[6], "us-east-1")  # Region token
+        self.assertIn("'Gpus': [{'Name': 'RTXPRO6000'", row[7])
+        self.assertIn("'SizeInMiB': 98304", row[7])  # 96 GB per GPU in MiB
+        self.assertIn("'TotalGpuMemoryInMiB': 98304", row[7])
+        # The legacy 'Gpus'-WRAPPED shape (fetch_latitude's _gpu_info_dict
+        # convention; the quantacloud twin of the Prime lane's #39):
+        # sky/catalog/common's DeviceMemoryGiB pass reads
+        # row['Gpus'][0]['MemoryInfo']['SizeInMiB'] and an unwrapped but
+        # well-formed dict raises an UNCAUGHT KeyError at quote time.
         self.assertEqual(row[8], "")  # no spot tier
 
     def test_mig_slice_never_prices_as_the_whole_gpu(self):
@@ -229,6 +237,22 @@ class TestFetcherRows(unittest.TestCase):
         self.assertEqual(row[2], 1)
         self.assertEqual(row[5], 2.39)
         self.assertEqual(row[6], "us-east-1")
+        # The wrapped GpuInfo shape must survive the real-shape path too
+        # (the DeviceMemoryGiB pass in sky/catalog/common.py requires it).
+        self.assertIn("'Gpus': [{'Name': 'RTXPRO6000'", row[7])
+        self.assertIn("'SizeInMiB': 98304", row[7])
+
+    def test_multi_gpu_offer_totals_memory_across_the_box(self):
+        # The 2-GPU Blackwell offer (live 2026-10-07, $4.79 whole-box):
+        # per-GPU SizeInMiB stays 96GB; TotalGpuMemoryInMiB carries the
+        # WHOLE-BOX total — the DeviceMemoryGiB pass reads the per-GPU
+        # entry, the Total is the legacy convention fetch_latitude set.
+        rows = list(fetch_quantacloud.iter_rows([_offer(count=2, price=4.79)]))
+        (row,) = rows
+        self.assertEqual(row[0], "rtx-pro-6000-blackwell:2")
+        self.assertIn("'SizeInMiB': 98304", row[7])  # per-GPU: 96 GB
+        self.assertIn("'TotalGpuMemoryInMiB': 196608", row[7])
+        self.assertIn("'Count': 2", row[7])
 
 
 class _StubClient:
