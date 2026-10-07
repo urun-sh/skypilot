@@ -34,7 +34,6 @@ def _offer(offer_id="of_1",
         "id": offer_id,
         "gpu": {
             "slug": slug,
-            "count": count,
             "vramGB": vram,
             "name": "NVIDIA RTX PRO 6000 Blackwell",
             "architecture": "Blackwell"
@@ -74,6 +73,29 @@ def _family(key="rtx-pro-6000", available=0):
         "availableCount": available,
         "variantSlugs": [f"{key}-blackwell"]
     }
+
+
+# Captured VERBATIM from the live public GET /offers on 2026-10-07
+# (ENG-515 read-only chain proof): the us-east-1 RTX PRO 6000 Blackwell
+# offer, exactly as the API serves it — `gpuCount` TOP-LEVEL, no
+# `gpu.count` in the gpu object (the shape the first fetcher revision
+# misread, dropping every live offer). The offer UUID is ephemeral; the
+# SHAPE is the regression this fixture pins.
+_LIVE_OFFER_US_EAST_1_JSON = (
+    '{"id": "43a2006d-fe4e-4ec4-8d6a-1ef85e153de2", '
+    '"provider": {"name": "QuantaCloud", "slug": "quantacloud", '
+    '"maintenance": false}, '
+    '"gpu": {"name": "NVIDIA RTX PRO 6000 Blackwell", '
+    '"slug": "rtx-pro-6000-blackwell", "vramGB": 96, '
+    '"architecture": "Blackwell"}, '
+    '"gpuCount": 1, "region": "us-east-1", '
+    '"regionInfo": {"countryCode": "US", "countryName": "United States", '
+    '"cityState": "Virginia", "continent": "North America"}, '
+    '"priceHourly": 2.39, "pricePerGpu": 2.39, "isAvailable": true, '
+    '"specs": {"vcpu": 16, "ram": 144, "disk": 725}, '
+    '"storageCostPerGB": 0.0, "storageMinGB": 725, "storageMaxGB": 725, '
+    '"costDataComplete": true, "deploymentType": "virtual", '
+    '"nvlinkEnabled": false, "interconnect": null}')
 
 
 class TestFetcherRows(unittest.TestCase):
@@ -145,22 +167,68 @@ class TestFetcherRows(unittest.TestCase):
         # available. This is the Latitude-style header-only write state.
         fetch_quantacloud.verify_zero_stock(
             [], [_family(available=0),
-                 _family(key="a6000", available=0)])
+                 _family(key="a6000", available=0)],
+            rows=[])
 
     def test_zero_stock_contradiction_refuses(self):
-        # A family reports stock while the offers list is empty: filter bug
+        # A family reports stock while no row will be written: filter bug
         # or API drift — never write "no capacity" from this.
         with self.assertRaises(
                 fetch_quantacloud.QuantacloudCatalogError) as ctx:
             fetch_quantacloud.verify_zero_stock(
                 [], [_family(available=0),
-                     _family(key="a6000", available=16)])
+                     _family(key="a6000", available=16)],
+                rows=[])
         self.assertIn("refusing", str(ctx.exception))
         self.assertIn("a6000", str(ctx.exception))
 
-    def test_nonempty_offers_skip_verification(self):
-        # Stock exists: nothing to cross-check.
-        fetch_quantacloud.verify_zero_stock([_offer()], [_family(available=99)])
+    def test_zero_rows_from_nonempty_offers_contradiction_refuses(self):
+        # The 2026-10-07 extension (found live on dev-usw2 at $0 spend): a
+        # NON-EMPTY offers list whose rows all filtered out locally is
+        # cross-checked exactly like the empty list — the hole that hid
+        # the gpuCount shape bug (47 in-stock offers, all dropped, stock
+        # reported, header-only catalog written as a false no-stock).
+        mig_only = [_offer(slug="rtx-pro-6000-blackwell-mig-48gb", vram=48)]
+        with self.assertRaises(
+                fetch_quantacloud.QuantacloudCatalogError) as ctx:
+            fetch_quantacloud.verify_zero_stock(mig_only,
+                                                [_family(available=2)],
+                                                rows=[])
+        # The raise must name BOTH readings so an operator can tell a
+        # filter bug from a MIG-only market (owner ruling 2026-10-07).
+        self.assertIn("refusing", str(ctx.exception))
+        self.assertIn("MIG-ONLY", str(ctx.exception))
+        self.assertIn("filter bug", str(ctx.exception))
+
+    def test_zero_rows_all_zero_families_pass(self):
+        # Zero rows with every family reporting zero stock is the honest
+        # header-only write even when the offers list is non-empty (all
+        # offers were legitimately non-rentable-shaped).
+        fetch_quantacloud.verify_zero_stock(
+            [_offer(offer_id="stale", available=False)], [_family(available=0)],
+            rows=[])
+
+    def test_stocked_rows_skip_verification(self):
+        # Rows will be written: nothing to cross-check.
+        rows = list(fetch_quantacloud.iter_rows([_offer()]))
+        fetch_quantacloud.verify_zero_stock([_offer()], [_family(available=99)],
+                                            rows=rows)
+
+    def test_offer_row_against_captured_live_offer_shape(self):
+        # REGRESSION (ENG-515, 2026-10-07): a fixture captured VERBATIM
+        # from the live public GET /offers — top-level `gpuCount`, NO
+        # `gpu.count` in the gpu object (the shape the first revision
+        # misread, dropping every live offer). The fetcher must emit the
+        # catalog row from the real API shape.
+        live_offer = json.loads(_LIVE_OFFER_US_EAST_1_JSON)
+        self.assertNotIn("count", live_offer["gpu"])
+        row = fetch_quantacloud._offer_row(live_offer)
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "rtx-pro-6000-blackwell:1")
+        self.assertEqual(row[1], "RTXPRO6000")
+        self.assertEqual(row[2], 1)
+        self.assertEqual(row[5], 2.39)
+        self.assertEqual(row[6], "us-east-1")
 
 
 class _StubClient:
@@ -191,7 +259,7 @@ class _StubClient:
         for o in self.offers:
             gpu = o.get("gpu") or {}
             if (gpu.get("slug") == gpu_slug and
-                    gpu.get("count") == gpu_count and
+                    o.get("gpuCount") == gpu_count and
                 (region is None or o.get("region") == region) and
                     "-mig-" not in str(gpu.get("slug") or "")):
                 out.append(o)

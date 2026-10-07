@@ -361,9 +361,12 @@ class TestFindOffers(unittest.TestCase):
     def _offer(self, offer_id, slug, count, region, per_gpu, available=True):
         return {
             "id": offer_id,
+            # LIVE API SHAPE (verified against GET /offers 2026-10-07,
+            # ENG-515): the count is TOP-LEVEL `gpuCount` only — `gpu`
+            # carries no `count` field (duplicating it into gpu.count is
+            # what let the find_offers misread pass its own tests).
             "gpu": {
                 "slug": slug,
-                "count": count,
                 "vramGB": 96
             },
             "gpuCount": count,
