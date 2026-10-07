@@ -42,7 +42,8 @@ import csv
 import json
 import os
 import sys
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import (Any, Dict, Iterable, Iterator, List, Optional, Sequence,
+                    Tuple)
 
 from sky.adaptors import quantacloud as quantacloud_api
 
@@ -129,7 +130,13 @@ def _offer_row(offer: Dict[str, Any]) -> Optional[List[Any]]:
     """One offer -> one CSV row, or None when the offer is not lane-rentable."""
     gpu = offer.get('gpu') or {}
     slug = str(gpu.get('slug') or '').strip()
-    gpu_count = gpu.get('count') or 0
+    # LIVE API SHAPE (verified against GET /offers 2026-10-07, ENG-515):
+    # the GPU count is the TOP-LEVEL `gpuCount` integer; the `gpu` object
+    # carries slug/vramGB/name/architecture and NO `count` field. The
+    # first revision read `gpu.count` and so dropped EVERY live offer —
+    # the catalog wrote header-only while stock existed (hidden by test
+    # fixtures that duplicated the count into `gpu.count`).
+    gpu_count = offer.get('gpuCount') or 0
     if not slug or not isinstance(gpu_count, int) or gpu_count < 1:
         # Bogus row: skip rather than emit garbage.
         return None
@@ -199,20 +206,41 @@ def iter_rows(offers: Iterable[Dict[str, Any]]) -> Iterator[List[Any]]:
     yield from best.values()
 
 
-def verify_zero_stock(offers: List[Dict[str, Any]],
-                      families: List[Dict[str, Any]]) -> None:
-    """Cross-check an empty offers list before it is written as zero-stock.
+def verify_zero_stock(offers: List[Dict[str, Any]], families: List[Dict[str,
+                                                                        Any]],
+                      rows: Sequence[List[Any]]) -> None:
+    """Cross-check a zero-ROW fetch before it is written as zero-stock.
 
-    The ruling (ENG-515): an UNFILTERED zero-row fetch cross-checked
-    against ``GET /gpu-families`` — if every family reports
-    ``availableCount == 0``, the empty is honest (write the header-only
+    The ruling (ENG-515): an UNFILTERED fetch yielding NO catalog rows is
+    cross-checked against ``GET /gpu-families`` — if every family reports
+    ``availableCount == 0`` the empty is honest (write the header-only
     catalog, the Latitude semantics); if ANY family reports stock while
-    the offers list is empty, that is a contradiction (filter bug or API
-    drift) and the fetch REFUSES rather than write "no capacity"
-    (the Spheron filter-bug semantics).
+    no row will be written, the fetch REFUSES rather than write "no
+    capacity" (the Spheron filter-bug semantics).
+
+    The zero-rows case covers BOTH shapes of emptiness (the 2026-10-07
+    extension, found live on dev-usw2 at $0 spend): an EMPTY offers list
+    AND a NON-EMPTY offers list whose rows all filtered out locally. The
+    first revision verified only the former — exactly the hole that hid
+    the `gpuCount` shape bug: 47 in-stock offers, every one dropped by
+    ``_offer_row``, families honestly reporting stock, and a header-only
+    catalog written as a false "no stock".
+
+    A raise here means ONE of exactly two things, and the message names
+    both so an operator reading it can tell which:
+
+    1. A filter bug or API drift — offers exist, families report stock,
+       yet no offer was rentable-shaped. Investigate; the lane answering
+       "no capacity" from this state would be a lie.
+    2. A MIG-ONLY in-stock market — the family's availableCount counts
+       MIG slices too, and this lane DELIBERATELY excludes them (a MIG
+       slice must never price as the whole 96GB GPU). The family stock is
+       real but not rentable by this lane; failing closed keeps the state
+       loud for the operator instead of silently indistinguishable from
+       the bug (owner ruling 2026-10-07: refuse, name the exclusion).
     """
-    if offers:
-        return  # nothing to verify: stock exists
+    if any(True for _ in rows):
+        return  # rows will be written: nothing to cross-check
     stocked = [
         str(f.get('key') or f.get('label') or '?')
         for f in families
@@ -220,10 +248,16 @@ def verify_zero_stock(offers: List[Dict[str, Any]],
     ]
     if stocked:
         raise QuantacloudCatalogError(
-            'offers list is empty but gpu-families reports in-stock '
-            f'offers for {sorted(stocked)}; refusing to write a zero-stock '
-            'catalog from a contradictory fetch (filter bug or API drift — '
-            'investigate before the lane answers "no capacity")')
+            f'no rentable catalog rows will be written from {len(offers)} '
+            f'in-stock offer(s), but gpu-families reports in-stock offers '
+            f'for {sorted(stocked)}; refusing to write a zero-stock '
+            'catalog from a contradictory fetch. Either a filter bug / '
+            'API drift (investigate before the lane answers "no '
+            'capacity") or a MIG-ONLY in-stock market — the lane '
+            'deliberately excludes MIG slices (a partition must never '
+            'price as the whole GPU), so the family stock is real but '
+            'not rentable here; do not silence this by writing the '
+            'header-only catalog.')
 
 
 def _family_available_count(family: Dict[str, Any]) -> int:
@@ -283,8 +317,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         offers = fetch_offers(api_key)
         families = fetch_families(api_key)
 
-    verify_zero_stock(offers, families)
-    count = write_csv(iter_rows(offers), args.output)
+    rows = list(iter_rows(offers))
+    verify_zero_stock(offers, families, rows)
+    count = write_csv(rows, args.output)
     print(f'wrote {count} rows to {args.output}')
     return 0
 

@@ -617,7 +617,12 @@ class QuantacloudClient:
         for offer in self.list_offers():
             gpu = offer.get('gpu') or {}
             slug = str(gpu.get('slug') or '')
-            count = gpu.get('count') or 0
+            # LIVE API SHAPE (verified against GET /offers 2026-10-07,
+            # ENG-515): the GPU count is the TOP-LEVEL `gpuCount` integer —
+            # `gpu` carries no `count` field. Reading `gpu.count` matched
+            # NOTHING at launch (count always 0), the same shape bug the
+            # catalog fetcher carried.
+            count = offer.get('gpuCount') or 0
             if slug != gpu_slug or MIG_SLUG_MARKER in slug:
                 continue
             if not isinstance(count, int) or count != gpu_count:
