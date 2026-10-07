@@ -23,7 +23,16 @@ from sky.adaptors import primeintellect as primeintellect_api
 # on key MATERIAL (this API's key list returns the public key verbatim),
 # so a rename never mints a duplicate and a re-created keypair with the
 # same name never selects a stale key.
+
 SSH_KEY_NAME = 'skypilot'
+
+# The TEAM whose wallet the lane's pods bill (the parent ruling 2026-10-07:
+# Mo funds the TEAM wallet deliberately; a pod WITHOUT a team block bills
+# the user's PERSONAL wallet, which would 402/auto-delete mid-flight).
+# Not a secret — a deployment constant threaded as a plain pod env var,
+# the same layer the key rides. Empty/unset means NO team block (the
+# pre-team behavior: personal wallet billing).
+TEAM_ID_ENV = 'PRIME_INTELLECT_TEAM_ID'
 
 # Re-exports: the instance module speaks these through ``utils.`` so the
 # adapter boundary stays one line.
@@ -46,6 +55,18 @@ ssh_user = primeintellect_api.PrimeIntellectClient.ssh_user
 ssh_port = primeintellect_api.PrimeIntellectClient.ssh_port
 pod_ip = primeintellect_api.PrimeIntellectClient.pod_ip
 parse_ssh_connection = primeintellect_api.parse_ssh_connection
+
+
+def team_id_from_env() -> Optional[str]:
+    """The team id whose wallet the lane's pods bill, or None.
+
+    Read from PRIME_INTELLECT_TEAM_ID (a plain pod env var — the team id
+    is not a secret). None means NO team block in the create body: the pod
+    then bills the user's PERSONAL wallet, which the 2026-10-07 ruling
+    forbids on this lane; the default keeps the behavior opt-in per
+    deployment, not hardcoded.
+    """
+    return os.environ.get(TEAM_ID_ENV, '').strip() or None
 
 
 def client_from_env() -> PrimeIntellectClient:

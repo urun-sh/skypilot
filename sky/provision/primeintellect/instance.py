@@ -276,7 +276,14 @@ def run_instances(
             with ux_utils.print_exception_no_traceback():
                 raise exceptions.ResourcesUnavailableError(str(exc)) from exc
         try:
-            pod = client.create_pod(name=head_name, offer=offer)
+        # The WALLET TARGET (2026-10-07 ruling): a pod WITHOUT a team
+        # block bills the user's PERSONAL wallet; the funded money sits
+        # on the TEAM wallet. PRIME_INTELLECT_TEAM_ID (a plain pod env
+        # var, set at arming like the key) selects the team whose wallet
+        # this pod bills — None keeps the no-team default (personal
+        # wallet billing, the pre-team behavior).
+            pod = client.create_pod(name=head_name, offer=offer,
+                                    team_id=utils.team_id_from_env())
         except utils.PrimeintellectResourcesUnavailableError as exc:
             with ux_utils.print_exception_no_traceback():
                 raise exceptions.ResourcesUnavailableError(
