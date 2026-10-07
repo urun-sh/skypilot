@@ -167,12 +167,25 @@ def _offer_row(offer: Dict[str, Any]) -> Optional[List[Any]]:
         # gpuMemory is the TOTAL across the box (the 2-GPU Blackwell
         # offer reports 192); per-GPU VRAM is what GpuInfo must carry.
         vram_per_gpu = float(gpu_memory) / gpu_count
+    # The GpuInfo column carries the legacy 'Gpus'-WRAPPED shape
+    # (fetch_latitude's _gpu_info_dict convention): sky/catalog/common's
+    # DeviceMemoryGiB pass reads row['Gpus'][0]['MemoryInfo']['SizeInMiB'],
+    # and a WELL-FORMED but unwrapped dict raises an UNCAUGHT KeyError
+    # there (the except only tolerates ast.literal_eval failures for
+    # GCP/Azure's malformed fields) — observed live 2026-10-07: the first
+    # armed claim's quote died with "price quote failed: 'Gpus'".
     gpu_info = json.dumps({
-        'AcceleratorName': accelerator,
-        'AcceleratorCount': int(gpu_count),
-        'MemoryInfo': {
-            'SizeInMiB': int(vram_per_gpu * 1024) if vram_per_gpu else 0
-        },
+        'Gpus': [
+            {
+                'Name': accelerator,
+                'Count': int(gpu_count),
+                'MemoryInfo': {
+                    'SizeInMiB': int(vram_per_gpu * 1024) if vram_per_gpu else 0
+                },
+            }
+        ],
+        'TotalGpuMemoryInMiB': (
+            int(vram_per_gpu * 1024) * int(gpu_count)) if vram_per_gpu else 0,
     }).replace('"', "'")
     return [
         instance_type_token(provider, gpu_type, int(gpu_count)),
