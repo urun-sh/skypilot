@@ -27,6 +27,7 @@ from sky.provision import latitude
 from sky.provision import mithril
 from sky.provision import nebius
 from sky.provision import oci
+from sky.provision import ornn
 from sky.provision import primeintellect
 from sky.provision import quantacloud
 from sky.provision import runpod
