@@ -205,6 +205,17 @@ def run_instances(
                 f"ornn spot bid response carried no order/reservation id: "
                 f"{sorted(order)}")
         created = [reservation_id]
+        # The identity store is written BEFORE the readiness wait
+        # (CodeRabbit on skypilot-controller#529): a reservation that
+        # wedges in wait_until_ready (the 2026-10-08 auto-launch wedge
+        # class — reproducible, ENG-541 Q4) must remain attributable to
+        # THIS cluster, or terminate/query/reconcile cannot find it and
+        # the box keeps billing with no owner able to cancel it.
+        # Recording a created reservation is always safe: teardown is
+        # cancel-only and 404-idempotent, and an ended reservation is
+        # skipped by _is_live everywhere the store is read.
+        utils.remember_cluster(cluster_name_on_cloud, reservation_id, gpu_slug,
+                               gpus)
         logger.info(
             "ornn: market bid %s x%d for cluster %s filled as reservation %s",
             gpu_slug,
@@ -216,11 +227,10 @@ def run_instances(
     # SSH-ready: the access record must materialize machines. Fails CLOSED
     # on cancel/complete-without-machines and on the deadline (the
     # security-update first boot takes minutes and is tolerated by the
-    # default timeout, then loud).
+    # default timeout, then loud). The reservation is ALREADY recorded:
+    # a failed wait leaves an attributable, cancellable box — never an
+    # orphan billing invisibly to reconcile.
     client.wait_until_ready(reservation_id)
-
-    utils.remember_cluster(cluster_name_on_cloud, reservation_id, gpu_slug,
-                           gpus)
 
     return common.ProvisionRecord(
         provider_name=PROVIDER_NAME,
