@@ -288,6 +288,9 @@ cloud_dependencies: Dict[str, List[str]] = {
     # QuantaCloud talks to core.quantacloud.net over urllib from
     # sky/adaptors/quantacloud.py.
     'quantacloud': [],
+    # Ornn talks to mcp.ornn.com over urllib (JSON-RPC) from
+    # sky/adaptors/ornn.py.
+    'ornn': [],
     'slurm': ['python-hostlist'],
     'yotta': [],  # No dependencies needed for Yotta
     'verda': [],  # No dependencies needed for verda

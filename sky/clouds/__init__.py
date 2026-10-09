@@ -27,6 +27,7 @@ from sky.clouds.latitude import Latitude
 from sky.clouds.mithril import Mithril
 from sky.clouds.nebius import Nebius
 from sky.clouds.oci import OCI
+from sky.clouds.ornn import Ornn
 from sky.clouds.paperspace import Paperspace
 from sky.clouds.primeintellect import PrimeIntellect
 from sky.clouds.quantacloud import Quantacloud
@@ -62,6 +63,7 @@ __all__ = [
     'Latitude',
     'Vast',
     'Quantacloud',
+    'Ornn',
     'OCI',
     'Verda',
     'Vsphere',

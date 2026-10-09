@@ -1465,6 +1465,12 @@ def _add_auth_to_cluster_config(cloud: clouds.Cloud, tmp_yaml_path: str):
             # so it takes the same generic configure_ssh_info path as
             # Spheron/Latitude.
             clouds.Quantacloud,
+            # Ornn spot VMs auto-attach every ACTIVE account SSH key at
+            # launch (sky/provision/ornn/instance.py ensures the
+            # deployment's key is registered as an account key by MATERIAL),
+            # so it takes the same generic configure_ssh_info path as
+            # Spheron/Latitude/Quantacloud.
+            clouds.Ornn,
         )):
         config = auth.configure_ssh_info(config)
     elif isinstance(cloud, clouds.GCP):

@@ -175,6 +175,7 @@ Shadeform = clouds.Shadeform
 Seeweb = clouds.Seeweb
 Yotta = clouds.Yotta
 Verda = clouds.Verda
+Ornn = clouds.Ornn
 
 __all__ = [
     '__version__',
