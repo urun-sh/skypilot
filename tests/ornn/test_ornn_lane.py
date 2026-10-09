@@ -100,9 +100,6 @@ class _StubClient:
             "status": "active"
         })
 
-    def show_access(self, reservation_id):
-        return {"machines": list(self.machines)}
-
     def cancel_spot_order(self, order_id, *, confirm=True):
         self.calls.append(("cancel_spot_order", order_id, confirm))
         if self.cancel_not_found:
@@ -111,6 +108,10 @@ class _StubClient:
 
     def wait_until_ready(self, reservation_id, **kwargs):
         self.calls.append(("wait_until_ready", reservation_id))
+        if getattr(self, "fail_wait", False):
+            raise provision_utils.OrnnError(
+                "reservation resv-1 still 'active' with no SSH machines "
+                "after 1500s; refusing to wait longer")
         return self.show_reservation(reservation_id)
 
     def activate_access(self, *args, **kwargs):
@@ -163,6 +164,72 @@ class TestProvisionerLifecycle(unittest.TestCase):
         # The reservation is attributed in the local identity store.
         self.assertEqual(provision_utils.reservation_id_for("c-on-cloud"),
                          "resv-1")
+
+    def test_reservation_recorded_before_the_readiness_wait(self):
+        """CodeRabbit on skypilot-controller#529: a reservation that WEDGES
+        in wait_until_ready (the reproducible auto-launch gap, ENG-541
+        Q4) must remain attributable to this cluster, or
+        terminate/query/reconcile cannot find it and the box keeps
+        billing with no owner able to cancel it. The store is written
+        BEFORE the wait — a failed wait leaves a cancellable record."""
+        stub = _ready_stub()
+        stub.fail_wait = True
+        with mock.patch.object(provision_utils,
+                               "client_from_env",
+                               return_value=stub):
+            with self.assertRaises(provision_utils.OrnnError):
+                provision_instance.run_instances("ornn", "c", "c-on-cloud",
+                                                 _config())
+        # The reservation IS in the store despite the failed wait, so
+        # terminate_instances and query_instances both find it.
+        self.assertEqual(provision_utils.reservation_id_for("c-on-cloud"),
+                         "resv-1")
+        with mock.patch.object(provision_utils,
+                               "client_from_env",
+                               return_value=stub):
+            seen = provision_instance.query_instances("c", "c-on-cloud")
+            # And the owner can tear the wedged box down — INSIDE the
+            # mock context: a stub-less _client() would build a REAL
+            # client from ~/.ornn and call the LIVE market (a stray
+            # live-cancel attempt with the stub's non-UUID id was
+            # rejected server-side during test development — never
+            # again).
+            provision_instance.terminate_instances("c-on-cloud")
+        self.assertEqual(set(seen), {"resv-1"})
+        self.assertEqual(
+            [c for c in stub.calls if c[0] == "cancel_spot_order"],
+            [("cancel_spot_order", "resv-1", True)])
+
+    def test_terminated_wait_failure_does_not_double_bid(self):
+        """A wedged launch leaves the store entry; a RETRY must ADOPT the
+        recorded reservation, never place a second bid (two boxes would
+        bill with one identity)."""
+        stub = _ready_stub()
+        stub.fail_wait = True
+        with mock.patch.object(provision_utils,
+                               "client_from_env",
+                               return_value=stub):
+            with self.assertRaises(provision_utils.OrnnError):
+                provision_instance.run_instances("ornn", "c", "c-on-cloud",
+                                                 _config())
+            stub.fail_wait = False
+            record = provision_instance.run_instances("ornn", "c", "c-on-cloud",
+                                                      _config())
+        bids = [c for c in stub.calls if c[0] == "place_spot_bid"]
+        self.assertEqual(len(bids), 1)
+        self.assertEqual(record.created_instance_ids, [])
+
+    def test_verify_zero_stock_refuses_offered_schedule_without_a_book(self):
+        """CodeRabbit on skypilot-controller#529: an offered schedule whose
+        slug is MISSING from the books payload is a contradiction too — the
+        book-membership filter made an empty books payload accept the
+        contradiction and write a false header-only catalog."""
+        with self.assertRaises(fetch_ornn.OrnnCatalogError) as ctx:
+            fetch_ornn.verify_zero_stock([], [], [{
+                "gpuSlug": "nvidia_rtx_pro_6000",
+                "spotGpusOffered": 8
+            }])
+        self.assertIn("nvidia_rtx_pro_6000", str(ctx.exception))
 
     def test_missing_public_key_refused(self):
         stub = _ready_stub()

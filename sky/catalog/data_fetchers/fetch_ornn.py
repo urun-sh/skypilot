@@ -232,18 +232,21 @@ def verify_zero_stock(rows: Sequence[List[Any]], books: Sequence[Dict[str,
             count = 0
         if slug and count > 0:
             offered[slug] = max(offered.get(slug, 0), count)
-    contradictions = sorted(
-        slug for slug, count in offered.items() if count > 0)
-    book_slugs = {
-        str(b.get("gpuSlug") or "").strip() for b in books if b.get("gpuSlug")
-    }
-    contradicted = [s for s in contradictions if s in book_slugs]
+    # ANY offered listing contradicts the zero-row write — including a
+    # slug whose book is MISSING from the books payload entirely
+    # (CodeRabbit on skypilot-controller#529: filtering contradictions
+    # by book membership made an empty/short books payload accept the
+    # contradiction and write a false header-only catalog; a provider
+    # data fault is exactly when the check must fire, not when it may
+    # pass).
+    contradicted = sorted(offered)
     if contradicted:
         raise OrnnCatalogError(
-            f"refusing to write a zero-row Ornn catalog: the order books "
-            f"show no asks, but ornn_schedules_list reports spot GPUs "
-            f"offered for {contradicted!r} — a filter bug or provider data "
-            "fault, never honest zero-stock (report, do not write)")
+            f"refusing to write a zero-row Ornn catalog: no catalog rows "
+            f"would be written, but ornn_schedules_list reports spot "
+            f"GPUs offered for {contradicted!r} — a filter bug or "
+            "provider data fault, never honest zero-stock (report, do "
+            "not write)")
 
 
 def fetch_books(
