@@ -29,9 +29,10 @@ function isNodeNotReadyForGpus(nodeData) {
  * Used for progressive loading - display cloud rows immediately, then overlay counts.
  */
 export async function getEnabledCloudsList() {
-  const { getWorkspaces, getEnabledCloudsBatch } = await import(
-    '@/data/connectors/workspaces'
-  );
+  const { getWorkspaces, getEnabledCloudsBatch } =
+    await import('@/data/connectors/workspaces');
+  const { getClusters } = await import('@/data/connectors/clusters');
+  const { getManagedJobs } = await import('@/data/connectors/jobs');
 
   try {
     // Get workspaces (fast - cached)
@@ -40,14 +41,26 @@ export async function getEnabledCloudsList() {
       .catch(() => ({}));
     const workspaceNames = Object.keys(workspacesData || {});
 
-    if (workspaceNames.length === 0) {
-      return { clouds: [], totalClouds: CLOUDS_LIST.length, enabledClouds: 0 };
-    }
-
-    // Fetch enabled clouds for all workspaces in a single batch call
-    const batchResult = await dashboardCache.get(getEnabledCloudsBatch, [
-      workspaceNames,
-      false,
+    // Fetch enabled clouds for all workspaces in a single batch call, plus
+    // clusters and jobs so a cloud with live resources shows up even when
+    // sky check does not report it as enabled. Shared cache keys — must match
+    // the preloader's args exactly.
+    const [batchResult, clustersResult, jobsResult] = await Promise.all([
+      workspaceNames.length === 0
+        ? Promise.resolve({})
+        : dashboardCache
+            .get(getEnabledCloudsBatch, [workspaceNames, false])
+            .catch(() => ({})),
+      dashboardCache.get(getClusters).catch((error) => {
+        console.error('Error fetching clusters:', error);
+        return [];
+      }),
+      dashboardCache
+        .get(getManagedJobs, [MANAGED_JOBS_SUMMARY_ARGS])
+        .catch((error) => {
+          console.error('Error fetching managed jobs:', error);
+          return { jobs: [] };
+        }),
     ]);
 
     const enabledCloudsSet = new Set();
@@ -61,18 +74,53 @@ export async function getEnabledCloudsList() {
       }
     });
 
-    // Build cloud objects with just name and enabled status (no counts)
-    const enabledCloudsList = Array.from(enabledCloudsSet);
-    const clouds = CLOUDS_LIST.filter((cloud) =>
-      enabledCloudsList.includes(cloud.toLowerCase())
-    )
-      .map((name) => ({ name, enabled: true }))
+    // Count clusters and jobs per cloud, keyed by lowercase name so the
+    // counts join is case-insensitive (API values like 'GCP' or 'Vast' must
+    // land on the row named the same way).
+    const clusterCounts = {};
+    (clustersResult || []).forEach((cluster) => {
+      if (cluster && cluster.cloud) {
+        const key = cluster.cloud.toLowerCase();
+        clusterCounts[key] = (clusterCounts[key] || 0) + 1;
+      }
+    });
+    const jobCounts = {};
+    ((jobsResult && jobsResult.jobs) || []).forEach((job) => {
+      if (job && job.cloud) {
+        const key = job.cloud.toLowerCase();
+        jobCounts[key] = (jobCounts[key] || 0) + 1;
+      }
+    });
+
+    // A cloud row shows when sky check reports it enabled OR it has live
+    // clusters/jobs, so a provider running work is never invisible.
+    const observedKeys = new Set([
+      ...Object.keys(clusterCounts),
+      ...Object.keys(jobCounts),
+    ]);
+    const names = new Set(CLOUDS_LIST);
+    observedKeys.forEach((key) => {
+      const known = CLOUDS_LIST.find((c) => c.toLowerCase() === key);
+      names.add(known || key);
+    });
+
+    const clouds = Array.from(names)
+      .map((name) => {
+        const key = name.toLowerCase();
+        return {
+          name,
+          enabled: enabledCloudsSet.has(key),
+          clusters: clusterCounts[key] || 0,
+          jobs: jobCounts[key] || 0,
+        };
+      })
+      .filter((cloud) => cloud.enabled || cloud.clusters > 0 || cloud.jobs > 0)
       .sort((a, b) => a.name.localeCompare(b.name));
 
     return {
       clouds,
       totalClouds: CLOUDS_LIST.length,
-      enabledClouds: clouds.length,
+      enabledClouds: clouds.filter((cloud) => cloud.enabled).length,
     };
   } catch (error) {
     console.error('Error fetching enabled clouds list:', error);
@@ -83,9 +131,8 @@ export async function getEnabledCloudsList() {
 export async function getCloudInfrastructure(forceRefresh = false) {
   const { getClusters } = await import('@/data/connectors/clusters');
   const { getManagedJobs } = await import('@/data/connectors/jobs');
-  const { getWorkspaces, getEnabledCloudsBatch } = await import(
-    '@/data/connectors/workspaces'
-  );
+  const { getWorkspaces, getEnabledCloudsBatch } =
+    await import('@/data/connectors/workspaces');
 
   try {
     // Fetch jobs, clusters, and workspaces in parallel for better performance
@@ -141,43 +188,36 @@ export async function getCloudInfrastructure(forceRefresh = false) {
       );
     }
 
-    // Create a map to store cloud data
+    // Create a map to store cloud data, keyed by lowercase cloud name so
+    // counts join case-insensitively (API `cloud` values are the provider's
+    // _REPR, e.g. 'GCP', 'Vast', 'Quantacloud').
     const cloudsData = {};
-
-    // Initialize with all clouds from CLOUDS_LIST
-    CLOUDS_LIST.forEach((cloud) => {
-      // Check if the cloud is in the enabled clouds list
-      const isEnabled = enabledCloudsList.includes(cloud.toLowerCase());
-
-      cloudsData[cloud] = {
-        name: cloud,
-        clusters: 0,
-        jobs: 0,
-        enabled: isEnabled,
-      };
-    });
+    const cloudRow = (name, key) => {
+      if (!cloudsData[key]) {
+        cloudsData[key] = {
+          name,
+          clusters: 0,
+          jobs: 0,
+          // Enabled only when sky check reports it; a cloud with live
+          // clusters/jobs still renders when not enabled.
+          enabled: enabledCloudsList.includes(key),
+        };
+      }
+      return cloudsData[key];
+    };
+    CLOUDS_LIST.forEach((cloud) => cloudRow(cloud, cloud.toLowerCase()));
 
     // Count clusters per cloud
     clusters.forEach((cluster) => {
       if (cluster.cloud) {
-        const cloudName = cluster.cloud;
-        if (cloudsData[cloudName]) {
-          cloudsData[cloudName].clusters += 1;
-          // If we have clusters in a cloud, it must be enabled
-          cloudsData[cloudName].enabled = true;
-        }
+        cloudRow(cluster.cloud, cluster.cloud.toLowerCase()).clusters += 1;
       }
     });
 
     // Count jobs per cloud
     jobs.forEach((job) => {
       if (job.cloud) {
-        const cloudName = job.cloud;
-        if (cloudsData[cloudName]) {
-          cloudsData[cloudName].jobs += 1;
-          // If we have jobs in a cloud, it must be enabled
-          cloudsData[cloudName].enabled = true;
-        }
+        cloudRow(job.cloud, job.cloud.toLowerCase()).jobs += 1;
       }
     });
 
@@ -187,9 +227,10 @@ export async function getCloudInfrastructure(forceRefresh = false) {
       (c) => c.enabled
     ).length;
 
-    // Convert to array, filter to only enabled clouds, and sort by name
+    // Convert to array and sort by name. Rows are NOT gated on enabled: a
+    // cloud with live clusters or jobs must always appear.
     const result = Object.values(cloudsData)
-      .filter((cloud) => cloud.enabled)
+      .filter((cloud) => cloud.enabled || cloud.clusters > 0 || cloud.jobs > 0)
       .sort((a, b) => a.name.localeCompare(b.name));
 
     return {
@@ -263,9 +304,8 @@ export async function getWorkspaceInfrastructure() {
     }
 
     // Step 2: Fetch expanded clouds for all workspaces in a single batch call
-    const { getEnabledCloudsBatch } = await import(
-      '@/data/connectors/workspaces'
-    );
+    const { getEnabledCloudsBatch } =
+      await import('@/data/connectors/workspaces');
     const workspaceNames = Object.keys(workspacesData);
     const batchResult = await dashboardCache
       .get(getEnabledCloudsBatch, [workspaceNames, true])
@@ -388,9 +428,8 @@ export async function getWorkspaceContexts() {
     }
 
     // Step 2: Fetch expanded clouds for all workspaces in a single batch call
-    const { getEnabledCloudsBatch } = await import(
-      '@/data/connectors/workspaces'
-    );
+    const { getEnabledCloudsBatch } =
+      await import('@/data/connectors/workspaces');
     const workspaceNames = Object.keys(workspacesData);
     const batchResult = await dashboardCache
       .get(getEnabledCloudsBatch, [workspaceNames, true])

@@ -26,7 +26,11 @@ import {
   formatMemory,
   calculateAggregatedResource,
 } from '@/utils/resourceUtils';
-import { buildContextStatsKey } from '@/utils/infraUtils';
+import {
+  buildContextStatsKey,
+  countByCloud,
+  visibleCloudRows,
+} from '@/utils/infraUtils';
 import { canonicalizeGpuName } from '@/utils/gpuUtils';
 import { getPersistedPageSize, persistPageSize } from '@/lib/utils';
 import { PaginationControls } from '@/components/elements/PaginationControls';
@@ -2870,14 +2874,10 @@ export function GPUs() {
       const jobs = jobsData?.jobs || [];
       setSshAndKubeJobsData(await getContextJobs(jobs));
 
-      // Also compute cloud job counts for the Cloud panel (progressive loading)
-      const cloudCounts = {};
-      jobs.forEach((job) => {
-        if (job.cloud) {
-          cloudCounts[job.cloud] = (cloudCounts[job.cloud] || 0) + 1;
-        }
-      });
-      setCloudJobCounts(cloudCounts);
+      // Also compute cloud job counts for the Cloud panel (progressive
+      // loading). Keys are lowercase so the join with CLOUDS_LIST row names
+      // is case-insensitive.
+      setCloudJobCounts(countByCloud(jobs));
 
       setSshAndKubeJobsDataLoading(false);
     } catch (error) {
@@ -2897,15 +2897,10 @@ export function GPUs() {
       // Compute cluster stats per context (fast - local computation)
       const clusterStats = await getContextClusters(clusters);
       setContextStats(clusterStats);
-
-      // Also compute cloud cluster counts for the Cloud panel (progressive loading)
-      const cloudCounts = {};
-      clusters.forEach((cluster) => {
-        if (cluster.cloud) {
-          cloudCounts[cluster.cloud] = (cloudCounts[cluster.cloud] || 0) + 1;
-        }
-      });
-      setCloudClusterCounts(cloudCounts);
+      // Also compute cloud cluster counts for the Cloud panel (progressive
+      // loading). Keys are lowercase so the join with CLOUDS_LIST row names
+      // is case-insensitive.
+      setCloudClusterCounts(countByCloud(clusters));
 
       setClusterDataLoading(false);
     } catch (error) {
@@ -3265,13 +3260,14 @@ export function GPUs() {
   // in any plugin-contributed cloud rows (e.g. misconfigured clouds that have
   // credentials registered but didn't show up in workspace-enabled clouds).
   const filteredCloudInfraData = React.useMemo(() => {
-    const base = (() => {
-      if (!cloudInfraData || cloudInfraData.length === 0) return [];
-      if (workspaceEnabledClouds === null) return cloudInfraData;
-      return cloudInfraData.filter((cloud) =>
-        workspaceEnabledClouds.includes(cloud.name.toLowerCase())
-      );
-    })();
+    // Rows the workspace filter keeps: a cloud with live clusters or jobs
+    // stays visible even when sky check does not list it as enabled.
+    const base = visibleCloudRows(
+      cloudInfraData,
+      workspaceEnabledClouds,
+      cloudClusterCounts,
+      cloudJobCounts
+    );
     // Merge plugin-contributed cloud rows by id (case-insensitive).
     const seen = new Set(base.map((c) => (c.id || c.name || '').toLowerCase()));
     const extras = extraInfraRows
@@ -3288,11 +3284,20 @@ export function GPUs() {
         storageOnly: r.storageOnly === true,
       }));
     return [...base, ...extras];
-  }, [cloudInfraData, workspaceEnabledClouds, extraInfraRows]);
+  }, [
+    cloudInfraData,
+    workspaceEnabledClouds,
+    extraInfraRows,
+    cloudClusterCounts,
+    cloudJobCounts,
+  ]);
 
-  // Calculate enabled clouds count for the selected workspace
+  // Count only rows the sky check actually reports as enabled, so the
+  // "N of M enabled" header stays truthful when rows also include clouds
+  // with live clusters or jobs.
   const filteredEnabledCloudsCount = React.useMemo(() => {
-    return filteredCloudInfraData.length;
+    return filteredCloudInfraData.filter((cloud) => cloud.enabled !== false)
+      .length;
   }, [filteredCloudInfraData]);
 
   // Separate SSH contexts from Kubernetes contexts using allKubeContextNames
@@ -3604,10 +3609,12 @@ export function GPUs() {
                 <tbody className="bg-card divide-y divide-gray-200">
                   {filteredCloudInfraData.map((cloud) => {
                     // Use separate loading states for progressive loading
-                    // Clusters and jobs load independently (clusters often ready first)
+                    // Clusters and jobs load independently (clusters often
+                    // ready first). Count keys are lowercase cloud names.
+                    const cloudKey = cloud.name.toLowerCase();
                     const clusterCount =
-                      cloudClusterCounts[cloud.name] ?? cloud.clusters;
-                    const jobCount = cloudJobCounts[cloud.name] ?? cloud.jobs;
+                      cloudClusterCounts[cloudKey] ?? cloud.clusters;
+                    const jobCount = cloudJobCounts[cloudKey] ?? cloud.jobs;
                     const cloudId = (
                       cloud.id ||
                       cloud.name ||
