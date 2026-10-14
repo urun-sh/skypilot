@@ -49,9 +49,9 @@ _CSV_COLUMNS = [
     "SpotPrice",
 ]
 
-_df = None
-# Stat stamp (_CATALOG_PATH) the cached _df was read at.
-_df_stamp = None
+# (stat stamp of the catalog CSV, materialized frame), published in ONE
+# assignment; None until the first load.
+_cache = None
 
 
 def _load_df() -> 'pd.DataFrame':
@@ -75,8 +75,7 @@ def _load_df() -> 'pd.DataFrame':
     if "AcceleratorName" in df.columns:
         df = df[df["AcceleratorName"].notna()]
         df = df.assign(
-            AcceleratorName=df["AcceleratorName"].astype(str).str.strip()
-        )
+            AcceleratorName=df["AcceleratorName"].astype(str).str.strip())
     return df.reset_index(drop=True)
 
 
@@ -94,12 +93,17 @@ def _get_df() -> "pd.DataFrame":
     2026-10-14). The stat comparison makes candidate enumeration and launch
     validation agree.
     """
-    global _df, _df_stamp
+    global _cache
     stamp = common.catalog_stat(_CATALOG_PATH)
-    if _df is None or stamp != _df_stamp:
-        _df = _load_df()
-        _df_stamp = stamp
-    return _df
+    cache = _cache
+    if cache is None or cache[0] != stamp:
+        # ONE assignment: a concurrent same-interpreter caller must never
+        # see the new stamp beside the old frame (or the reverse) -- a
+        # mixed pair would freeze the old frame for exactly as long as the
+        # stamp stays current (CodeRabbit, urun-sh/skypilot#48).
+        _cache = (stamp, _load_df())
+        cache = _cache
+    return cache[1]
 
 
 def _is_not_found_error(err: ValueError) -> bool:
@@ -121,8 +125,8 @@ def instance_type_exists(instance_type: str) -> bool:
 
 
 def validate_region_zone(
-    region: Optional[str], zone: Optional[str]
-) -> Tuple[Optional[str], Optional[str]]:
+        region: Optional[str],
+        zone: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     return common.validate_region_zone_impl("spheron", _get_df(), region, zone)
 
 
@@ -132,14 +136,15 @@ def get_hourly_cost(
     region: Optional[str] = None,
     zone: Optional[str] = None,
 ) -> float:
-    return common.get_hourly_cost_impl(_get_df(), instance_type, use_spot, region, zone)
+    return common.get_hourly_cost_impl(_get_df(), instance_type, use_spot,
+                                       region, zone)
 
 
 def get_vcpus_mem_from_instance_type(
-    instance_type: str,
-) -> Tuple[Optional[float], Optional[float]]:
+    instance_type: str,) -> Tuple[Optional[float], Optional[float]]:
     return _call_or_default(
-        lambda: common.get_vcpus_mem_from_instance_type_impl(_get_df(), instance_type),
+        lambda: common.get_vcpus_mem_from_instance_type_impl(
+            _get_df(), instance_type),
         (None, None),
     )
 
@@ -158,19 +163,16 @@ def get_default_instance_type(
     del disk_tier, local_disk
     return _call_or_default(
         lambda: common.get_instance_type_for_cpus_mem_impl(
-            _get_df(), cpus, memory, region, zone, use_spot, max_hourly_cost
-        ),
+            _get_df(), cpus, memory, region, zone, use_spot, max_hourly_cost),
         None,
     )
 
 
 def get_accelerators_from_instance_type(
-    instance_type: str,
-) -> Optional[Dict[str, Union[int, float]]]:
+    instance_type: str,) -> Optional[Dict[str, Union[int, float]]]:
     return _call_or_default(
         lambda: common.get_accelerators_from_instance_type_impl(
-            _get_df(), instance_type
-        ),
+            _get_df(), instance_type),
         None,
     )
 
@@ -203,12 +205,12 @@ def get_instance_type_for_accelerator(
     )
 
 
-def get_region_zones_for_instance_type(
-    instance_type: str, use_spot: bool
-) -> List["cloud.Region"]:
+def get_region_zones_for_instance_type(instance_type: str,
+                                       use_spot: bool) -> List["cloud.Region"]:
     df = _get_df()
     df_filtered = df[df["InstanceType"] == instance_type]
-    return _call_or_default(lambda: common.get_region_zones(df_filtered, use_spot), [])
+    return _call_or_default(
+        lambda: common.get_region_zones(df_filtered, use_spot), [])
 
 
 def list_accelerators(

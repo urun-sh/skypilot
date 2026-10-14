@@ -51,9 +51,9 @@ _CSV_COLUMNS = [
 # API takes no region).
 REGION = fetch_ornn.REGION
 
-_df = None
-# Stat stamp (_CATALOG_PATH) the cached _df was read at.
-_df_stamp = None
+# (stat stamp of the catalog CSV, materialized frame), published in ONE
+# assignment; None until the first load.
+_cache = None
 
 
 def _load_df() -> 'pd.DataFrame':
@@ -91,12 +91,17 @@ def _get_df() -> "pd.DataFrame":
     with "Invalid region", prod-usw2 2026-10-14). The stat comparison makes
     candidate enumeration and launch validation agree.
     """
-    global _df, _df_stamp
+    global _cache
     stamp = common.catalog_stat(_CATALOG_PATH)
-    if _df is None or stamp != _df_stamp:
-        _df = _load_df()
-        _df_stamp = stamp
-    return _df
+    cache = _cache
+    if cache is None or cache[0] != stamp:
+        # ONE assignment: a concurrent same-interpreter caller must never
+        # see the new stamp beside the old frame (or the reverse) -- a
+        # mixed pair would freeze the old frame for exactly as long as the
+        # stamp stays current (CodeRabbit, urun-sh/skypilot#48).
+        _cache = (stamp, _load_df())
+        cache = _cache
+    return cache[1]
 
 
 def _is_not_found_error(err: ValueError) -> bool:

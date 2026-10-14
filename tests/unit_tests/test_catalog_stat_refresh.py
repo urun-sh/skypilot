@@ -63,13 +63,12 @@ class TestCatalogDfTracksRuntimeRefresh(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         # These are module globals shared with every other test in the run.
-        self._saved = (shadeform_catalog._df, shadeform_catalog._df_stamp)
-        shadeform_catalog._df = None
-        shadeform_catalog._df_stamp = None
+        self._saved = shadeform_catalog._cache
+        shadeform_catalog._cache = None
         self.addCleanup(self._restore)
 
     def _restore(self):
-        shadeform_catalog._df, shadeform_catalog._df_stamp = self._saved
+        shadeform_catalog._cache = self._saved
 
     def _replace_csv(self, content: str) -> None:
         """Install a CSV the way shadeform_catalog_refresh does."""
@@ -113,6 +112,71 @@ class TestCatalogDfTracksRuntimeRefresh(unittest.TestCase):
         self._replace_csv(_STALE_CSV)
         with self.assertRaises(ValueError):
             shadeform_catalog.validate_region_zone('kansascity-usa-6', None)
+
+    def test_interleaved_loads_never_pair_old_frame_with_current_stamp(self):
+        """Two racing _get_df publishes must swap the cache ATOMICALLY.
+
+        Publishing the frame and its stamp in two separate assignments lets
+        same-interpreter threads interleave: writer A (stale CSV) can land
+        its frame AFTER writer B (fresh CSV) published frame+stamp, and A's
+        stamp publication then pairs A's OLD frame with B's CURRENT stamp —
+        a state _get_df cannot detect (the stamp matches the file), so the
+        frozen old frame survives every later call (CodeRabbit,
+        urun-sh/skypilot#48). The cache is a single (stamp, frame) tuple
+        published in one statement; this drives the worst interleave and
+        asserts the published pair is always coherent and the next read
+        serves the frame the current file backs.
+        """
+        import threading
+
+        # Pre-read the stale state while the CSV is still stale: writer A's
+        # load is blocked mid-race, so it must return the frame it ACTUALLY
+        # read, not whatever the file holds by the time it finishes.
+        stale_stamp = catalog_common.catalog_stat('shadeform/vms.csv')
+        stale_frame = shadeform_catalog._load_df()
+        real_load = shadeform_catalog._load_df
+        load_counts = []
+        load_1_started = threading.Event()
+        load_1_may_finish = threading.Event()
+
+        def instrumented_load():
+            load_counts.append(1)
+            if len(load_counts) == 1:
+                # Writer A: computed the STALE stamp, blocked inside the
+                # load while writer B goes end to end on the fresh CSV.
+                load_1_started.set()
+                self.assertTrue(load_1_may_finish.wait(timeout=30))
+                return stale_frame
+            return real_load()
+
+        with mock.patch.object(shadeform_catalog,
+                               '_load_df',
+                               side_effect=instrumented_load):
+            writer = threading.Thread(target=shadeform_catalog._get_df)
+            writer.start()
+            self.assertTrue(load_1_started.wait(timeout=30))
+            # The refresh lands; writer B runs the REAL loader on it.
+            self._replace_csv(_FRESH_CSV)
+            fresh_stamp = catalog_common.catalog_stat('shadeform/vms.csv')
+            fresh = shadeform_catalog._get_df()
+            self.assertNotEqual(fresh_stamp, stale_stamp)
+            # Sample mid-race, while writer A is still inside its load: the
+            # cache must be B's COHERENT fresh pair, never a mixed one.
+            cache = shadeform_catalog._cache
+            self.assertEqual(cache[0], fresh_stamp)
+            self.assertIs(cache[1], fresh)
+            load_1_may_finish.set()
+            writer.join(timeout=30)
+            # Writer A published its stale pair LAST (the worst order). The
+            # pair itself is coherent, so the very next read re-reads once
+            # and the NEWEST frame wins.
+            cache = shadeform_catalog._cache
+            self.assertEqual(cache[0], stale_stamp)
+            self.assertIs(cache[1], stale_frame)
+            self.assertTrue(shadeform_catalog._get_df().equals(fresh))
+            # Healed with exactly ONE extra load: a stale pair can never
+            # survive against a stamp it does not match.
+            self.assertEqual(len(load_counts), 3)
 
 
 if __name__ == '__main__':
