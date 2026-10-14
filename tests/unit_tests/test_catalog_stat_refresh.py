@@ -36,16 +36,14 @@ _HEADER = ('InstanceType,AcceleratorName,AcceleratorCount,vCPUs,MemoryGiB,'
 _STALE_CSV = _HEADER + (
     '\n'
     'massedcompute_L40S,L40S,1.0,12.0,72,0.88,kansascity-usa-1,,\n'
-    'massedcompute_RTX6000Ada,RTX6000Ada,1.0,12.0,48,0.97,kansascity-usa-1,,\n'
-)
+    'massedcompute_RTX6000Ada,RTX6000Ada,1.0,12.0,48,0.97,kansascity-usa-1,,\n')
 # The live Shadeform offer (read from the refreshed prod catalog 2026-10-14):
 # massedcompute_RTXPro6000,RTXPro6000,1.0,16.0,192,2.19,kansascity-usa-6.
 _FRESH_CSV = _HEADER + (
     '\n'
     'massedcompute_L40S,L40S,1.0,12.0,72,0.88,kansascity-usa-1,,\n'
     'massedcompute_RTXPro6000,RTXPro6000,1.0,16.0,192,2.19,'
-    'kansascity-usa-6,,\n'
-)
+    'kansascity-usa-6,,\n')
 
 
 class TestCatalogDfTracksRuntimeRefresh(unittest.TestCase):
@@ -59,8 +57,9 @@ class TestCatalogDfTracksRuntimeRefresh(unittest.TestCase):
             f.write(_STALE_CSV)
         # Both the stat check and read_catalog resolve the file through
         # get_catalog_path; redirecting it here redirects everything.
-        patcher = mock.patch.object(
-            catalog_common, 'get_catalog_path', return_value=self._csv)
+        patcher = mock.patch.object(catalog_common,
+                                    'get_catalog_path',
+                                    return_value=self._csv)
         patcher.start()
         self.addCleanup(patcher.stop)
         # These are module globals shared with every other test in the run.
@@ -99,10 +98,9 @@ class TestCatalogDfTracksRuntimeRefresh(unittest.TestCase):
         self.assertEqual([r.name for r in regions], ['kansascity-usa-6'])
         # ...and price the way the offer does ($2.19/GPU-hr on-demand).
         self.assertEqual(
-            shadeform_catalog.get_hourly_cost(
-                'massedcompute_RTXPro6000',
-                use_spot=False,
-                region='kansascity-usa-6'),
+            shadeform_catalog.get_hourly_cost('massedcompute_RTXPro6000',
+                                              use_spot=False,
+                                              region='kansascity-usa-6'),
             2.19,
         )
 

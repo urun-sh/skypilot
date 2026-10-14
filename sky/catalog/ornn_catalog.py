@@ -76,8 +76,8 @@ def _load_df() -> "pd.DataFrame":
     df = df[df["InstanceType"].notna()]
     if "AcceleratorName" in df.columns:
         df = df[df["AcceleratorName"].notna()]
-        df = df.assign(AcceleratorName=df["AcceleratorName"].astype(
-            str).str.strip())
+        df = df.assign(
+            AcceleratorName=df["AcceleratorName"].astype(str).str.strip())
     return df.reset_index(drop=True)
 
 
