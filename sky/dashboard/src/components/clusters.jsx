@@ -1124,25 +1124,32 @@ export function ClusterTable({
           Infra{getSortDirection('infra')}
         </TableHead>
       ),
-      renderCell: (item) => (
-        <TableCell>
-          <NonCapitalizedTooltip
-            content={item.full_infra || item.infra}
-            className="text-sm text-muted-foreground"
-          >
-            <span>
-              <Link href="/infra" className="text-blue-600 hover:underline">
-                {item.cloud}
-              </Link>
-              {item.infra.includes('(') && (
-                <span>
-                  {' ' + item.infra.substring(item.infra.indexOf('('))}
-                </span>
-              )}
-            </span>
-          </NonCapitalizedTooltip>
-        </TableCell>
-      ),
+      renderCell: (item) => {
+        // Stale or partial records can arrive without a cloud field. Fall
+        // back to the provider parsed out of full_infra/infra (the text
+        // before the region suffix) so the cell never renders a blank link.
+        const provider =
+          item.cloud || (item.full_infra || item.infra || '').split(' (')[0];
+        return (
+          <TableCell>
+            <NonCapitalizedTooltip
+              content={item.full_infra || item.infra}
+              className="text-sm text-muted-foreground"
+            >
+              <span>
+                <Link href="/infra" className="text-blue-600 hover:underline">
+                  {provider}
+                </Link>
+                {item.infra?.includes('(') && (
+                  <span>
+                    {' ' + item.infra.substring(item.infra.indexOf('('))}
+                  </span>
+                )}
+              </span>
+            </NonCapitalizedTooltip>
+          </TableCell>
+        );
+      },
     },
     {
       id: 'resources',

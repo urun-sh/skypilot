@@ -58,6 +58,92 @@ describe('getClusters all_users scoping', () => {
   });
 });
 
+// Raw /status payload rows. Only the fields the mapping reads are needed;
+// everything else falls back inside getClusters.
+const rawCluster = (overrides = {}) => ({
+  name: 'fixture-cluster',
+  user_name: 'alice',
+  user_hash: 'hash-alice',
+  cluster_hash: 'hash-fixture',
+  status: 'UP',
+  launched_at: 1700000000,
+  nodes: 1,
+  cpus: 4,
+  memory: 16,
+  accelerators: null,
+  resources_str: '1x[CPU:4]',
+  ...overrides,
+});
+
+describe('getClusters infra mapping (exact provider repr)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('passes the exact cloud repr through with the region suffix', async () => {
+    apiClient.fetch.mockResolvedValue([
+      rawCluster({ cloud: 'GCP', region: 'us-west3' }),
+    ]);
+    const [cluster] = await getClusters();
+    expect(cluster.cloud).toBe('GCP');
+    expect(cluster.infra).toBe('GCP (us-west3)');
+    expect(cluster.full_infra).toBe('GCP (us-west3)');
+  });
+
+  it('prefers the zone over the region when both are present', async () => {
+    apiClient.fetch.mockResolvedValue([
+      rawCluster({ cloud: 'GCP', region: 'us-west1', zone: 'us-west1-a' }),
+    ]);
+    const [cluster] = await getClusters();
+    expect(cluster.infra).toBe('GCP (us-west1-a)');
+    expect(cluster.full_infra).toBe('GCP (us-west1-a)');
+  });
+
+  it.each([
+    ['Vast', 'us-east'],
+    ['Quantacloud', 'cn-north-1'],
+    ['Ornn', 'ornn-east'],
+    ['Spheron', 'spheron-fra'],
+    ['Latitude', 'latitude-1'],
+    ['PrimeIntellect', 'us-east'],
+    ['Lambda', 'gcp'],
+  ])('renders the exact %s repr with its region', async (cloud, region) => {
+    apiClient.fetch.mockResolvedValue([rawCluster({ cloud, region })]);
+    const [cluster] = await getClusters();
+    expect(cluster.cloud).toBe(cloud);
+    expect(cluster.infra).toBe(cloud + ' (' + region + ')');
+    expect(cluster.full_infra).toBe(cloud + ' (' + region + ')');
+  });
+
+  it('strips the ssh- prefix for SSH node pools', async () => {
+    apiClient.fetch.mockResolvedValue([
+      rawCluster({ cloud: 'SSH', region: 'ssh-pool-42' }),
+    ]);
+    const [cluster] = await getClusters();
+    expect(cluster.infra).toBe('SSH (pool-42)');
+    expect(cluster.full_infra).toBe('SSH (pool-42)');
+    expect(cluster.region).toBe('ssh-pool-42');
+  });
+
+  it('renders the cloud alone when region and zone are missing', async () => {
+    apiClient.fetch.mockResolvedValue([rawCluster({ cloud: 'Fluidstack' })]);
+    const [cluster] = await getClusters();
+    expect(cluster.infra).toBe('Fluidstack');
+    expect(cluster.full_infra).toBe('Fluidstack');
+  });
+
+  it('truncates a long region in infra but keeps full_infra untruncated', async () => {
+    const longRegion = 'a'.repeat(40);
+    apiClient.fetch.mockResolvedValue([
+      rawCluster({ cloud: 'GCP', region: longRegion }),
+    ]);
+    const [cluster] = await getClusters();
+    const truncated = 'a'.repeat(11) + '...' + 'a'.repeat(11);
+    expect(cluster.infra).toBe('GCP (' + truncated + ')');
+    expect(cluster.full_infra).toBe('GCP (' + longRegion + ')');
+  });
+});
+
 describe('getOtherUsersClustersCount', () => {
   const currentUser = { id: 'u-1', name: 'alice' };
 
