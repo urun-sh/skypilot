@@ -25,20 +25,17 @@ export function SSHInstructionsModal({ isOpen, onClose, cluster }) {
 
   // urun: this dashboard fronts a CONTROLLER-managed fleet — the user's
   // machine has no ~/.sky state for these clusters, so upstream's
-  // `ssh <cluster>` hint cannot work. The fleet's credentials live on the
-  // controller pod (per-cluster key + HostName under the runner's HOME);
-  // this one paste-able kubectl exec runs ssh INSIDE the manager container
-  // and resolves the IP from sky's own generated per-cluster config.
-  const home = '/var/lib/urun-skypilot-runner/home';
-  const key = `${home}/.sky/generated/ssh-keys/${cluster}.key`;
-  const cfg = `${home}/.sky/generated/ssh/${cluster}`;
-  // urun: pin the kubectl context to THIS dashboard's region. The user's
-  // default context is often a dev/other cluster, where the prod fleet's
-  // per-cluster keys do not exist — the bare `kubectl -n urun exec` then
-  // fails with "No such file or directory" (live report 2026-10-14:
-  // default context dev-usw2, dashboard on usw2). The dashboard hostname
-  // carries our region id (skydashboard.<region>.prod.priv.urun.sh), which
-  // is exactly the `<region>` in the `prod-<region>` context name.
+  // `ssh <cluster>` hint cannot work. The image ships /usr/local/bin/
+  // urun-ssh, which resolves the per-cluster key + User/HostName from
+  // sky's own generated config under the runner HOME, so the command stays
+  // SHORT (a long inline ssh invocation broke on terminal line-wrap — live
+  // report 2026-10-14) and gets a real interactive TTY via -it.
+  // Pin the kubectl context to THIS dashboard's region: the user's default
+  // context is often a dev/other cluster where the prod fleet's keys do not
+  // exist (live report 2026-10-14: default dev-usw2, dashboard on usw2).
+  // The dashboard hostname carries our region id
+  // (skydashboard.<region>.prod.priv.urun.sh) — exactly the `<region>` in
+  // the `prod-<region>` context name.
   const regionMatch =
     typeof window !== 'undefined'
       ? window.location.hostname.match(
@@ -47,10 +44,8 @@ export function SSHInstructionsModal({ isOpen, onClose, cluster }) {
       : null;
   const kubeContext = regionMatch ? ` --context prod-${regionMatch[1]}` : '';
   const sshCommand =
-    `kubectl${kubeContext} -n urun exec deploy/skypilot-controller -c manager -- sh -c ` +
-    `'ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no ` +
-    `-o UserKnownHostsFile=/dev/null gcpuser@$(grep -oE "HostName [0-9.]+" ` +
-    `${cfg} | cut -d" " -f2)'`;
+    `kubectl${kubeContext} -n urun exec -it deploy/skypilot-controller ` +
+    `-c manager -- urun-ssh ${cluster}`;
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -89,10 +84,10 @@ export function SSHInstructionsModal({ isOpen, onClose, cluster }) {
           <div>
             <h3 className="text-sm font-medium mb-2">Additional Information</h3>
             <p className="text-sm text-secondary-foreground">
-              Requires kubectl access to the prod cluster. The command runs ssh
-              inside the skypilot-controller manager container, which holds the
-              per-cluster key, and resolves the cluster's IP from sky's
-              generated ssh config.
+              Requires kubectl access to the prod cluster. The command opens an
+              interactive shell through the skypilot-controller manager
+              container, which holds the per-cluster key and resolves the
+              cluster's address for you.
             </p>
           </div>
         </div>
