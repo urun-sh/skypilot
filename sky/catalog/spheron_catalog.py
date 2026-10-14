@@ -54,7 +54,7 @@ _df = None
 _df_stamp = None
 
 
-def _load_df() -> "pd.DataFrame":
+def _load_df() -> 'pd.DataFrame':
     """Read and clean the catalog CSV. Caller applies the stat stamp."""
     try:
         df = common.read_catalog(_CATALOG_PATH)
