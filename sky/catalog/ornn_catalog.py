@@ -52,33 +52,50 @@ _CSV_COLUMNS = [
 REGION = fetch_ornn.REGION
 
 _df = None
+# Stat stamp (_CATALOG_PATH) the cached _df was read at.
+_df_stamp = None
+
+
+def _load_df() -> "pd.DataFrame":
+    """Read and clean the catalog CSV. Caller applies the stat stamp."""
+    try:
+        df = common.read_catalog(_CATALOG_PATH)
+    except FileNotFoundError as exc:
+        # FAIL LOUD. An empty frame here is indistinguishable from
+        # "Ornn has no capacity right now", so an unconfigured
+        # controller would silently look like a stocked-out provider
+        # and every Ornn claim would be refused for the wrong reason.
+        # (The Greptile-#338 class; the refresh module in
+        # skypilot-controller exists to keep this from ever mattering.)
+        raise RuntimeError(
+            f"Ornn catalog {_CATALOG_PATH!r} is missing. It is written "
+            "by sky.catalog.data_fetchers.fetch_ornn (needs "
+            "ORNN_MCP_CREDENTIALS). Refusing to report an empty "
+            "catalog, which would read as 'no capacity' rather than "
+            "'not configured'.") from exc
+    df = df[df["InstanceType"].notna()]
+    if "AcceleratorName" in df.columns:
+        df = df[df["AcceleratorName"].notna()]
+        df = df.assign(AcceleratorName=df["AcceleratorName"].astype(
+            str).str.strip())
+    return df.reset_index(drop=True)
 
 
 def _get_df() -> "pd.DataFrame":
-    global _df
-    if _df is None:
-        try:
-            df = common.read_catalog(_CATALOG_PATH)
-        except FileNotFoundError as exc:
-            # FAIL LOUD. An empty frame here is indistinguishable from
-            # "Ornn has no capacity right now", so an unconfigured
-            # controller would silently look like a stocked-out provider
-            # and every Ornn claim would be refused for the wrong reason.
-            # (The Greptile-#338 class; the refresh module in
-            # skypilot-controller exists to keep this from ever mattering.)
-            raise RuntimeError(
-                f"Ornn catalog {_CATALOG_PATH!r} is missing. It is written "
-                "by sky.catalog.data_fetchers.fetch_ornn (needs "
-                "ORNN_MCP_CREDENTIALS). Refusing to report an empty "
-                "catalog, which would read as 'no capacity' rather than "
-                "'not configured'.") from exc
-        else:
-            df = df[df["InstanceType"].notna()]
-            if "AcceleratorName" in df.columns:
-                df = df[df["AcceleratorName"].notna()]
-                df = df.assign(AcceleratorName=df["AcceleratorName"].astype(
-                    str).str.strip())
-            _df = df.reset_index(drop=True)
+    """Get the dataframe, re-reading when the CSV on disk changes.
+
+    The catalog CSV is REWRITTEN under this process by
+    ornn_catalog_refresh (skypilot-controller). Caching the materialized
+    frame forever silently froze the catalog for long-lived interpreters
+    (the shadeform twin of this file rejected a region the vendor had added
+    with "Invalid region", prod-usw2 2026-10-14). The stat comparison makes
+    candidate enumeration and launch validation agree.
+    """
+    global _df, _df_stamp
+    stamp = common.catalog_stat(_CATALOG_PATH)
+    if _df is None or stamp != _df_stamp:
+        _df = _load_df()
+        _df_stamp = stamp
     return _df
 
 

@@ -19,31 +19,50 @@ else:
 
 # We'll use dynamic fetching, so no static CSV file to load
 _df = None
+# Stat stamp (_CATALOG_PATH) the cached _df was read at.
+_df_stamp = None
+
+
+def _load_df():
+    """Read and clean the catalog CSV. Caller applies the stat stamp."""
+    # For now, we'll fall back to a minimal static catalog
+    # In a full implementation, this would call the Shadeform API
+    # to dynamically fetch the latest instance types and pricing
+    try:
+        df = common.read_catalog('shadeform/vms.csv')
+    except FileNotFoundError:
+        # If no static catalog exists, create an empty one
+        # This would be replaced with dynamic API fetching
+        return pd.DataFrame(columns=[
+            'InstanceType', 'AcceleratorName', 'AcceleratorCount', 'vCPUs',
+            'MemoryGiB', 'Price', 'Region', 'GpuInfo', 'SpotPrice'
+        ])
+    df = df[df['InstanceType'].notna()]
+    if 'AcceleratorName' in df.columns:
+        df = df[df['AcceleratorName'].notna()]
+        df = df.assign(AcceleratorName=df['AcceleratorName'].astype(
+            str).str.strip())
+    return df.reset_index(drop=True)
 
 
 def _get_df():
-    """Get the dataframe, fetching from API if needed."""
-    global _df
-    if _df is None:
-        # For now, we'll fall back to a minimal static catalog
-        # In a full implementation, this would call the Shadeform API
-        # to dynamically fetch the latest instance types and pricing
-        try:
-            df = common.read_catalog('shadeform/vms.csv')
-        except FileNotFoundError:
-            # If no static catalog exists, create an empty one
-            # This would be replaced with dynamic API fetching
-            _df = pd.DataFrame(columns=[
-                'InstanceType', 'AcceleratorName', 'AcceleratorCount', 'vCPUs',
-                'MemoryGiB', 'Price', 'Region', 'GpuInfo', 'SpotPrice'
-            ])
-        else:
-            df = df[df['InstanceType'].notna()]
-            if 'AcceleratorName' in df.columns:
-                df = df[df['AcceleratorName'].notna()]
-                df = df.assign(AcceleratorName=df['AcceleratorName'].astype(
-                    str).str.strip())
-            _df = df.reset_index(drop=True)
+    """Get the dataframe, re-reading when the CSV on disk changes.
+
+    The catalog CSV is REWRITTEN under this process by
+    shadeform_catalog_refresh (skypilot-controller), which os.replace()s the
+    whole file. Caching the materialized frame forever silently froze the
+    catalog: a long-lived interpreter (the API server's executor pool)
+    answered every request from the snapshot taken at first use, so a region
+    the vendor added after that first read was proposed as a launch candidate
+    from a fresher read in another process and then rejected HERE with
+    "Invalid region 'kansascity-usa-6'" (prod-usw2, 2026-10-14). The stat
+    comparison makes candidate enumeration and launch validation agree.
+    """
+    global _df, _df_stamp
+    stamp = common.catalog_stat('shadeform/vms.csv')
+    if _df is None or stamp != _df_stamp:
+        _df = _load_df()
+        _df_stamp = stamp
     return _df
 
 
