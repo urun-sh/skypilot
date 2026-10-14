@@ -32,8 +32,22 @@ export function SSHInstructionsModal({ isOpen, onClose, cluster }) {
   const home = '/var/lib/urun-skypilot-runner/home';
   const key = `${home}/.sky/generated/ssh-keys/${cluster}.key`;
   const cfg = `${home}/.sky/generated/ssh/${cluster}`;
+  // urun: pin the kubectl context to THIS dashboard's region. The user's
+  // default context is often a dev/other cluster, where the prod fleet's
+  // per-cluster keys do not exist — the bare `kubectl -n urun exec` then
+  // fails with "No such file or directory" (live report 2026-10-14:
+  // default context dev-usw2, dashboard on usw2). The dashboard hostname
+  // carries our region id (skydashboard.<region>.prod.priv.urun.sh), which
+  // is exactly the `<region>` in the `prod-<region>` context name.
+  const regionMatch =
+    typeof window !== 'undefined'
+      ? window.location.hostname.match(
+          /\b(usw2|use2|usw1|use1|usw3|use3|usc1|cac1|euw1|apse1)\b/
+        )
+      : null;
+  const kubeContext = regionMatch ? ` --context prod-${regionMatch[1]}` : '';
   const sshCommand =
-    `kubectl -n urun exec deploy/skypilot-controller -c manager -- sh -c ` +
+    `kubectl${kubeContext} -n urun exec deploy/skypilot-controller -c manager -- sh -c ` +
     `'ssh -i ${key} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no ` +
     `-o UserKnownHostsFile=/dev/null gcpuser@$(grep -oE "HostName [0-9.]+" ` +
     `${cfg} | cut -d" " -f2)'`;
