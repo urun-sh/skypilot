@@ -223,7 +223,14 @@ def _ssh_fingerprint(public_key: str) -> str:
     except Exception as exc:  # binascii.Error subclasses ValueError
         raise QuantacloudError(
             f'public key blob is not valid base64: {exc}') from exc
-    digest = base64.b64encode(hashlib.sha256(blob).digest()).decode('ascii')
+    # OpenSSH (ssh-keygen -lf) and the QuantaCloud API both print the
+    # SHA256 fingerprint as UNPADDED base64; b64encode pads with '='.
+    # A padded digest never string-matches the API's fingerprint, so
+    # ensure_ssh_key POSTs a duplicate key and 400s INVALID_SSH_KEY —
+    # live receipt: ENG-515, 2026-10-15 (every launch after the first
+    # registration failed on exactly this).
+    digest = base64.b64encode(
+        hashlib.sha256(blob).digest()).decode('ascii').rstrip('=')
     return f'SHA256:{digest}'
 
 
