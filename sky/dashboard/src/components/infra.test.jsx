@@ -17,6 +17,7 @@ import {
   InfrastructureSection,
   CloudGpuCapacityCell,
   ProviderOfferingsSection,
+  GpuStockSection,
   slurmRequestableCounts,
 } from '@/components/infra';
 import { PROVIDER_OFFERINGS_CLOUDS } from '@/data/connectors/constants';
@@ -695,5 +696,374 @@ describe('ProviderOfferingsSection', () => {
       normalize(row).includes('Vast')
     );
     expect(normalize(vastRow)).toContain('No GPUs in the current catalog');
+  });
+});
+
+// The "GPU Stock by Region" section pivots the same provider-offerings
+// response into a provider x region x GPU heatmap. Providers come in three
+// data tiers (`stock_mode`): `units` marketplaces publish live chip counts,
+// `in_stock` catalogs are live-filtered to stocked regions without counts,
+// and `catalog` clouds only have static offering coverage. Older servers
+// send no `stock_mode` — the section then derives it from region_details.
+describe('GpuStockSection', () => {
+  const threeHoursAgo = Math.floor(Date.now() / 1000) - 3 * 3600;
+
+  const stockFixture = {
+    aws: {
+      present: true,
+      updated_at: threeHoursAgo,
+      stock_mode: 'catalog',
+      gpus: [
+        {
+          name: 'P5',
+          counts: [8],
+          price: 98.32,
+          spot_price: 40.96,
+          regions: ['us-east-1', 'eu-west-1'],
+          region_details: [
+            {
+              region: 'us-east-1',
+              units: null,
+              listings: null,
+              price: 98.32,
+              spot_price: 40.96,
+            },
+            {
+              region: 'eu-west-1',
+              units: null,
+              listings: null,
+              price: 101.12,
+              spot_price: 42.0,
+            },
+          ],
+        },
+      ],
+    },
+    vast: {
+      present: true,
+      updated_at: threeHoursAgo,
+      stock_mode: 'units',
+      gpus: [
+        {
+          name: 'H100',
+          counts: [1],
+          price: 2.4,
+          spot_price: 1.1,
+          regions: ['US, NA', 'EU'],
+          region_details: [
+            {
+              region: 'US, NA',
+              units: 6,
+              listings: 4,
+              price: 2.4,
+              spot_price: 1.1,
+            },
+            {
+              region: 'EU',
+              units: 2,
+              listings: 1,
+              price: 2.6,
+              spot_price: null,
+            },
+          ],
+        },
+        {
+          name: 'A100',
+          counts: [1, 2],
+          price: 0.93,
+          spot_price: 0.18,
+          regions: ['US, NA'],
+          region_details: [
+            {
+              region: 'US, NA',
+              units: 10,
+              listings: 3,
+              price: 0.93,
+              spot_price: 0.18,
+            },
+          ],
+        },
+      ],
+    },
+    lambda: {
+      present: true,
+      updated_at: threeHoursAgo,
+      stock_mode: 'in_stock',
+      gpus: [
+        {
+          name: 'H100',
+          counts: [1, 2],
+          price: 2.99,
+          spot_price: 1.49,
+          regions: ['us-east-1'],
+          region_details: [
+            {
+              region: 'us-east-1',
+              units: null,
+              listings: null,
+              price: 2.99,
+              spot_price: 1.49,
+            },
+          ],
+        },
+      ],
+    },
+    primeintellect: {
+      present: true,
+      updated_at: threeHoursAgo,
+      stock_mode: 'units',
+      gpus: [
+        {
+          name: 'MI300X',
+          counts: [8],
+          price: 3.0,
+          spot_price: null,
+          regions: ['US'],
+          region_details: [
+            {
+              region: 'US',
+              units: 5,
+              listings: 2,
+              price: 3.0,
+              spot_price: null,
+            },
+          ],
+        },
+      ],
+    },
+    ornn: { present: false, updated_at: null, gpus: null },
+  };
+
+  const renderStock = (props) =>
+    render(
+      <GpuStockSection
+        providers={stockFixture}
+        loading={false}
+        error={null}
+        {...props}
+      />
+    );
+
+  const ariaLabels = (container) =>
+    Array.from(container.querySelectorAll('[aria-label]')).map((element) =>
+      element.getAttribute('aria-label')
+    );
+
+  it('renders provider chips with live stock totals and honest tier labels', () => {
+    renderStock();
+    // Two stock providers show their total live chips, the in-stock catalog
+    // shows its tier, and the on-demand cloud shows plain catalog coverage.
+    expect(screen.getByText('18 chips')).toBeInTheDocument(); // vast: 6+2+10
+    expect(screen.getByText('5 chips')).toBeInTheDocument(); // primeintellect
+    expect(screen.getByText('in stock')).toBeInTheDocument(); // lambda
+    expect(screen.getByText('catalog')).toBeInTheDocument(); // aws
+    // Absent providers keep a greyed, non-clickable pill with the shared
+    // no-catalog note.
+    const ornnChip = screen
+      .getAllByLabelText(
+        'No catalog yet — refreshed by the controller every few hours'
+      )
+      .find((element) => element.textContent === 'Ornn');
+    expect(ornnChip).toBeTruthy();
+    expect(ornnChip.className).toContain('cursor-not-allowed');
+    expect(ornnChip.tagName).toBe('SPAN');
+  });
+
+  it('renders the default stock provider as a heatmap with intensity and tooltips', () => {
+    const { container } = renderStock();
+    // Vast is the first default provider with live stock, so it is the
+    // default selection.
+    expect(
+      screen.getByRole('button', { name: /Vast/ }).getAttribute('aria-pressed')
+    ).toBe('true');
+    // GPU rows sort by total units desc (A100 10 > H100 8), and region
+    // columns by the provider's stock in that region (US, NA 16 > EU 2).
+    const rowLabels = Array.from(
+      container.querySelectorAll('tbody tr td:first-child')
+    ).map(normalize);
+    expect(rowLabels[0]).toContain('A100');
+    expect(rowLabels[1]).toContain('H100');
+    const headerTexts = Array.from(container.querySelectorAll('thead th')).map(
+      normalize
+    );
+    expect(headerTexts[1]).toContain('US, NA');
+    expect(headerTexts[2]).toContain('EU');
+    // Cells show live chip counts with the emerald intensity scaled to the
+    // matrix maximum (10 = max -> darkest step, white text).
+    expect(screen.getByText('10').className).toContain('bg-emerald-600');
+    expect(screen.getByText('10').className).toContain('text-white');
+    expect(screen.getByText('6').className).toContain('bg-emerald-400');
+    expect(screen.getByText('2').className).toContain('bg-emerald-100');
+    // The A100 row has no EU cell: not offered stays empty.
+    expect(screen.queryByLabelText(/A100 · EU/)).not.toBeInTheDocument();
+    // Cell tooltip (mirrored on aria-label): chips + listings, per-region
+    // prices, and the catalog freshness.
+    const cellTooltip = ariaLabels(container).find((label) =>
+      label.includes('10 chips · 3 listings')
+    );
+    expect(cellTooltip).toContain('A100 · US, NA');
+    expect(cellTooltip).toContain('cheapest $0.93/hr');
+    expect(cellTooltip).toContain('spot $0.18/hr');
+    expect(cellTooltip).toContain('updated 3h ago');
+    // Summary strip: total chips, region count, tier note, freshness.
+    expect(screen.getByText(/18 chips across 2 regions/)).toBeInTheDocument();
+    expect(screen.getByText('live units per region')).toBeInTheDocument();
+    expect(screen.getByText(/3h ago/)).toBeInTheDocument();
+  });
+
+  it('shows the catalog-only provider as neutral dots with the catalog note', () => {
+    const { container } = renderStock();
+    fireEvent.click(screen.getByRole('button', { name: /AWS/ }));
+    // On-demand clouds publish no stock: offered regions render a neutral
+    // dot, never a number.
+    expect(screen.getAllByText('·')).toHaveLength(2);
+    const dotTooltips = ariaLabels(container).filter((label) =>
+      label.includes('offered in this region')
+    );
+    expect(dotTooltips).toHaveLength(2);
+    expect(dotTooltips.join('\n')).toContain('P5 · us-east-1');
+    expect(dotTooltips.join('\n')).toContain('P5 · eu-west-1');
+    expect(container.querySelector('table [class*="bg-emerald"]')).toBeNull();
+    // Summary words the tier honestly instead of implying stock.
+    expect(
+      screen.getByText('catalog coverage — on-demand clouds publish no stock')
+    ).toBeInTheDocument();
+  });
+
+  it('shows in-stock regions with a check for in_stock providers', () => {
+    const { container } = renderStock();
+    fireEvent.click(screen.getByRole('button', { name: /Lambda/ }));
+    expect(screen.getAllByText('✓')).toHaveLength(1);
+    expect(
+      screen.getByLabelText(/in stock at last refresh/)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('in-stock regions at last refresh — no counts published')
+    ).toBeInTheDocument();
+    expect(container.querySelector('table [class*="bg-emerald"]')).toBeNull();
+  });
+
+  it('re-renders the matrix when switching providers', () => {
+    const { container } = renderStock();
+    fireEvent.click(screen.getByRole('button', { name: /PrimeIntellect/ }));
+    expect(
+      screen.getByRole('button', { name: /Vast/ }).getAttribute('aria-pressed')
+    ).toBe('false');
+    expect(screen.getByText('MI300X')).toBeInTheDocument();
+    expect(screen.getByText('US')).toBeInTheDocument();
+    expect(screen.getByText(/5 chips across 1 region/)).toBeInTheDocument();
+    expect(screen.queryByText('A100')).not.toBeInTheDocument();
+    expect(screen.queryByText('US, NA')).not.toBeInTheDocument();
+  });
+
+  it('degrades to dots everywhere when region_details is missing (older server)', () => {
+    const { container } = renderStock({
+      providers: {
+        vast: {
+          present: true,
+          updated_at: threeHoursAgo,
+          gpus: [
+            {
+              name: 'H100',
+              counts: [1],
+              price: 2.4,
+              spot_price: null,
+              regions: ['US, NA'],
+            },
+          ],
+        },
+      },
+    });
+    // No stock_mode and no region_details: the provider degrades to catalog
+    // coverage (dot cells, catalog chip label) without crashing.
+    expect(container.textContent).toContain('GPU Stock by Region');
+    expect(screen.getByText('catalog')).toBeInTheDocument();
+    expect(screen.getAllByText('·')).toHaveLength(1);
+    expect(
+      screen.getByText('catalog coverage — on-demand clouds publish no stock')
+    ).toBeInTheDocument();
+    expect(container.querySelector('table [class*="bg-emerald"]')).toBeNull();
+  });
+
+  it('derives units mode from region_details when stock_mode is absent', () => {
+    renderStock({
+      providers: {
+        vast: {
+          present: true,
+          updated_at: threeHoursAgo,
+          gpus: [
+            {
+              name: 'H100',
+              counts: [1],
+              price: 2.4,
+              spot_price: null,
+              regions: ['US, NA'],
+              region_details: [
+                {
+                  region: 'US, NA',
+                  units: 6,
+                  listings: 4,
+                  price: 2.4,
+                  spot_price: null,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    // Any numeric units value means the provider publishes live counts.
+    expect(screen.getByText('6 chips')).toBeInTheDocument();
+    expect(screen.getByText('6')).toBeInTheDocument();
+    expect(screen.getByText(/6 chips across 1 region/)).toBeInTheDocument();
+    expect(screen.getByText('live units per region')).toBeInTheDocument();
+  });
+
+  it('words each stock tier honestly', () => {
+    renderStock();
+    // units tier
+    expect(screen.getByText('live units per region')).toBeInTheDocument();
+    // in_stock tier
+    fireEvent.click(screen.getByRole('button', { name: /Lambda/ }));
+    expect(
+      screen.getByText('in-stock regions at last refresh — no counts published')
+    ).toBeInTheDocument();
+    // catalog tier
+    fireEvent.click(screen.getByRole('button', { name: /AWS/ }));
+    expect(
+      screen.getByText('catalog coverage — on-demand clouds publish no stock')
+    ).toBeInTheDocument();
+  });
+
+  it('renders a present provider with an empty GPU list as the no-GPU note', () => {
+    renderStock({
+      providers: {
+        vast: { present: true, updated_at: threeHoursAgo, gpus: [] },
+      },
+    });
+    expect(
+      screen.getByText('No GPUs in the current catalog')
+    ).toBeInTheDocument();
+  });
+
+  it('shows the empty state when no provider has a catalog yet', () => {
+    renderStock({ providers: {} });
+    expect(screen.getByText('No provider catalogs yet')).toBeInTheDocument();
+  });
+
+  it('renders a skeleton while loading and no provider names', () => {
+    const { container } = renderStock({ loading: true, providers: {} });
+    expect(container.textContent).toContain('GPU Stock by Region');
+    expect(container.textContent).not.toContain('AWS');
+    expect(container.querySelectorAll('.animate-pulse')).toHaveLength(1);
+  });
+
+  it('renders the error in-section instead of crashing', () => {
+    const { container } = renderStock({
+      error: 'Failed to get provider GPU offerings with status 502',
+    });
+    expect(container.textContent).toContain(
+      'Failed to load GPU stock by region: Failed to get provider GPU offerings with status 502'
+    );
   });
 });

@@ -426,6 +426,500 @@ export function ProviderOfferingsSection({ providers, loading, error }) {
   );
 }
 
+// "GPU Stock by Region": the same provider-offerings data pivoted to a
+// provider/region/GPU heatmap. Providers report one of three data tiers via
+// `stock_mode` (absent on older servers — derived then): `units` (marketplace
+// providers publishing live chip counts per region), `in_stock` (catalogs
+// live-filtered to regions with stock at the last refresh, no counts), and
+// `catalog` (static offering coverage; on-demand clouds have no stock
+// notion). The summary and cell tooltips word each tier honestly instead of
+// pretending a catalog is stock.
+const STOCK_MODE_NOTES = {
+  units: 'live units per region',
+  in_stock: 'in-stock regions at last refresh — no counts published',
+  catalog: 'catalog coverage — on-demand clouds publish no stock',
+};
+
+// Emerald intensity steps for the stock heatmap, lightest to darkest. Dark
+// steps flip to white text so the number stays legible as the background
+// saturates.
+const STOCK_HEAT_CLASSES = [
+  'bg-emerald-50 text-emerald-900',
+  'bg-emerald-100 text-emerald-900',
+  'bg-emerald-200 text-emerald-900',
+  'bg-emerald-300 text-emerald-900',
+  'bg-emerald-400 text-emerald-900',
+  'bg-emerald-500 text-white',
+  'bg-emerald-600 text-white',
+];
+
+// Heat step for a cell holding `units` chips when the matrix's fullest cell
+// holds `maxUnits`. Never zero — an in-stock region always reads as stocked.
+const stockHeatIndex = (units, maxUnits) => {
+  if (!maxUnits || !units) {
+    return 0;
+  }
+  return Math.min(6, Math.max(1, Math.round((units / maxUnits) * 6)));
+};
+
+// The provider's `stock_mode`, derived for older servers that do not send
+// the field: any region_details entry carrying a numeric units value means
+// the provider publishes live counts; anything else degrades to catalog.
+const stockModeOf = (entry) => {
+  const mode = entry?.stock_mode;
+  if (mode === 'units' || mode === 'in_stock') {
+    return mode;
+  }
+  if (mode === 'catalog') {
+    return 'catalog';
+  }
+  const gpus = Array.isArray(entry?.gpus) ? entry.gpus : [];
+  const hasUnits = gpus.some((gpu) =>
+    (Array.isArray(gpu?.region_details) ? gpu.region_details : []).some(
+      (region) => typeof region?.units === 'number'
+    )
+  );
+  return hasUnits ? 'units' : 'catalog';
+};
+
+// A GPU entry's region_details keyed by region name for cell lookups.
+const stockRegionDetails = (gpu) => {
+  const details = Array.isArray(gpu?.region_details) ? gpu.region_details : [];
+  const byRegion = {};
+  details.forEach((detail) => {
+    if (detail?.region) {
+      byRegion[detail.region] = detail;
+    }
+  });
+  return byRegion;
+};
+
+// Short plain-text freshness ("3h ago") for inside cell tooltips, where the
+// richer relativeTime component (with its own tooltip) would nest poorly.
+const stockUpdatedShort = (updatedAt) => {
+  if (!updatedAt) {
+    return null;
+  }
+  const seconds = Math.max(0, (Date.now() - updatedAt.getTime()) / 1000);
+  if (seconds < 60) {
+    return 'just now';
+  }
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m ago`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
+  return `${Math.round(hours / 24)}d ago`;
+};
+
+// "GPU Stock by Region" section: provider pills (each with its total live
+// chips) above a GPU x region matrix for the selected provider. Rows and
+// columns sort by live stock, cells carry the per-region chip count with an
+// emerald intensity scaled to the matrix maximum, and every cell tooltip
+// spells out chips + listings, the cheapest $/hr and spot $/hr in that
+// region, and the catalog's freshness. Providers that publish no counts
+// still render — `in_stock` catalogs mark their stocked regions with a
+// check, `catalog` clouds mark offered regions with a neutral dot — so the
+// section never overstates what a provider actually reports. Absent
+// providers keep a greyed pill with the same "no catalog yet" note as the
+// Provider Offerings section. Failures render inside the section instead of
+// crashing the page.
+export function GpuStockSection({ providers, loading, error }) {
+  const [selectedCloud, setSelectedCloud] = useState(null);
+
+  if (loading) {
+    return (
+      <div className="rounded-lg border bg-card text-card-foreground shadow-sm mb-6">
+        <div className="p-5">
+          <h3 className="text-lg font-semibold mb-4">GPU Stock by Region</h3>
+          <div className="flex flex-wrap gap-2 mb-4">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <SkeletonBadge key={index} />
+            ))}
+          </div>
+          <div className="animate-pulse space-y-2">
+            {Array.from({ length: 4 }).map((_, rowIndex) => (
+              <div key={rowIndex} className="flex gap-2">
+                {Array.from({ length: 6 }).map((_, cellIndex) => (
+                  <div key={cellIndex} className="h-8 w-16 bg-muted rounded" />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border bg-card text-card-foreground shadow-sm mb-6">
+        <div className="p-5">
+          <h3 className="text-lg font-semibold mb-4">GPU Stock by Region</h3>
+          <p className="text-sm text-red-500">
+            Failed to load GPU stock by region: {error}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Default providers first (fixed order), then any extras the endpoint
+  // reports — the same order the Provider Offerings section lists, so the
+  // two sections never disagree about a provider's name.
+  const providerKeys = [
+    ...PROVIDER_OFFERINGS_CLOUDS,
+    ...Object.keys(providers || {})
+      .filter((cloud) => !PROVIDER_OFFERINGS_CLOUDS.includes(cloud))
+      .sort(),
+  ];
+  const displayName = (cloud) =>
+    CLOUDS_LIST.find((c) => c.toLowerCase() === cloud) || cloud;
+
+  const entries = providerKeys.map((cloud) => {
+    const entry = providers?.[cloud] || {};
+    const gpus = (Array.isArray(entry.gpus) ? entry.gpus : []).map((gpu) => ({
+      name: gpu?.name ?? '',
+      regions: (Array.isArray(gpu?.regions) ? gpu.regions : []).filter(Boolean),
+      regionDetails: stockRegionDetails(gpu),
+    }));
+    const mode = stockModeOf(entry);
+    // Total live chips across every region and GPU type. Null unless the
+    // provider actually publishes counts.
+    let totalUnits = null;
+    if (mode === 'units') {
+      let sum = 0;
+      let any = false;
+      gpus.forEach((gpu) => {
+        Object.values(gpu.regionDetails).forEach((detail) => {
+          if (typeof detail?.units === 'number') {
+            sum += detail.units;
+            any = true;
+          }
+        });
+      });
+      totalUnits = any ? sum : null;
+    }
+    return {
+      cloud,
+      displayName: displayName(cloud),
+      present: entry.present === true,
+      mode,
+      totalUnits,
+      gpus,
+      updatedAt: entry.updated_at ? new Date(entry.updated_at * 1000) : null,
+    };
+  });
+
+  // Selection: an explicit click wins, but only while the provider is still
+  // present. Otherwise default to the first provider reporting live stock,
+  // then the first present provider.
+  const selected =
+    entries.find((entry) => entry.cloud === selectedCloud && entry.present) ||
+    entries.find(
+      (entry) =>
+        entry.present && entry.mode === 'units' && entry.totalUnits !== null
+    ) ||
+    entries.find((entry) => entry.present) ||
+    null;
+
+  // Matrix geometry for the selected provider: GPU rows sorted by total
+  // units then name, region columns sorted by the provider's total units in
+  // that region then name. Providers without counts sort by name only.
+  const gpuTotalUnits = (gpu) =>
+    Object.values(gpu.regionDetails).reduce(
+      (sum, detail) =>
+        sum + (typeof detail?.units === 'number' ? detail.units : 0),
+      0
+    );
+  let regions = [];
+  let gpuRows = [];
+  let maxCellUnits = 0;
+  if (selected && selected.gpus.length > 0) {
+    const regionTotals = {};
+    selected.gpus.forEach((gpu) => {
+      new Set([...gpu.regions, ...Object.keys(gpu.regionDetails)]).forEach(
+        (region) => {
+          regionTotals[region] =
+            (regionTotals[region] || 0) +
+            (typeof gpu.regionDetails[region]?.units === 'number'
+              ? gpu.regionDetails[region].units
+              : 0);
+        }
+      );
+    });
+    regions = Object.keys(regionTotals).sort((a, b) => {
+      if (selected.mode === 'units' && regionTotals[a] !== regionTotals[b]) {
+        return regionTotals[b] - regionTotals[a];
+      }
+      return a.localeCompare(b);
+    });
+    gpuRows = [...selected.gpus].sort((a, b) => {
+      if (selected.mode === 'units') {
+        const difference = gpuTotalUnits(b) - gpuTotalUnits(a);
+        if (difference !== 0) {
+          return difference;
+        }
+      }
+      return a.name.localeCompare(b.name);
+    });
+    selected.gpus.forEach((gpu) => {
+      Object.values(gpu.regionDetails).forEach((detail) => {
+        if (typeof detail?.units === 'number' && detail.units > maxCellUnits) {
+          maxCellUnits = detail.units;
+        }
+      });
+    });
+  }
+
+  // One heatmap cell. `units` providers show the chip count with an emerald
+  // intensity; `in_stock` catalogs mark stocked regions with a check; and
+  // `catalog` clouds mark offered regions with a neutral dot. Regions where
+  // the GPU is not offered stay empty. Tooltips (mirrored on aria-label so
+  // they stay queryable without a hover) carry the per-region detail.
+  const renderStockCell = (gpu, region) => {
+    const detail = gpu.regionDetails[region];
+    const offered = gpu.regions.includes(region) || detail != null;
+
+    const dotCell = (tooltip) => (
+      <td key={region} className="p-2 text-center">
+        <NonCapitalizedTooltip content={tooltip}>
+          <span
+            aria-label={tooltip}
+            className="text-lg leading-none font-medium text-gray-300"
+          >
+            ·
+          </span>
+        </NonCapitalizedTooltip>
+      </td>
+    );
+
+    if (selected.mode === 'units') {
+      if (typeof detail?.units === 'number') {
+        const lines = [`${gpu.name} · ${region}`];
+        lines.push(
+          typeof detail.listings === 'number'
+            ? `${detail.units} chips · ${detail.listings} listings`
+            : `${detail.units} chips`
+        );
+        const cheapest =
+          typeof detail.price === 'number'
+            ? `cheapest ${formatOfferingPrice(detail.price)}/hr`
+            : null;
+        const spot =
+          typeof detail.spot_price === 'number'
+            ? `spot ${formatOfferingPrice(detail.spot_price)}/hr`
+            : null;
+        const prices = [cheapest, spot].filter(Boolean).join(' · ');
+        if (prices) {
+          lines.push(prices);
+        }
+        const updated = stockUpdatedShort(selected.updatedAt);
+        if (updated) {
+          lines.push(`updated ${updated}`);
+        }
+        const tooltip = lines.join('\n');
+        return (
+          <td key={region} className="p-2 text-center">
+            <NonCapitalizedTooltip content={tooltip}>
+              <span
+                aria-label={tooltip}
+                className={`inline-flex min-w-[2.5rem] justify-center rounded px-1.5 py-0.5 text-xs font-medium ${
+                  STOCK_HEAT_CLASSES[stockHeatIndex(detail.units, maxCellUnits)]
+                }`}
+              >
+                {detail.units}
+              </span>
+            </NonCapitalizedTooltip>
+          </td>
+        );
+      }
+      if (offered) {
+        return dotCell(`${gpu.name} · ${region}
+offered in this region — no live stock data`);
+      }
+      return <td key={region} className="p-2" />;
+    }
+
+    if (selected.mode === 'in_stock') {
+      if (offered) {
+        const tooltip = `${gpu.name} · ${region}
+in stock at last refresh`;
+        return (
+          <td key={region} className="p-2 text-center">
+            <NonCapitalizedTooltip content={tooltip}>
+              <span
+                aria-label={tooltip}
+                className="text-xs font-medium text-gray-400"
+              >
+                ✓
+              </span>
+            </NonCapitalizedTooltip>
+          </td>
+        );
+      }
+      return <td key={region} className="p-2" />;
+    }
+
+    // catalog: static offering coverage only.
+    if (offered) {
+      return dotCell(`${gpu.name} · ${region}
+offered in this region`);
+    }
+    return <td key={region} className="p-2" />;
+  };
+
+  // Pill sub-label: the provider's total live chips, or an honest tier note
+  // when it publishes no counts.
+  const chipStockLabel = (entry) => {
+    if (entry.mode === 'units' && entry.totalUnits !== null) {
+      return `${entry.totalUnits} chips`;
+    }
+    if (entry.mode === 'in_stock') {
+      return 'in stock';
+    }
+    return 'catalog';
+  };
+
+  const noCatalogTooltip =
+    'No catalog yet — refreshed by the controller every few hours';
+
+  return (
+    <div className="rounded-lg border bg-card text-card-foreground shadow-sm mb-6">
+      <div className="p-5">
+        <div className="flex items-center mb-1">
+          <h3 className="text-lg font-semibold">GPU Stock by Region</h3>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          Live GPU chips available per region — marketplace providers publish
+          live counts, in-stock-filtered catalogs show where hardware is in
+          stock, and on-demand clouds show catalog coverage. Read from the same
+          provider catalogs the controller refreshes every few hours.
+        </p>
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          {entries.map((entry) => {
+            if (!entry.present) {
+              return (
+                <NonCapitalizedTooltip
+                  key={entry.cloud}
+                  content={noCatalogTooltip}
+                >
+                  <span
+                    aria-label={noCatalogTooltip}
+                    className="px-3 py-1 rounded-full border bg-muted text-xs font-medium text-gray-400 cursor-not-allowed"
+                  >
+                    {entry.displayName}
+                  </span>
+                </NonCapitalizedTooltip>
+              );
+            }
+            const active = selected?.cloud === entry.cloud;
+            return (
+              <button
+                key={entry.cloud}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setSelectedCloud(entry.cloud)}
+                className={`px-3 py-1 rounded-full border text-xs font-medium transition-colors ${
+                  active
+                    ? 'border-emerald-600 bg-emerald-50 text-emerald-800'
+                    : 'border-gray-200 bg-card text-gray-600 hover:bg-muted'
+                }`}
+              >
+                {entry.displayName}
+                <span
+                  className={`ml-1.5 ${
+                    active ? 'text-emerald-700' : 'text-gray-400'
+                  }`}
+                >
+                  {chipStockLabel(entry)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {selected ? (
+          <>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <span className="text-sm font-medium text-gray-700">
+                {selected.displayName}
+              </span>
+              {selected.mode === 'units' && selected.totalUnits !== null ? (
+                <span className="text-sm text-gray-600 font-medium">
+                  {selected.totalUnits} chips across {regions.length}{' '}
+                  {regions.length === 1 ? 'region' : 'regions'}
+                  <span className="ml-2 text-xs font-normal text-gray-400">
+                    {STOCK_MODE_NOTES.units}
+                  </span>
+                </span>
+              ) : (
+                <span className="text-sm text-gray-500 font-medium">
+                  {selected.mode === 'units'
+                    ? 'catalog only — no live stock data from this provider'
+                    : STOCK_MODE_NOTES[selected.mode]}
+                </span>
+              )}
+              {selected.updatedAt && (
+                <span className="text-sm text-gray-500">
+                  {relativeTime(selected.updatedAt)}
+                </span>
+              )}
+            </div>
+            {selected.gpus.length === 0 ? (
+              // Catalog exists but lists no GPU rows (e.g. a CPU-only
+              // provider) — the same muted note the Provider Offerings
+              // section shows.
+              <div className="rounded-md border shadow-sm bg-card p-3 text-gray-400 text-xs font-medium">
+                No GPUs in the current catalog
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-md border shadow-sm bg-card">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="p-3 text-left font-medium text-gray-600 sticky left-0 bg-gray-50 z-10">
+                        GPU
+                      </th>
+                      {regions.map((region) => (
+                        <th
+                          key={region}
+                          className="p-3 text-left font-medium text-gray-600 whitespace-nowrap"
+                        >
+                          {region}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="bg-card divide-y divide-gray-200">
+                    {gpuRows.map((gpu) => (
+                      <tr key={gpu.name} className="hover:bg-muted/50">
+                        <td className="p-3 sticky left-0 bg-card z-10">
+                          <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
+                            {gpu.name}
+                          </span>
+                        </td>
+                        {regions.map((region) => renderStockCell(gpu, region))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        ) : (
+          <EmptyState
+            title="No provider catalogs yet"
+            description="Provider catalogs appear here once the controller fetches them from the provider APIs."
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Single source of truth for the GPU utilization states, their labels, and
 // their segment colors. Both the bar and the legend derive from this so the
 // two can never drift. Order = left-to-right fill order in the bar.
@@ -4139,6 +4633,19 @@ export function GPUs() {
     );
   };
 
+  // "GPU Stock by Region" renders the same provider-offerings data as
+  // renderProviderOfferings — one shared fetch, no second request — pivoted
+  // to the per-region stock heatmap.
+  const renderGpuStock = () => {
+    return (
+      <GpuStockSection
+        providers={providerOfferings}
+        loading={offeringsLoading}
+        error={offeringsError}
+      />
+    );
+  };
+
   const renderSSHNodePoolInfrastructure = () => {
     return (
       <InfrastructureSection
@@ -4310,8 +4817,18 @@ export function GPUs() {
       sections.push({
         name: 'Provider Offerings',
         render: renderProviderOfferings,
-        hasActivity: true,
         priority: 4, // After Cloud; SSH ties and stays after via stable sort
+      });
+
+      // Add GPU Stock by Region section (always show) — the same offerings
+      // data pivoted to live stock per region. Pushed right after Provider
+      // Offerings at the same priority so the stable sort keeps the two
+      // together, before SSH.
+      sections.push({
+        name: 'GPU Stock by Region',
+        render: renderGpuStock,
+        hasActivity: true,
+        priority: 4, // Ties with Provider Offerings; stable sort keeps order
       });
 
       // Add SSH section (always show)
