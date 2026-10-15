@@ -15,10 +15,12 @@ jest.mock('@/plugins/PluginSlot', () => ({
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
   InfrastructureSection,
+  CloudGpuCapacityCell,
   slurmRequestableCounts,
 } from '@/components/infra';
 import {
   countByCloud,
+  gpuCapacityByCloud,
   recordsInWorkspace,
   visibleCloudRows,
 } from '@/utils/infraUtils';
@@ -378,5 +380,147 @@ describe('recordsInWorkspace', () => {
     expect(
       countByCloud(recordsInWorkspace([{ cloud: 'GCP' }], 'team-a'))
     ).toEqual({});
+  });
+});
+
+// Per-provider GPU capacity for the Cloud panel: accelerators hold per-node
+// counts, so chips = perNode × nodes; canonical types aggregate across
+// clusters, and cluster status splits ready capacity from the rest.
+describe('gpuCapacityByCloud', () => {
+  it('multiplies per-node accelerators by the cluster node count', () => {
+    const capacity = gpuCapacityByCloud([
+      { cloud: 'GCP', accelerators: { H100: 2 }, nodes: 3, status: 'UP' },
+    ]);
+    expect(capacity.gcp).toEqual([
+      { type: 'H100', chips: 6, nodes: 3, readyChips: 6, notReadyChips: 0 },
+    ]);
+  });
+
+  it('aggregates multiple clusters of the same type per provider', () => {
+    const capacity = gpuCapacityByCloud([
+      { cloud: 'GCP', gpus: { H100: 1 }, num_nodes: 2, status: 'UP' },
+      { cloud: 'GCP', gpus: { H100: 4 }, num_nodes: 1, status: 'LAUNCHING' },
+      { cloud: 'Vast', accelerators: { H100: 1 }, nodes: 1, status: 'UP' },
+    ]);
+    expect(capacity.gcp).toEqual([
+      { type: 'H100', chips: 6, nodes: 3, readyChips: 2, notReadyChips: 4 },
+    ]);
+    expect(capacity.vast).toEqual([
+      { type: 'H100', chips: 1, nodes: 1, readyChips: 1, notReadyChips: 0 },
+    ]);
+  });
+
+  it('canonicalizes mixed GPU type names into one entry', () => {
+    const capacity = gpuCapacityByCloud([
+      {
+        cloud: 'GCP',
+        accelerators: { 'NVIDIA H100': 1 },
+        nodes: 1,
+        status: 'UP',
+      },
+      { cloud: 'GCP', accelerators: { h100: 2 }, nodes: 1, status: 'UP' },
+      {
+        cloud: 'GCP',
+        accelerators: { 'A100-SXM4-80GB': 1 },
+        nodes: 1,
+        status: 'UP',
+      },
+    ]);
+    expect(capacity.gcp).toEqual([
+      { type: 'H100', chips: 3, nodes: 2, readyChips: 3, notReadyChips: 0 },
+      { type: 'A100', chips: 1, nodes: 1, readyChips: 1, notReadyChips: 0 },
+    ]);
+  });
+
+  it('tolerates CPU-only records and missing fields', () => {
+    expect(gpuCapacityByCloud(null)).toEqual({});
+    const capacity = gpuCapacityByCloud([
+      // CPU-only: no accelerators at all.
+      { cloud: 'GCP', accelerators: null, nodes: 2, status: 'UP' },
+      { cloud: 'GCP', gpus: {}, num_nodes: 1, status: 'UP' },
+      { cloud: 'GCP', accelerators: 'None', nodes: 1, status: 'UP' },
+      // No cloud means the record cannot join a provider row.
+      { accelerators: { H100: 1 }, nodes: 1, status: 'UP' },
+      // Zero counts are not capacity.
+      { cloud: 'GCP', accelerators: { H100: 0 }, nodes: 1, status: 'UP' },
+      // Missing nodes still counts as the cluster's one node.
+      { cloud: 'GCP', accelerators: { H100: 1 }, status: 'UP' },
+    ]);
+    expect(capacity.gcp).toEqual([
+      { type: 'H100', chips: 1, nodes: 1, readyChips: 1, notReadyChips: 0 },
+    ]);
+  });
+
+  it('scopes capacity to the selected workspace like the panel counts', () => {
+    const records = [
+      {
+        cloud: 'GCP',
+        accelerators: { H100: 1 },
+        nodes: 1,
+        status: 'UP',
+        workspace: 'team-a',
+      },
+      {
+        cloud: 'GCP',
+        accelerators: { H100: 2 },
+        nodes: 2,
+        status: 'UP',
+        workspace: 'team-b',
+      },
+    ];
+    expect(gpuCapacityByCloud(recordsInWorkspace(records, 'team-a'))).toEqual({
+      gcp: [
+        { type: 'H100', chips: 1, nodes: 1, readyChips: 1, notReadyChips: 0 },
+      ],
+    });
+    expect(gpuCapacityByCloud(recordsInWorkspace(records, 'all'))).toEqual({
+      gcp: [
+        { type: 'H100', chips: 5, nodes: 3, readyChips: 5, notReadyChips: 0 },
+      ],
+    });
+  });
+});
+
+// The Cloud panel renders each provider's GPU capacity inline in its row: one
+// line per GPU type with the total chips and node count. A fixture provider
+// with six single-GPU RTXPRO6000 clusters shows one RTXPRO6000 line.
+describe('CloudGpuCapacityCell', () => {
+  it('renders the fixture provider capacity', () => {
+    const records = Array.from({ length: 6 }, () => ({
+      cloud: 'GCP',
+      accelerators: { RTXPRO6000: 1 },
+      nodes: 1,
+      status: 'UP',
+      workspace: 'default',
+    }));
+    render(
+      <CloudGpuCapacityCell
+        entries={gpuCapacityByCloud(records).gcp}
+        loading={false}
+      />
+    );
+    expect(screen.getByText('RTXPRO6000')).toBeInTheDocument();
+    expect(screen.getByText('×6 chips · 6 nodes')).toBeInTheDocument();
+  });
+
+  it('shows the up/not-ready split when some clusters are not UP', () => {
+    const capacity = gpuCapacityByCloud([
+      { cloud: 'GCP', accelerators: { H100: 2 }, nodes: 2, status: 'UP' },
+      {
+        cloud: 'GCP',
+        accelerators: { H100: 1 },
+        nodes: 1,
+        status: 'LAUNCHING',
+      },
+    ]);
+    render(<CloudGpuCapacityCell entries={capacity.gcp} loading={false} />);
+    expect(screen.getByText('×5 chips · 3 nodes')).toBeInTheDocument();
+    expect(screen.getByText('4 up')).toBeInTheDocument();
+    expect(screen.getByText('1 not ready')).toBeInTheDocument();
+  });
+
+  it('renders an em dash for CPU-only providers', () => {
+    render(<CloudGpuCapacityCell entries={[]} loading={false} />);
+    expect(screen.getByText('—')).toBeInTheDocument();
   });
 });

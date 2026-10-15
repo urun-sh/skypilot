@@ -1,3 +1,5 @@
+import { canonicalizeGpuName } from './gpuUtils';
+
 /**
  * Infrastructure utility functions for context key generation
  */
@@ -131,4 +133,108 @@ export function recordsInWorkspace(records, selectedWorkspace) {
     return records;
   }
   return records.filter((record) => record.workspace === selectedWorkspace);
+}
+
+/**
+ * Parses a cluster record's accelerators field. SkyPilot exposes it either as
+ * an object ({'H100': 2}) or as a Python-repr string ("{'H100': 2}", 'None').
+ *
+ * @param {Object|string|null} accelerators - Raw accelerators field
+ * @returns {Object|null} Parsed accelerator map, or null when absent/invalid
+ */
+function parseAccelerators(accelerators) {
+  if (accelerators == null) {
+    return null;
+  }
+  if (typeof accelerators === 'string') {
+    const trimmed = accelerators.trim();
+    if (!trimmed || trimmed === 'None' || trimmed === 'null') {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(
+        trimmed.replace(/'/g, '"').replace(/None/g, 'null')
+      );
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return typeof accelerators === 'object' ? accelerators : null;
+}
+
+/**
+ * Per-provider GPU capacity for the Cloud panel, computed from cluster
+ * records. A record's accelerators ({gpuType: count per node}) multiply by
+ * its node count into total chips per canonical GPU type — the same
+ * canonicalization the context tables use — split into ready (UP) and
+ * not-ready chips so the panel can show live capacity separately from
+ * clusters still launching or stopped. Records without accelerators
+ * (CPU-only providers) contribute no GPU types. Keys are lowercase cloud
+ * names, so the join with Cloud panel row names is case-insensitive like
+ * the counts maps.
+ *
+ * Accepts both field spellings: dashboard cluster records expose
+ * `gpus`/`num_nodes`, while raw backend records use
+ * `accelerators`/`nodes`. Scope to the selected workspace by passing
+ * recordsInWorkspace output, the same way the Cloud panel counts do.
+ *
+ * @param {Array<Object>} records - Cluster records with `cloud` and a
+ *   `status` ('UP' means ready)
+ * @returns {Object} Map of lowercase cloud name to GPU entries
+ *   ({type, chips, nodes, readyChips, notReadyChips}), largest capacity first
+ */
+export function gpuCapacityByCloud(records) {
+  const perCloudTypes = {};
+  (records || []).forEach((record) => {
+    if (!record || !record.cloud) {
+      return;
+    }
+    const accelerators = parseAccelerators(record.accelerators ?? record.gpus);
+    if (!accelerators) {
+      return;
+    }
+    // A cluster always has at least one node; treat a missing or invalid
+    // count as 1 rather than dropping the cluster's GPUs entirely.
+    const nodes = Math.max(
+      1,
+      Math.floor(Number(record.nodes ?? record.num_nodes)) || 1
+    );
+    const ready = record.status === 'UP';
+    const cloudKey = record.cloud.toLowerCase();
+    const types = perCloudTypes[cloudKey] || {};
+    Object.entries(accelerators).forEach(([rawType, perNodeCount]) => {
+      const perNode = Number(perNodeCount);
+      if (!Number.isFinite(perNode) || perNode <= 0) {
+        return;
+      }
+      const type = canonicalizeGpuName(rawType);
+      const entry =
+        types[type] ||
+        (types[type] = {
+          type,
+          chips: 0,
+          nodes: 0,
+          readyChips: 0,
+        });
+      const chips = perNode * nodes;
+      entry.chips += chips;
+      entry.nodes += nodes;
+      if (ready) {
+        entry.readyChips += chips;
+      }
+    });
+    perCloudTypes[cloudKey] = types;
+  });
+
+  const capacity = {};
+  Object.entries(perCloudTypes).forEach(([cloudKey, types]) => {
+    capacity[cloudKey] = Object.values(types)
+      .map((entry) => ({
+        ...entry,
+        notReadyChips: entry.chips - entry.readyChips,
+      }))
+      .sort((a, b) => b.chips - a.chips || a.type.localeCompare(b.type));
+  });
+  return capacity;
 }

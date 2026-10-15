@@ -29,6 +29,7 @@ import {
 import {
   buildContextStatsKey,
   countByCloud,
+  gpuCapacityByCloud,
   recordsInWorkspace,
   visibleCloudRows,
 } from '@/utils/infraUtils';
@@ -131,6 +132,49 @@ const SkeletonBadge = () => (
     />
   </span>
 );
+
+// Per-provider GPU capacity cell for the Cloud panel: one line per GPU
+// type with the total chips and node count, plus an up/not-ready split
+// when some of that capacity sits on clusters that are not UP yet.
+// CPU-only providers render an em dash, matching the Clusters/Jobs cells.
+export function CloudGpuCapacityCell({ entries, loading }) {
+  if (loading) {
+    return <SkeletonBadge />;
+  }
+  if (!entries || entries.length === 0) {
+    return (
+      <span className="px-1.5 py-0.5 text-gray-400 text-xs font-medium">—</span>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1 items-start">
+      {entries.map((entry) => (
+        <div
+          key={entry.type}
+          className="flex items-center gap-1.5 whitespace-nowrap"
+        >
+          <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
+            {entry.type}
+          </span>
+          <span className="text-xs text-gray-500">
+            ×{entry.chips} {entry.chips === 1 ? 'chip' : 'chips'} ·{' '}
+            {entry.nodes} {entry.nodes === 1 ? 'node' : 'nodes'}
+          </span>
+          {entry.notReadyChips > 0 && (
+            <span className="text-xs">
+              (<span className="text-green-700">{entry.readyChips} up</span>
+              <span className="text-gray-400"> · </span>
+              <span className="text-amber-600">
+                {entry.notReadyChips} not ready
+              </span>
+              )
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // Single source of truth for the GPU utilization states, their labels, and
 // their segment colors. Both the bar and the legend derive from this so the
@@ -3281,6 +3325,15 @@ export function GPUs() {
     }
     return countByCloud(recordsInWorkspace(cloudJobRecords, selectedWorkspace));
   }, [selectedWorkspace, cloudJobCounts, cloudJobRecords]);
+
+  // Per-provider GPU capacity, scoped to the selected workspace exactly
+  // like the counts above, so the capacity a row shows always matches its
+  // cluster count.
+  const workspaceCloudGpuCapacity = React.useMemo(() => {
+    return gpuCapacityByCloud(
+      recordsInWorkspace(cloudClusterRecords, selectedWorkspace)
+    );
+  }, [selectedWorkspace, cloudClusterRecords]);
   // Cloud rows carry aggregate counts from the connector; re-derive them
   // per workspace before visibility filtering and rendering.
   const workspaceCloudInfraData = React.useMemo(() => {
@@ -3649,6 +3702,9 @@ export function GPUs() {
                     <th className="p-3 text-left font-medium text-gray-600 w-24">
                       Jobs
                     </th>
+                    <th className="p-3 text-left font-medium text-gray-600">
+                      GPUs
+                    </th>
                     <th className="p-3 text-right font-medium text-gray-600 w-12" />
                   </tr>
                 </thead>
@@ -3721,6 +3777,22 @@ export function GPUs() {
                             <span className="px-2 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
                               {jobCount ?? 0}
                             </span>
+                          )}
+                        </td>
+                        <td className="p-3">
+                          {cloud.storageOnly ? (
+                            <NonCapitalizedTooltip content="Storage-only infrastructure does not run GPU clusters">
+                              <span className="px-1.5 py-0.5 text-gray-400 text-xs font-medium cursor-help">
+                                —
+                              </span>
+                            </NonCapitalizedTooltip>
+                          ) : (
+                            <CloudGpuCapacityCell
+                              entries={
+                                workspaceCloudGpuCapacity[cloudKey] || []
+                              }
+                              loading={clusterDataLoading}
+                            />
                           )}
                         </td>
                         <td className="p-3 text-right">
