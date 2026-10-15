@@ -851,6 +851,7 @@ _EXPECTED_STOCK_MODES = {
     'quantacloud': 'units',
     'primeintellect': 'units',
     'ornn': 'units',
+    'packet': 'catalog',
 }
 
 

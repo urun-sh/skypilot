@@ -98,6 +98,7 @@ export const CLOUDS_LIST = [
   'Nebius',
   'OCI',
   'Ornn',
+  'Packet',
   'Paperspace',
   'PrimeIntellect',
   'RunPod',
@@ -130,6 +131,7 @@ export const PROVIDER_OFFERINGS_CLOUDS = [
   'quantacloud',
   'primeintellect',
   'ornn',
+  'packet',
 ];
 
 export const CLOUD_CANONICALIZATIONS = Object.fromEntries([

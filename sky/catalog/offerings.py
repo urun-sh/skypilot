@@ -36,6 +36,7 @@ DEFAULT_OFFERINGS_CLOUDS = [
     'quantacloud',
     'primeintellect',
     'ornn',
+    'packet',
 ]
 
 _CLOUDS_CSV_FILENAME = '{cloud}/vms.csv'
