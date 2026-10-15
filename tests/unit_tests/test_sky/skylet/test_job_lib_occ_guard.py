@@ -41,7 +41,10 @@ def _add_occ_row(run_timestamp: str, status_setter) -> int:
         "urunocc",
         run_timestamp,
         "{}",
-        metadata=json.dumps({"urun_occ": True, "occupant_id": run_timestamp}),
+        metadata=json.dumps({
+            "urun_occ": True,
+            "occupant_id": run_timestamp
+        }),
     )
     if status_setter is not None:
         status_setter(job_id)
