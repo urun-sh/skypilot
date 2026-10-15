@@ -168,6 +168,36 @@ def parse_instance_type_token(instance_type: str) -> Tuple[str, int]:
     return accelerator, int(count)
 
 
+_RAM_GB_RE = re.compile(r'([0-9]+(?:\.[0-9]+)?)\s*GB\s*ram', re.IGNORECASE)
+_VCPU_RE = re.compile(r'(?<![0-9.])([0-9]+(?:\.[0-9]+)?)\s*vCPU', re.IGNORECASE)
+
+
+def _description_ram_gb(description: Any) -> Optional[float]:
+    """The box RAM in GiB from the product's description prose
+    ("96GB ram · 6 vCPU · ..."), or None when the description carries no
+    parseable RAM — the caller skips the row (SkyPilot's launch
+    validation rejects memory <= 0)."""
+    match = _RAM_GB_RE.search(str(description or ''))
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _description_vcpus(description: Any) -> float:
+    """The box vCPU count from the product's description prose, or 0.0 when
+    unparseable (0 vCPUs prices fine; only memory must be positive)."""
+    match = _VCPU_RE.search(str(description or ''))
+    if not match:
+        return 0.0
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return 0.0
+
+
 def _product_row(product: Dict[str, Any],
                  region_name: str) -> Optional[List[Any]]:
     """One (product, region) -> one CSV row, or None when not lane-rentable.
@@ -203,11 +233,18 @@ def _product_row(product: Dict[str, Any],
     gpu_count = parse_product_gpu_count(name)
     price = (cents_per_gpu_hour / 100.0) * gpu_count
     vram = product.get('vramGb')
-    # vCPUs / RAM are not exposed as fields on the products surface (the
-    # description strings carry them in prose); the catalog carries 0.0
-    # and the accelerator path drives selection (the controller pins the
-    # instance_type token, so cpus/mem lookups are not on this lane's
-    # path).
+    # vCPUs / RAM are not exposed as FIELDS on the products surface — the
+    # description strings carry them in prose ("96GB ram · 6 vCPU · 150GB
+    # ephemeral NVME", measured live 2026-10-15) — so the row PARSES them
+    # out of the description. A row with no parseable POSITIVE RAM is
+    # skipped: SkyPilot's launch validation rejects memory <= 0 (measured
+    # live on the armed claim 2026-10-15: the 0.0-placeholder row launched
+    # Failed with "'memory' field should be positive. Found: '0.0'") — a
+    # placeholder row would quote a box the launch can never boot.
+    ram_gib = _description_ram_gb(product.get('description'))
+    if ram_gib is None or ram_gib <= 0:
+        return None
+    vcpus = _description_vcpus(product.get('description'))
     # pylint: disable=protected-access
     # fetch_latitude's _gpu_info_str is the ONE canonical GpuInfo builder
     # (the vet tier flagged a drifting inline copy on the quantacloud
@@ -217,8 +254,8 @@ def _product_row(product: Dict[str, Any],
         instance_type_token(accelerator, int(gpu_count)),
         accelerator,
         int(gpu_count),
-        0.0,
-        0.0,
+        vcpus,
+        ram_gib,
         price,
         str(region_name),
         gpu_info,
