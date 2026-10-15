@@ -121,9 +121,10 @@ def _strip_vendor_noise(name: str) -> str:
 
 def normalise_accelerator(product_name: Optional[str]) -> str:
     """The ONE accelerator token for a product display name, or ''."""
-    if not str(product_name or '').strip():
+    name = str(product_name or '')
+    if not name.strip():
         return ''
-    fragment = _strip_vendor_noise(product_name)
+    fragment = _strip_vendor_noise(name)
     return _ACCELERATOR_MAP.get(fragment, '')
 
 
@@ -162,8 +163,8 @@ def parse_instance_type_token(instance_type: str) -> Tuple[str, int]:
     if (not sep or not accelerator or not count.isdigit() or int(count) < 1 or
             not accelerator.isalnum()):
         raise PacketCatalogError(
-            f"instance type {instance_type!r} is not a '<accelerator>:<"
-            '>count>\' Packet.ai token (e.g. rtxpro6000:1)')
+            f'instance type {instance_type!r} is not a '
+            '`<accelerator>:<count>` Packet.ai token (e.g. rtxpro6000:1)')
     return accelerator, int(count)
 
 
@@ -207,6 +208,10 @@ def _product_row(product: Dict[str, Any],
     # and the accelerator path drives selection (the controller pins the
     # instance_type token, so cpus/mem lookups are not on this lane's
     # path).
+    # pylint: disable=protected-access
+    # fetch_latitude's _gpu_info_str is the ONE canonical GpuInfo builder
+    # (the vet tier flagged a drifting inline copy on the quantacloud
+    # carry); the same access that fetcher makes.
     gpu_info = fetch_latitude._gpu_info_str(accelerator, int(gpu_count), vram)
     return [
         instance_type_token(accelerator, int(gpu_count)),

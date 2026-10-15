@@ -67,8 +67,8 @@ def _get_df() -> 'pd.DataFrame':
                 'written by sky.catalog.data_fetchers.fetch_packet '
                 '(GET /launch-options; the controller primes it at '
                 'startup). Refusing to report an empty catalog, which '
-                "would read as 'no capacity' rather than 'not "
-                "configured'.") from exc
+                'would read as `no capacity` rather than `not '
+                'configured`.') from exc
         else:
             df = df[df['InstanceType'].notna()]
             if 'AcceleratorName' in df.columns:
