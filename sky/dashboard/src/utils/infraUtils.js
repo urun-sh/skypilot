@@ -200,7 +200,10 @@ export function gpuCapacityByCloud(records) {
       1,
       Math.floor(Number(record.nodes ?? record.num_nodes)) || 1
     );
-    const ready = record.status === 'UP';
+    // The backend's raw status is 'UP', but the dashboard cluster records
+    // are already mapped (UP -> 'RUNNING'); accept both so live capacity
+    // is not reported entirely not-ready.
+    const ready = record.status === 'UP' || record.status === 'RUNNING';
     const cloudKey = record.cloud.toLowerCase();
     const types = perCloudTypes[cloudKey] || {};
     // Canonical GPU types already counted for this record, so a record

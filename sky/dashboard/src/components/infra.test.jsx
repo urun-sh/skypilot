@@ -396,6 +396,35 @@ describe('gpuCapacityByCloud', () => {
     ]);
   });
 
+  it('treats the dashboard-mapped RUNNING status as ready', () => {
+    // Live cluster records from the clusters connector carry the mapped
+    // status ('RUNNING'), not the backend's raw 'UP' — both must count as
+    // ready capacity (prod shape: 8 RTXPRO6000 workers all RUNNING).
+    const capacity = gpuCapacityByCloud([
+      {
+        cloud: 'GCP',
+        accelerators: { RTXPRO6000: 1 },
+        nodes: 1,
+        status: 'RUNNING',
+      },
+      {
+        cloud: 'GCP',
+        accelerators: { RTXPRO6000: 1 },
+        nodes: 1,
+        status: 'RUNNING',
+      },
+    ]);
+    expect(capacity.gcp).toEqual([
+      {
+        type: 'RTXPRO6000',
+        chips: 2,
+        nodes: 2,
+        readyChips: 2,
+        notReadyChips: 0,
+      },
+    ]);
+  });
+
   it('aggregates multiple clusters of the same type per provider', () => {
     const capacity = gpuCapacityByCloud([
       { cloud: 'GCP', gpus: { H100: 1 }, num_nodes: 2, status: 'UP' },
