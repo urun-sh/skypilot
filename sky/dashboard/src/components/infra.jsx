@@ -49,7 +49,9 @@ import {
 import {
   CLOUDS_LIST,
   MANAGED_JOBS_SUMMARY_ARGS,
+  PROVIDER_OFFERINGS_CLOUDS,
 } from '@/data/connectors/constants';
+import { getProviderOfferings } from '@/data/connectors/provider-offerings';
 import {
   runSkyCheck,
   getWorkspaces,
@@ -94,6 +96,7 @@ import {
 import {
   NonCapitalizedTooltip,
   LastUpdatedTimestamp,
+  relativeTime,
 } from '@/components/utils';
 import {
   AllowedNodesHint,
@@ -172,6 +175,253 @@ export function CloudGpuCapacityCell({ entries, loading }) {
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+// "Provider Offerings" section columns. `$/hr` / `Spot $/hr` hold the
+// cheapest price across the provider's rows for that GPU type.
+const PROVIDER_OFFERINGS_COLUMNS = [
+  'Provider',
+  'GPU',
+  'Counts',
+  '$/hr',
+  'Spot $/hr',
+  'Regions',
+  'Updated',
+];
+
+// Cheapest $/hr rendered as $X.XX; a null price (or a non-numeric value)
+// renders the same em dash as the other empty cells.
+const formatOfferingPrice = (price) =>
+  typeof price === 'number' && !isNaN(price) ? `$${price.toFixed(2)}` : '—';
+
+// Distinct accelerator counts offered, joined for display; the full sorted
+// region list truncates in place but stays one hover away via the tooltip.
+const formatOfferingRegions = (regions) => {
+  if (!regions || regions.length === 0) {
+    return <span className="text-gray-400 text-xs font-medium">—</span>;
+  }
+  const text = regions.join(', ');
+  return (
+    <NonCapitalizedTooltip content={text}>
+      <span className="block max-w-[200px] truncate text-xs text-gray-500">
+        {text}
+      </span>
+    </NonCapitalizedTooltip>
+  );
+};
+
+// "Provider Offerings": what every GPU provider's catalog currently offers
+// (GPU types, counts, prices, regions), as read by the server from the
+// provider catalog CSVs the controller refreshes every few hours — NOT from
+// live clusters, so a provider with zero clusters still shows its offerings.
+// Every default provider gets a row: one per GPU type when the catalog is on
+// disk, or a single muted "no catalog yet" row when it isn't, so the section
+// never hides a provider for being new or unused. Failures render inside the
+// section instead of crashing the page.
+export function ProviderOfferingsSection({ providers, loading, error }) {
+  if (loading) {
+    return (
+      <div className="rounded-lg border bg-card text-card-foreground shadow-sm mb-6">
+        <div className="p-5">
+          <h3 className="text-lg font-semibold mb-4">Provider Offerings</h3>
+          <div className="overflow-x-auto rounded-md border shadow-sm bg-card">
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  {PROVIDER_OFFERINGS_COLUMNS.map((column) => (
+                    <th
+                      key={column}
+                      className="p-3 text-left font-medium text-gray-600"
+                    >
+                      {column}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="bg-card divide-y divide-gray-200">
+                {Array.from({ length: 4 }).map((_, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {PROVIDER_OFFERINGS_COLUMNS.map((column) => (
+                      <td key={column} className="p-3">
+                        <SkeletonBadge />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border bg-card text-card-foreground shadow-sm mb-6">
+        <div className="p-5">
+          <h3 className="text-lg font-semibold mb-4">Provider Offerings</h3>
+          <p className="text-sm text-red-500">
+            Failed to load provider GPU offerings: {error}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Default providers first (fixed order), then any extras the endpoint
+  // reports, so the section lists every default provider even when the
+  // response omits one.
+  const providerKeys = [
+    ...PROVIDER_OFFERINGS_CLOUDS,
+    ...Object.keys(providers || {})
+      .filter((cloud) => !PROVIDER_OFFERINGS_CLOUDS.includes(cloud))
+      .sort(),
+  ];
+  // Canonical capitalized name (CLOUDS_LIST style); a provider missing from
+  // that list falls back to the endpoint's raw key.
+  const displayName = (cloud) =>
+    CLOUDS_LIST.find((c) => c.toLowerCase() === cloud) || cloud;
+  const presentCount = providerKeys.filter(
+    (cloud) => providers?.[cloud]?.present === true
+  ).length;
+
+  return (
+    <div className="rounded-lg border bg-card text-card-foreground shadow-sm mb-6">
+      <div className="p-5">
+        <div className="flex items-center mb-1">
+          <h3 className="text-lg font-semibold">Provider Offerings</h3>
+          <span className="ml-2 px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full text-xs font-medium">
+            {presentCount} of {providerKeys.length} with catalog
+          </span>
+        </div>
+        <p className="text-xs text-gray-500 mb-3">
+          What each provider currently offers — read from the provider catalog
+          CSVs on disk, which the controller refreshes from the provider APIs
+          every few hours. Not live API values; independent of live clusters.
+        </p>
+        <div className="overflow-x-auto rounded-md border shadow-sm bg-card">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                {PROVIDER_OFFERINGS_COLUMNS.map((column) => (
+                  <th
+                    key={column}
+                    className="p-3 text-left font-medium text-gray-600"
+                  >
+                    {column}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="bg-card divide-y divide-gray-200">
+              {providerKeys.map((cloud) => {
+                const entry = providers?.[cloud] || {};
+                // One row per GPU type, sorted by name; the provider and
+                // updated cells span them.
+                const gpus = (Array.isArray(entry.gpus) ? entry.gpus : [])
+                  .map((gpu) => ({
+                    name: gpu?.name ?? '',
+                    counts: (Array.isArray(gpu?.counts) ? gpu.counts : [])
+                      .filter((count) => Number.isFinite(count))
+                      .sort((a, b) => a - b),
+                    price: typeof gpu?.price === 'number' ? gpu.price : null,
+                    spot_price:
+                      typeof gpu?.spot_price === 'number'
+                        ? gpu.spot_price
+                        : null,
+                    regions: (Array.isArray(gpu?.regions) ? gpu.regions : [])
+                      .filter(Boolean)
+                      .sort(),
+                  }))
+                  .sort((a, b) => a.name.localeCompare(b.name));
+                // CSV mtime arrives as unix seconds.
+                const updatedAt = entry.updated_at
+                  ? new Date(entry.updated_at * 1000)
+                  : null;
+
+                if (entry.present !== true) {
+                  return (
+                    <tr key={cloud} className="hover:bg-muted/50">
+                      <td className="p-3 font-medium text-gray-700">
+                        {displayName(cloud)}
+                      </td>
+                      <td
+                        className="p-3 text-gray-400 text-xs font-medium"
+                        colSpan={PROVIDER_OFFERINGS_COLUMNS.length - 1}
+                      >
+                        No catalog yet — refreshed by the controller every few
+                        hours
+                      </td>
+                    </tr>
+                  );
+                }
+
+                if (gpus.length === 0) {
+                  // Catalog exists but lists no GPU rows (e.g. a CPU-only
+                  // provider) — still a row, with its freshness.
+                  return (
+                    <tr key={cloud} className="hover:bg-muted/50">
+                      <td className="p-3 font-medium text-gray-700">
+                        {displayName(cloud)}
+                      </td>
+                      <td
+                        className="p-3 text-gray-400 text-xs font-medium"
+                        colSpan={PROVIDER_OFFERINGS_COLUMNS.length - 2}
+                      >
+                        No GPUs in the current catalog
+                      </td>
+                      <td className="p-3 text-gray-600">
+                        {updatedAt ? relativeTime(updatedAt) : '—'}
+                      </td>
+                    </tr>
+                  );
+                }
+
+                return gpus.map((gpu, gpuIndex) => (
+                  <tr
+                    key={`${cloud}:${gpu.name}`}
+                    className="hover:bg-muted/50"
+                  >
+                    {gpuIndex === 0 && (
+                      <td
+                        className="p-3 font-medium text-gray-700"
+                        rowSpan={gpus.length}
+                      >
+                        {displayName(cloud)}
+                      </td>
+                    )}
+                    <td className="p-3">
+                      <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
+                        {gpu.name}
+                      </span>
+                    </td>
+                    <td className="p-3 text-gray-600">
+                      {gpu.counts.length > 0 ? gpu.counts.join(', ') : '—'}
+                    </td>
+                    <td className="p-3 text-gray-600">
+                      {formatOfferingPrice(gpu.price)}
+                    </td>
+                    <td className="p-3 text-gray-600">
+                      {formatOfferingPrice(gpu.spot_price)}
+                    </td>
+                    <td className="p-3">
+                      {formatOfferingRegions(gpu.regions)}
+                    </td>
+                    {gpuIndex === 0 && (
+                      <td className="p-3 text-gray-600" rowSpan={gpus.length}>
+                        {updatedAt ? relativeTime(updatedAt) : '—'}
+                      </td>
+                    )}
+                  </tr>
+                ));
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2617,6 +2867,12 @@ export function GPUs() {
   const [cloudJobRecords, setCloudJobRecords] = useState([]);
   const [contextWorkspaceMap, setContextWorkspaceMap] = useState({});
   const [contextErrors, setContextErrors] = useState({});
+  // Provider Offerings: what every provider's catalog currently offers —
+  // independent of live clusters. Own loading/error state so a failure
+  // stays inside the section instead of crashing the page.
+  const [providerOfferings, setProviderOfferings] = useState({});
+  const [offeringsLoading, setOfferingsLoading] = useState(true);
+  const [offeringsError, setOfferingsError] = useState(null);
 
   // Workspace-aware infrastructure state
   const [workspaceInfrastructure, setWorkspaceInfrastructure] = useState({});
@@ -2708,6 +2964,7 @@ export function GPUs() {
           fetchManagedJobsData(),
           fetchClusterStatsData(),
           fetchSlurmData(),
+          fetchProviderOfferings(showLoadingIndicators),
         ]);
 
         // Mark main fetch as done, check if we can set isFetching = false
@@ -3017,6 +3274,49 @@ export function GPUs() {
       setTotalClouds(0);
       setCloudDataLoaded(true);
       setCloudLoading(false);
+    }
+  };
+
+  // Provider Offerings data fetching. The server reads the provider catalog
+  // CSVs the controller runner refreshes (and never triggers a fetch itself),
+  // so there is no dashboard cache to respect — every refresh re-asks.
+  //
+  // The interval refresh (showLoadingIndicators: false) can interleave with a
+  // foreground refresh, so results apply only from the newest request
+  // (stale responses never overwrite newer data), while the loading state is
+  // owned by foreground requests as a group: it clears only when the last
+  // pending foreground request settles, however the interleaving goes.
+  const offeringsRequestSeq = React.useRef(0);
+  const offeringsForegroundPending = React.useRef(0);
+  const fetchProviderOfferings = async (showLoadingIndicators = true) => {
+    const seq = ++offeringsRequestSeq.current;
+    if (showLoadingIndicators) {
+      offeringsForegroundPending.current += 1;
+      setOfferingsLoading(true);
+    }
+    try {
+      const data = await getProviderOfferings();
+      if (seq !== offeringsRequestSeq.current) {
+        return; // A newer request superseded this response.
+      }
+      setProviderOfferings(data?.providers || {});
+      setOfferingsError(null);
+    } catch (error) {
+      console.error('Error fetching provider GPU offerings:', error);
+      if (seq !== offeringsRequestSeq.current) {
+        return;
+      }
+      setProviderOfferings({});
+      setOfferingsError(
+        error?.message || 'Failed to load provider GPU offerings'
+      );
+    } finally {
+      if (showLoadingIndicators) {
+        offeringsForegroundPending.current -= 1;
+        if (offeringsForegroundPending.current === 0) {
+          setOfferingsLoading(false);
+        }
+      }
     }
   };
 
@@ -3829,6 +4129,16 @@ export function GPUs() {
     );
   };
 
+  const renderProviderOfferings = () => {
+    return (
+      <ProviderOfferingsSection
+        providers={providerOfferings}
+        loading={offeringsLoading}
+        error={offeringsError}
+      />
+    );
+  };
+
   const renderSSHNodePoolInfrastructure = () => {
     return (
       <InfrastructureSection
@@ -3992,6 +4302,18 @@ export function GPUs() {
         priority: 3, // Cloud gets priority 3 within same activity level
       });
 
+      // Add Provider Offerings section (always show) — what every provider's
+      // catalog currently offers, including providers with zero clusters.
+      // hasActivity stays true: the catalog always renders a row per default
+      // provider, so the section never sinks behind inactive ones. Ties with
+      // SSH at priority 4 and the stable sort keeps it after Cloud.
+      sections.push({
+        name: 'Provider Offerings',
+        render: renderProviderOfferings,
+        hasActivity: true,
+        priority: 4, // After Cloud; SSH ties and stays after via stable sort
+      });
+
       // Add SSH section (always show)
       const sshHasActivity = sshContexts.length > 0;
       sections.push({
@@ -4037,6 +4359,7 @@ export function GPUs() {
     sshAndKubeJobsDataLoading ||
     clusterDataLoading ||
     isKubeContextsLoading ||
+    offeringsLoading ||
     isFetching ||
     (hasInfraExtension && pluginInfraLoading);
 

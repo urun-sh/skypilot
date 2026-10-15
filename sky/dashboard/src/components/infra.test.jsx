@@ -16,8 +16,10 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import {
   InfrastructureSection,
   CloudGpuCapacityCell,
+  ProviderOfferingsSection,
   slurmRequestableCounts,
 } from '@/components/infra';
+import { PROVIDER_OFFERINGS_CLOUDS } from '@/data/connectors/constants';
 import {
   countByCloud,
   gpuCapacityByCloud,
@@ -567,5 +569,131 @@ describe('CloudGpuCapacityCell', () => {
   it('renders an em dash for CPU-only providers', () => {
     render(<CloudGpuCapacityCell entries={[]} loading={false} />);
     expect(screen.getByText('—')).toBeInTheDocument();
+  });
+});
+
+// The Provider Offerings section lists what every default provider's catalog
+// currently offers, independent of live clusters: a present provider renders
+// one row per GPU type (sorted by name), and an absent or missing provider
+// still gets its row with a muted "no catalog yet" note.
+describe('ProviderOfferingsSection', () => {
+  // three hours ago, in unix seconds (the CSV mtime contract)
+  const threeHoursAgo = Math.floor(Date.now() / 1000) - 3 * 3600;
+
+  const fixture = {
+    vast: {
+      present: true,
+      updated_at: threeHoursAgo,
+      gpus: [
+        // deliberately unsorted: the section must sort rows by GPU name
+        {
+          name: 'RTX6000Ada',
+          counts: [2, 1],
+          price: 0.35,
+          spot_price: 0.18,
+          regions: ['us-west', 'us-east'],
+        },
+        {
+          name: 'H100',
+          counts: [1],
+          price: 2.4,
+          spot_price: null,
+          regions: ['us-east'],
+        },
+      ],
+    },
+    ornn: { present: false, updated_at: null, gpus: null },
+  };
+
+  const renderOfferings = (props) =>
+    render(
+      <ProviderOfferingsSection
+        providers={fixture}
+        loading={false}
+        error={null}
+        {...props}
+      />
+    );
+
+  it('renders every default provider, present or absent', () => {
+    const { container } = renderOfferings({ providers: fixture });
+    // Every default provider keeps a row, plus Vast's second GPU type.
+    expect(tableRows(container)).toHaveLength(
+      PROVIDER_OFFERINGS_CLOUDS.length + 1
+    );
+    ['AWS', 'GCP', 'Shadeform', 'Spheron', 'Lambda', 'Vast'].forEach((name) =>
+      expect(screen.getByText(name)).toBeInTheDocument()
+    );
+  });
+
+  it('renders the present provider GPU rows sorted by name with formatted prices', () => {
+    const { container } = renderOfferings({ providers: fixture });
+    const rows = tableRows(container);
+    // Vast is the 6th default provider, so its rows follow five absent
+    // providers' single rows; H100 sorts before RTX6000Ada.
+    const vastRows = rows.slice(5, 7);
+    expect(normalize(vastRows[0])).toContain('H100');
+    expect(normalize(vastRows[1])).toContain('RTX6000Ada');
+    // counts joined, prices $X.XX
+    expect(normalize(vastRows[1])).toContain('1, 2');
+    expect(screen.getByText('$0.35')).toBeInTheDocument();
+    expect(screen.getByText('$0.18')).toBeInTheDocument();
+    expect(screen.getByText('$2.40')).toBeInTheDocument();
+    // region list renders in full (truncation is CSS-only, tooltip has all)
+    expect(screen.getByText('us-east, us-west')).toBeInTheDocument();
+  });
+
+  it('renders the absent provider with the no-catalog note, not a price row', () => {
+    const { container } = renderOfferings({ providers: fixture });
+    const ornnRow = tableRows(container).find((row) =>
+      normalize(row).includes('Ornn')
+    );
+    expect(ornnRow).toBeTruthy();
+    expect(normalize(ornnRow)).toContain(
+      'No catalog yet — refreshed by the controller every few hours'
+    );
+    expect(normalize(ornnRow)).not.toContain('$');
+  });
+
+  it('shows the catalog freshness as a relative time', () => {
+    renderOfferings({ providers: fixture });
+    expect(screen.getByText(/3h ago/)).toBeInTheDocument();
+  });
+
+  it('defaults missing provider entries to absent rows', () => {
+    const { container } = renderOfferings({ providers: {} });
+    // No provider was reported at all: every default provider still shows.
+    expect(tableRows(container)).toHaveLength(PROVIDER_OFFERINGS_CLOUDS.length);
+    expect(screen.getAllByText(/No catalog yet/)).toHaveLength(
+      PROVIDER_OFFERINGS_CLOUDS.length
+    );
+  });
+
+  it('renders skeleton rows while loading and no provider names', () => {
+    const { container } = renderOfferings({ loading: true, providers: {} });
+    expect(tableRows(container)).toHaveLength(4);
+    expect(container.textContent).not.toContain('AWS');
+    expect(container.textContent).toContain('Provider Offerings');
+  });
+
+  it('renders the error in-section instead of crashing', () => {
+    const { container } = renderOfferings({
+      error: 'Failed to get provider GPU offerings with status 502',
+    });
+    expect(container.textContent).toContain(
+      'Failed to load provider GPU offerings: Failed to get provider GPU offerings with status 502'
+    );
+  });
+
+  it('renders a present provider with an empty GPU list as a no-GPU row', () => {
+    const { container } = renderOfferings({
+      providers: {
+        vast: { present: true, updated_at: threeHoursAgo, gpus: [] },
+      },
+    });
+    const vastRow = tableRows(container).find((row) =>
+      normalize(row).includes('Vast')
+    );
+    expect(normalize(vastRow)).toContain('No GPUs in the current catalog');
   });
 });
