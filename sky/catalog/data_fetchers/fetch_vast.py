@@ -127,7 +127,7 @@ if __name__ == '__main__':
     for offer in offerList:
         geo = str(offer.get('geolocation') or '').strip()
         if geo:
-            offer['geolocation'] = geo.split(',')[-1].strip()
+            offer['geolocation'] = geo.rsplit(',', maxsplit=1)[-1].strip()
 
     priceMap: Dict[str, List] = collections.defaultdict(list)
     for offer in offerList:
@@ -183,6 +183,17 @@ if __name__ == '__main__':
                 toList.append(instance)
 
         maxBid = max([x.get('SpotPrice') for x in toList])
+        # LIVE STOCK: the dedup below collapses sibling offers into one
+        # row per (InstanceType, Region, HostingType) stub, so the CSV
+        # would otherwise read as ONE machine where N are rentable.
+        # AvailableUnits carries the number of offers (machines) that
+        # collapse into each stub, so downstream aggregation
+        # (sky/catalog/offerings.py region_details) can count real
+        # stock: sum(AvailableUnits) over a bucket must equal the
+        # number of live machines, never the number of CSV rows.
+        stub_units: Dict[str, int] = collections.Counter(
+            f'{x["InstanceType"]} {x["Region"][-2:]} '
+            f'{x.get("HostingType", 0)}' for x in toList)
         for instance in toList:
             hosting_type = instance.get('HostingType', 0)
             stub = (f'{instance["InstanceType"]} '
@@ -194,6 +205,13 @@ if __name__ == '__main__':
                 printstub = f'{stub}#print'
                 if printstub not in seen:
                     instance['SpotPrice'] = f'{maxBid:.2f}'
+                    # A spot-price marker for the SAME machines the
+                    # first row already counted: 0 keeps
+                    # sum(AvailableUnits) equal to the real machine
+                    # count (this row adds no stock; it re-emits the
+                    # group's max bid under the group's cheapest
+                    # instance type).
+                    instance['AvailableUnits'] = 0
                     csvList.append(instance)
                     seen.add(printstub)
             else:
@@ -208,11 +226,16 @@ if __name__ == '__main__':
                 # second occurrence was needed to emit the first stub's
                 # row).
                 seen.add(stub)
+                instance['AvailableUnits'] = stub_units[stub]
                 csvList.append(instance)
 
     os.makedirs('vast', exist_ok=True)
     with open('vast/vms.csv', 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=[x[1] for x in mapped_keys])
+        # AvailableUnits is derived (machines collapsed into the stub
+        # row), not mapped from an offer field — see stub_units above.
+        writer = csv.DictWriter(csvfile,
+                                fieldnames=[x[1] for x in mapped_keys] +
+                                ['AvailableUnits'])
         writer.writeheader()
 
         for instance in csvList:

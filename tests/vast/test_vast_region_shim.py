@@ -272,6 +272,66 @@ class TestVastCatalogFetch(unittest.TestCase):
                 finally:
                     os.chdir(old_cwd)
 
+    def test_available_units_counts_collapsed_offers(self):
+        """AvailableUnits: one CSV row stands for N machines.
+
+        The stub dedup collapses sibling offers per (InstanceType,
+        Region, HostingType), so without a per-row machine count the
+        catalog reads as fewer machines than are rentable. Equal-priced
+        offers survive the median filter together: the first stub row
+        carries the full bucket count, the spot-price marker row
+        carries 0 (it adds no stock), so the per-region sum equals the
+        number of live machines — what offerings.region_details
+        counts on.
+        """
+        vast.vast()  # triggers import + patch
+
+        import tempfile
+
+        # Three identical-spec EU offers at the same price (one stub
+        # bucket), plus one cheaper MO offer (its own stub bucket).
+        offers = [_mock_offer('Dublin, IE, EU', 1.27) for _ in range(3)]
+        offers.append(_mock_offer('Cotai, MO, AS', 0.91))
+
+        with mock.patch.object(vast, 'vast') as mock_vast:
+            mock_vast.return_value.search_offers.return_value = offers
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                old_cwd = os.getcwd()
+                os.chdir(tmpdir)
+                try:
+                    import contextlib
+                    import csv
+                    import io
+                    import runpy
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        runpy.run_module('sky.catalog.data_fetchers.fetch_vast',
+                                         run_name='__main__')
+
+                    csv_path = os.path.join(tmpdir, 'vast', 'vms.csv')
+                    self.assertTrue(os.path.exists(csv_path))
+                    with open(csv_path) as f:
+                        rows = list(csv.DictReader(f))
+                    self.assertTrue(rows, 'fetcher produced a header-only CSV')
+                    self.assertIn('AvailableUnits', rows[0])
+                    # EU stub: 3 machines collapsed into one stub —
+                    # the marker row adds none.
+                    eu_units = sum(
+                        int(r['AvailableUnits'])
+                        for r in rows
+                        if r['Region'] == 'EU')
+                    self.assertEqual(
+                        eu_units, 3,
+                        f'EU stub must count all 3 machines: {rows}')
+                    # Macau stub (Region = trailing georegion token
+                    # 'AS'): a single machine.
+                    mo_units = [
+                        r['AvailableUnits'] for r in rows if r['Region'] == 'AS'
+                    ]
+                    self.assertEqual(mo_units, ['1'], f'rows: {rows}')
+                finally:
+                    os.chdir(old_cwd)
+
 
 if __name__ == '__main__':
     unittest.main()
