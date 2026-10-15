@@ -39,10 +39,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 API_BASE = "https://app.spheron.ai"
 OFFERS_PATH = "/api/gpu-offers"
@@ -92,8 +93,7 @@ def _request(url: str, api_key: str) -> Dict[str, Any]:
     except urllib.error.HTTPError as exc:  # pragma: no cover - network path
         # Never echo the key. 429 is the documented rate limit: 100 req/15 min.
         raise SpheronCatalogError(
-            f"GET {url.split('?')[0]} failed: HTTP {exc.code}"
-        ) from exc
+            f"GET {url.split('?')[0]} failed: HTTP {exc.code}") from exc
 
 
 def fetch_pages(api_key: str, limit: int = PAGE_LIMIT) -> List[Dict[str, Any]]:
@@ -137,14 +137,14 @@ def strip_region_prefix(region: str) -> str:
 def _gpu_info(accelerator: str, count: int, vram_gb: int) -> str:
     """SkyPilot's GpuInfo blob. Single quotes, matching the other fetchers."""
     info = {
-        "Gpus": [
-            {
-                "Name": accelerator,
-                "Manufacturer": "NVIDIA",
-                "Count": float(count),
-                "MemoryInfo": {"SizeInMiB": int(vram_gb) * 1024},
-            }
-        ],
+        "Gpus": [{
+            "Name": accelerator,
+            "Manufacturer": "NVIDIA",
+            "Count": float(count),
+            "MemoryInfo": {
+                "SizeInMiB": int(vram_gb) * 1024
+            },
+        }],
         "TotalGpuMemoryInMiB": int(vram_gb) * 1024 * int(count),
     }
     return json.dumps(info).replace('"', "'")
@@ -153,8 +153,7 @@ def _gpu_info(accelerator: str, count: int, vram_gb: int) -> str:
 def _require(offer: Dict[str, Any], key: str, offer_id: str) -> Any:
     if key not in offer or offer[key] is None:
         raise SpheronCatalogError(
-            f"offer {offer_id!r} is missing required field {key!r}"
-        )
+            f"offer {offer_id!r} is missing required field {key!r}")
     return offer[key]
 
 
@@ -164,7 +163,8 @@ def iter_rows(pages: Iterable[Dict[str, Any]]) -> Iterator[List[Any]]:
         for group in payload.get("data", []):
             gpu_type = group.get("gpuType")
             if not gpu_type:
-                raise SpheronCatalogError(f"gpu group without gpuType: {sorted(group)}")
+                raise SpheronCatalogError(
+                    f"gpu group without gpuType: {sorted(group)}")
             accelerator = normalise_accelerator(gpu_type)
 
             for offer in group.get("offers", []):
@@ -178,8 +178,7 @@ def iter_rows(pages: Iterable[Dict[str, Any]]) -> Iterator[List[Any]]:
                     raise SpheronCatalogError(
                         "offer is missing deployment identity "
                         f"(provider={provider!r}, offerId={offer_id!r}); "
-                        "it could never be provisioned"
-                    )
+                        "it could never be provisioned")
 
                 if provider in EXCLUDED_PROVIDERS:
                     continue
@@ -210,8 +209,7 @@ def iter_rows(pages: Iterable[Dict[str, Any]]) -> Iterator[List[Any]]:
                 clusters = offer.get("clusters") or []
                 if not clusters:
                     raise SpheronCatalogError(
-                        f"offer {offer_id!r} lists no clusters/regions"
-                    )
+                        f"offer {offer_id!r} lists no clusters/regions")
 
                 # InstanceType must round-trip to a deployable offer, and the
                 # deploy call needs provider + offerId together.
@@ -233,6 +231,10 @@ def iter_rows(pages: Iterable[Dict[str, Any]]) -> Iterator[List[Any]]:
 
 
 def write_csv(rows: Iterable[List[Any]], out_path: str) -> int:
+    # The catalog's path getter is side-effect free (see
+    # catalog.common.get_catalog_path), so the writer must create the
+    # output's parent directory itself -- matching fetch_vast.py.
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     written = 0
     with open(out_path, "w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, delimiter=",", quotechar='"')
@@ -247,17 +249,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-key-env", default="SPHERON_API_KEY")
     parser.add_argument("--output", default="spheron/vms.csv")
-    parser.add_argument(
-        "--from-fixture", help="read a recorded payload instead of the network"
-    )
+    parser.add_argument("--from-fixture",
+                        help="read a recorded payload instead of the network")
     args = parser.parse_args(argv)
 
     if args.from_fixture:
         with open(args.from_fixture, encoding="utf-8") as handle:
             pages = json.load(handle)["pages"]
     else:
-        import os
-
         api_key = os.environ.get(args.api_key_env, "").strip()
         if not api_key:
             # Fail hard: an empty key would otherwise yield an empty catalog,
