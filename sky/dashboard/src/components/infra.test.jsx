@@ -17,7 +17,11 @@ import {
   InfrastructureSection,
   slurmRequestableCounts,
 } from '@/components/infra';
-import { countByCloud, visibleCloudRows } from '@/utils/infraUtils';
+import {
+  countByCloud,
+  recordsInWorkspace,
+  visibleCloudRows,
+} from '@/utils/infraUtils';
 
 // The infrastructure table renders one sub-row per GPU type. A Slurm cluster
 // can additionally be expanded into its partitions, which is where the
@@ -340,5 +344,39 @@ describe('countByCloud', () => {
       gcp: 1,
     });
     expect(countByCloud(null)).toEqual({});
+  });
+});
+
+// Workspace scoping for the Cloud panel: with a workspace selected, counts
+// must come only from that workspace's records so activity in another
+// workspace does not leak into the visible rows or their counts.
+describe('recordsInWorkspace', () => {
+  const records = [
+    { cloud: 'GCP', workspace: 'team-a' },
+    { cloud: 'GCP', workspace: 'team-b' },
+    { cloud: 'AWS', workspace: 'team-b' },
+  ];
+
+  it('scopes counts to the selected workspace', () => {
+    expect(countByCloud(recordsInWorkspace(records, 'team-a'))).toEqual({
+      gcp: 1,
+    });
+    expect(countByCloud(recordsInWorkspace(records, 'team-b'))).toEqual({
+      gcp: 1,
+      aws: 1,
+    });
+  });
+
+  it('keeps every record for the All Workspaces option', () => {
+    expect(countByCloud(recordsInWorkspace(records, 'all'))).toEqual({
+      gcp: 2,
+      aws: 1,
+    });
+  });
+
+  it('treats a record without a workspace as outside a specific workspace', () => {
+    expect(
+      countByCloud(recordsInWorkspace([{ cloud: 'GCP' }], 'team-a'))
+    ).toEqual({});
   });
 });

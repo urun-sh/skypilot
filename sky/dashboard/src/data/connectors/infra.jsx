@@ -93,16 +93,18 @@ export async function getEnabledCloudsList() {
     });
 
     // A cloud row shows when sky check reports it enabled OR it has live
-    // clusters/jobs, so a provider running work is never invisible.
+    // clusters/jobs, so a provider running work is never invisible —
+    // including a provider sky check reports that is missing from
+    // CLOUDS_LIST.
     const observedKeys = new Set([
       ...Object.keys(clusterCounts),
       ...Object.keys(jobCounts),
     ]);
+    const canonicalName = (key) =>
+      CLOUDS_LIST.find((c) => c.toLowerCase() === key) || key;
     const names = new Set(CLOUDS_LIST);
-    observedKeys.forEach((key) => {
-      const known = CLOUDS_LIST.find((c) => c.toLowerCase() === key);
-      names.add(known || key);
-    });
+    observedKeys.forEach((key) => names.add(canonicalName(key)));
+    enabledCloudsSet.forEach((key) => names.add(canonicalName(key)));
 
     const clouds = Array.from(names)
       .map((name) => {
@@ -206,6 +208,12 @@ export async function getCloudInfrastructure(forceRefresh = false) {
       return cloudsData[key];
     };
     CLOUDS_LIST.forEach((cloud) => cloudRow(cloud, cloud.toLowerCase()));
+    // Seed rows for enabled clouds missing from CLOUDS_LIST as well, so a
+    // provider sky check reports still gets a row even with no clusters/jobs.
+    enabledCloudsList.forEach((key) => {
+      const canonical = CLOUDS_LIST.find((c) => c.toLowerCase() === key) || key;
+      cloudRow(canonical, key);
+    });
 
     // Count clusters per cloud
     clusters.forEach((cluster) => {

@@ -113,3 +113,22 @@ export function visibleCloudRows(
     return hasLiveResources || workspaceEnabledClouds.includes(key);
   });
 }
+
+/**
+ * Records belonging to the selected workspace. Each record's `workspace`
+ * field decides membership; 'all' returns every record. Used to scope Cloud
+ * panel counts so activity in another workspace does not leak in.
+ *
+ * @param {Array<Object>} records - Records with a `workspace` field
+ * @param {string} selectedWorkspace - Workspace name or 'all'
+ * @returns {Array<Object>} Records visible for the workspace
+ */
+export function recordsInWorkspace(records, selectedWorkspace) {
+  if (!records) {
+    return [];
+  }
+  if (selectedWorkspace === 'all' || !selectedWorkspace) {
+    return records;
+  }
+  return records.filter((record) => record.workspace === selectedWorkspace);
+}
