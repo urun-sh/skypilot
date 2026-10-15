@@ -35,7 +35,8 @@ def isolated_jobs_db(tmp_path, monkeypatch):
     # update_status() returns early while ~/<PERSISTENT_RUN_RESTARTING_SIGNAL_FILE>
     # exists; under xdist another test on the same worker HOME can leave it
     # behind, turning every update_status() here into a no-op.
-    monkeypatch.setattr(job_lib.constants, "PERSISTENT_RUN_RESTARTING_SIGNAL_FILE",
+    monkeypatch.setattr(job_lib.constants,
+                        "PERSISTENT_RUN_RESTARTING_SIGNAL_FILE",
                         str(tmp_path / "no-restarting-signal"))
     yield sky_dir
 
