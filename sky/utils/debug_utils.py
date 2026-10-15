@@ -257,6 +257,7 @@ _REQUEST_BODY_ALLOWLIST: Dict[str, Tuple[str, ...]] = {
     'sky.slurm_cluster_names': (),
     'sky.list_accelerators': (),
     'sky.list_accelerator_counts': (),
+    'sky.provider_gpu_offerings': (),
     'sky.workspaces.delete': (),
     'sky.workspaces.get': (),
     'sky.workspaces.get_config': (),
