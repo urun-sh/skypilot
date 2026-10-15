@@ -56,7 +56,7 @@ export function SSHInstructionsModal({ isOpen, onClose, cluster }) {
           </DialogTitle>
           <DialogDescription>
             SSH into this cluster from your machine (kubectl exec into the
-            controller, which holds the fleet's per-cluster credentials).
+            controller, which holds the fleet&apos;s per-cluster credentials).
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col space-y-4">
@@ -87,7 +87,7 @@ export function SSHInstructionsModal({ isOpen, onClose, cluster }) {
               Requires kubectl access to the prod cluster. The command opens an
               interactive shell through the skypilot-controller manager
               container, which holds the per-cluster key and resolves the
-              cluster's address for you.
+              cluster&apos;s address for you.
             </p>
           </div>
         </div>
