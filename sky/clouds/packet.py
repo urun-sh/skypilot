@@ -309,7 +309,7 @@ class Packet(clouds.Cloud):
         num_nodes: int,
         dryrun: bool = False,
         volume_mounts: Optional[List[Any]] = None,
-    ) -> Dict[str, Optional[str]]:
+    ) -> Dict[str, Any]:
         del cluster_name, dryrun, volume_mounts, num_nodes
         assert zones is None, 'Packet.ai does not support zones.'
         resources = resources.assert_launchable()

@@ -216,7 +216,7 @@ class PacketClient:
     # -- plumbing ---------------------------------------------------------
 
     def _http(self, method: str, url: str, headers: Dict[str, str],
-              payload: Optional[bytes]):
+              payload: Optional[bytes], timeout_s: Optional[int] = None):
         req = urllib.request.Request(url,
                                      data=payload,
                                      headers=headers,
@@ -224,7 +224,10 @@ class PacketClient:
         # No query in errors: no key leakage (the query can carry a token).
         path = url.split('?')[0]
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
+            with urllib.request.urlopen(
+                    req,
+                    timeout=timeout_s
+                    if timeout_s is not None else self._timeout_s) as resp:
                 # resp.read() runs OUTSIDE urlopen's URLError handling: a
                 # stalled body raises TimeoutError/OSError directly and
                 # would escape every caller that only catches PacketError
@@ -287,7 +290,8 @@ class PacketClient:
                     method, url, headers, payload)
             else:
                 status, raw, resp_headers = self._http(method, url, headers,
-                                                       payload)
+                                                       payload,
+                                                       timeout_s=timeout_s)
             if status == 429 and attempt < RATE_LIMIT_RETRIES:
                 # Honor the provider's own hint (X-RateLimit-Reset, a Unix
                 # timestamp); fall back to bounded exponential. Never a
@@ -636,8 +640,10 @@ class PacketClient:
         last_status: Optional[str] = None
         while True:
             payload = self.get_instance(instance_id)
-            instance = (payload.get('instance') if isinstance(
+            raw_instance = (payload.get('instance') if isinstance(
                 payload.get('instance'), dict) else payload)
+            assert isinstance(raw_instance, dict), raw_instance
+            instance = raw_instance
             status = self.instance_status(instance)
             if status:
                 last_status = status
