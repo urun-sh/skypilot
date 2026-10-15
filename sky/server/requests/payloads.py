@@ -829,6 +829,11 @@ class ListAcceleratorCountsBody(RequestBody):
     clouds: Optional[Union[List[str], str]] = None
 
 
+class ProviderGpuOfferingsBody(RequestBody):
+    """The request body for the provider GPU offerings endpoint."""
+    clouds: Optional[List[str]] = None
+
+
 class LocalUpBody(RequestBody):
     """The request body for the local up endpoint."""
     gpus: bool = True

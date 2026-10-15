@@ -427,6 +427,35 @@ async def test_launch_endpoint_passes_auth_user():
         assert args[0] == 'launch-request-id'
 
 
+@pytest.mark.asyncio
+async def test_provider_gpu_offerings_endpoint():
+    """Test the provider_gpu_offerings endpoint: registered, passes auth_user
+    and the provider offerings request name to the scheduler."""
+    from sky.server.requests import payloads
+    from sky.server.requests import request_names
+
+    auth_user = models.User(id='offerings-user-id', name='Offerings User')
+    request = mock.MagicMock()
+    request.state = mock.MagicMock()
+    request.state.request_id = 'offerings-request-id'
+    request.state.auth_user = auth_user
+
+    body = payloads.ProviderGpuOfferingsBody(clouds=['vast', 'lambda'])
+    with mock.patch('sky.server.server.executor.schedule_request_async',
+                    new_callable=mock.AsyncMock) as mock_schedule:
+        await server.provider_gpu_offerings(request, body)
+        mock_schedule.assert_awaited_once()
+        _, kwargs = mock_schedule.call_args
+        assert kwargs['auth_user'] == auth_user
+        assert (kwargs['request_name'] ==
+                request_names.RequestName.PROVIDER_GPU_OFFERINGS)
+
+    # The route must be registered on the FastAPI app.
+    assert '/provider_gpu_offerings' in {
+        getattr(route, 'path', None) for route in server.app.routes
+    }
+
+
 # --- Tests for cleanup_unreferenced_file_mounts ---
 
 # A deterministic 64-char hex string used as a blob ID in tests.

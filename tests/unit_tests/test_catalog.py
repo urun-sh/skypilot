@@ -10,6 +10,7 @@ import pytest
 
 from sky import catalog
 from sky.catalog import common as catalog_common
+from sky.catalog import offerings as catalog_offerings
 from sky.utils import annotations
 
 
@@ -806,3 +807,172 @@ def test_efa_count_duplicate_index_safe():
     df.index = [0] * len(df)
     assert catalog_common.get_efa_count_for_accelerator_impl(df, 'H100',
                                                              8) == 32
+
+
+# ---------------------------------------------------------------------------
+# Provider GPU offerings (sky/catalog/offerings.py)
+# ---------------------------------------------------------------------------
+
+_OFFERINGS_CSV_HEADER = (
+    'InstanceType,AcceleratorName,AcceleratorCount,vCPUs,MemoryGiB,'
+    'GpuInfo,Price,SpotPrice,Region\n')
+
+
+def _write_offerings_csv(catalog_dir, cloud, rows):
+    cloud_dir = os.path.join(catalog_dir, cloud)
+    os.makedirs(cloud_dir, exist_ok=True)
+    csv_path = os.path.join(cloud_dir, 'vms.csv')
+    with open(csv_path, 'w', encoding='utf-8') as f:
+        f.write(_OFFERINGS_CSV_HEADER)
+        f.write('\n'.join(rows) + '\n')
+    return csv_path
+
+
+def _patch_catalog_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(catalog_common, '_ABSOLUTE_VERSIONED_CATALOG_DIR',
+                        str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+
+def test_provider_gpu_offerings_aggregates_catalog(tmp_path, monkeypatch):
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    csv_path = _write_offerings_csv(
+        tmp_path,
+        'vast',
+        [
+            # Sorted by name; counts distinct+sorted; prices are minima.
+            'vast-a100-x1,A100,1,16,96,"{}",3.50,2.20,us-east',
+            'vast-a100-x1-cheap,A100,1,16,96,"{}",3.00,2.10,us-west',
+            'vast-rtx6000ada-x1,RTX6000ADA,1,8,32,"{}",0.50,0.30,us-east',
+            'vast-rtx6000ada-x2,RTX6000ADA,2,16,64,"{}",0.90,0.55,us-west',
+            'vast-rtx6000ada-x4,RTX6000ADA,4,32,128,"{}",1.80,1.10,us-east',
+            # CPU-only row: filtered out by the gpus_only convention.
+            'vast-cpu-x8,,8,32,64,,2.10,1.20,us-east',
+        ])
+    result = catalog.get_provider_gpu_offerings(clouds=['vast'])
+    assert result == {
+        'providers': {
+            'vast': {
+                'present': True,
+                'updated_at': os.path.getmtime(csv_path),
+                'gpus': [
+                    {
+                        'name': 'A100',
+                        'counts': [1],
+                        'price': 3.0,
+                        'spot_price': 2.1,
+                        'regions': ['us-east', 'us-west'],
+                    },
+                    {
+                        'name': 'RTX6000ADA',
+                        'counts': [1, 2, 4],
+                        'price': 0.5,
+                        'spot_price': 0.3,
+                        'regions': ['us-east', 'us-west'],
+                    },
+                ],
+            },
+        },
+    }
+
+
+def test_provider_gpu_offerings_mtime_passthrough(tmp_path, monkeypatch):
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    csv_path = _write_offerings_csv(
+        tmp_path, 'shadeform', ['shade-x1,H100,1,16,96,"{}",2.00,1.00,us-east'])
+    os.utime(csv_path, (1000000.0, 1000000.0))
+    result = catalog.get_provider_gpu_offerings(clouds=['shadeform'])
+    assert result['providers']['shadeform']['updated_at'] == 1000000.0
+
+
+def test_provider_gpu_offerings_missing_catalog_never_fetches(
+        tmp_path, monkeypatch):
+    _patch_catalog_dir(monkeypatch, tmp_path)
+
+    def _fail_fetch(*args, **kwargs):
+        raise AssertionError(
+            'A missing catalog must be reported absent, never fetched '
+            '(the fetch has no timeout and hangs the request).')
+
+    monkeypatch.setattr(catalog_common.requests, 'get', _fail_fetch)
+    # Also guard the hosted-catalog fetch path itself.
+    monkeypatch.setattr(
+        catalog_common, 'read_catalog', lambda *a, **k:
+        (_ for _ in
+         ()).throw(AssertionError('read_catalog must not be '
+                                  'called')))
+    result = catalog.get_provider_gpu_offerings(clouds=['ornn'])
+    assert result == {
+        'providers': {
+            'ornn': {
+                'present': False,
+                'updated_at': None,
+                'gpus': None,
+            },
+        },
+    }
+
+
+def test_provider_gpu_offerings_default_clouds_no_network(
+        tmp_path, monkeypatch):
+    _patch_catalog_dir(monkeypatch, tmp_path)
+
+    def _fail_fetch(*args, **kwargs):
+        raise AssertionError('Offerings must never touch the network.')
+
+    monkeypatch.setattr(catalog_common.requests, 'get', _fail_fetch)
+    result = catalog.get_provider_gpu_offerings()
+    assert sorted(result['providers'].keys()) == sorted(
+        catalog_offerings.DEFAULT_OFFERINGS_CLOUDS)
+    for cloud in catalog_offerings.DEFAULT_OFFERINGS_CLOUDS:
+        assert result['providers'][cloud] == {
+            'present': False,
+            'updated_at': None,
+            'gpus': None,
+        }
+
+
+def test_provider_gpu_offerings_missing_prices(tmp_path, monkeypatch):
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(
+        tmp_path,
+        'lambda',
+        [
+            # GPU with no price rows at all -> price/spot_price None.
+            'lambda-h100-x1,H100,1,16,96,"{}",,,us-east',
+            # GPU with some priced rows -> minima over the priced rows only.
+            'lambda-a100-x1,A100,1,16,96,"{}",,1.10,us-east',
+            'lambda-a100-x2,A100,2,32,192,"{}",2.50,1.80,us-west',
+        ])
+    result = catalog.get_provider_gpu_offerings(clouds=['lambda'])
+    gpus = result['providers']['lambda']['gpus']
+    assert gpus == [
+        {
+            'name': 'A100',
+            'counts': [1, 2],
+            'price': 2.5,
+            'spot_price': 1.1,
+            'regions': ['us-east', 'us-west'],
+        },
+        {
+            'name': 'H100',
+            'counts': [1],
+            'price': None,
+            'spot_price': None,
+            'regions': ['us-east'],
+        },
+    ]
+
+
+def test_provider_gpu_offerings_unknown_cloud():
+    result = catalog.get_provider_gpu_offerings(clouds=['notacloud'])
+    assert result == {
+        'providers': {
+            'notacloud': {
+                'present': False,
+                'updated_at': None,
+                'gpus': None,
+                'error': 'unknown cloud',
+            },
+        },
+    }
