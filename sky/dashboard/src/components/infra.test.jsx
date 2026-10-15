@@ -432,6 +432,22 @@ describe('gpuCapacityByCloud', () => {
     ]);
   });
 
+  it('counts a record nodes once per canonical type across aliases', () => {
+    const capacity = gpuCapacityByCloud([
+      {
+        cloud: 'GCP',
+        // Two aliases of one canonical type in ONE accelerator map: the
+        // chips include both, but the record's nodes count once.
+        accelerators: { 'NVIDIA H100': 2, H100: 1 },
+        nodes: 2,
+        status: 'UP',
+      },
+    ]);
+    expect(capacity.gcp).toEqual([
+      { type: 'H100', chips: 6, nodes: 2, readyChips: 6, notReadyChips: 0 },
+    ]);
+  });
+
   it('tolerates CPU-only records and missing fields', () => {
     expect(gpuCapacityByCloud(null)).toEqual({});
     const capacity = gpuCapacityByCloud([

@@ -203,6 +203,10 @@ export function gpuCapacityByCloud(records) {
     const ready = record.status === 'UP';
     const cloudKey = record.cloud.toLowerCase();
     const types = perCloudTypes[cloudKey] || {};
+    // Canonical GPU types already counted for this record, so a record
+    // whose accelerator map holds two aliases of one type (e.g. 'NVIDIA
+    // H100' and 'H100') adds its nodes to that type only once.
+    const seenTypes = new Set();
     Object.entries(accelerators).forEach(([rawType, perNodeCount]) => {
       const perNode = Number(perNodeCount);
       if (!Number.isFinite(perNode) || perNode <= 0) {
@@ -219,7 +223,10 @@ export function gpuCapacityByCloud(records) {
         });
       const chips = perNode * nodes;
       entry.chips += chips;
-      entry.nodes += nodes;
+      if (!seenTypes.has(type)) {
+        entry.nodes += nodes;
+        seenTypes.add(type);
+      }
       if (ready) {
         entry.readyChips += chips;
       }
