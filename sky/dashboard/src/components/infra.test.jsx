@@ -17,6 +17,11 @@ import {
   InfrastructureSection,
   slurmRequestableCounts,
 } from '@/components/infra';
+import {
+  countByCloud,
+  recordsInWorkspace,
+  visibleCloudRows,
+} from '@/utils/infraUtils';
 
 // The infrastructure table renders one sub-row per GPU type. A Slurm cluster
 // can additionally be expanded into its partitions, which is where the
@@ -280,5 +285,98 @@ describe('InfrastructureSection Kubernetes GPU-type rows', () => {
     expect(container.querySelector('table').textContent).not.toContain(
       'Partition'
     );
+  });
+});
+
+// The Cloud panel row filter: a provider with live clusters or jobs must
+// stay visible even when sky check does not list it as enabled, and count
+// joins are lowercase so provider _REPR values ('GCP', 'Vast') always land.
+
+describe('Cloud panel row visibility', () => {
+  const rows = (names) => names.map((name) => ({ name, clusters: 0, jobs: 0 }));
+
+  it('keeps a cloud with live clusters when the workspace only enables others', () => {
+    // Production shape: GCP runs 6 clusters, sky check reports only AWS.
+    const kept = visibleCloudRows(
+      rows(['AWS', 'GCP']),
+      ['aws'],
+      { gcp: 6 },
+      {}
+    );
+    expect(kept.map((cloud) => cloud.name)).toEqual(['AWS', 'GCP']);
+  });
+
+  it('keeps a cloud whose row carries counts even before the count maps load', () => {
+    const kept = visibleCloudRows(
+      [{ name: 'Quantacloud', clusters: 2, jobs: 0 }],
+      ['aws'],
+      {},
+      {}
+    );
+    expect(kept).toHaveLength(1);
+  });
+
+  it('drops a provider that is neither enabled nor has live resources', () => {
+    const kept = visibleCloudRows(
+      rows(['AWS', 'Azure', 'GCP']),
+      ['aws'],
+      {},
+      {}
+    );
+    expect(kept.map((cloud) => cloud.name)).toEqual(['AWS']);
+  });
+
+  it('shows all rows while workspace cloud data is still loading', () => {
+    const all = rows(['AWS', 'GCP']);
+    expect(visibleCloudRows(all, null, {}, {})).toEqual(all);
+  });
+});
+
+describe('countByCloud', () => {
+  it('keys counts by lowercase cloud name', () => {
+    expect(
+      countByCloud([{ cloud: 'Vast' }, { cloud: 'GCP' }, { cloud: 'GCP' }])
+    ).toEqual({ vast: 1, gcp: 2 });
+  });
+
+  it('skips records without a cloud and tolerates null input', () => {
+    expect(countByCloud([{ cloud: 'GCP' }, { name: 'no-cloud' }])).toEqual({
+      gcp: 1,
+    });
+    expect(countByCloud(null)).toEqual({});
+  });
+});
+
+// Workspace scoping for the Cloud panel: with a workspace selected, counts
+// must come only from that workspace's records so activity in another
+// workspace does not leak into the visible rows or their counts.
+describe('recordsInWorkspace', () => {
+  const records = [
+    { cloud: 'GCP', workspace: 'team-a' },
+    { cloud: 'GCP', workspace: 'team-b' },
+    { cloud: 'AWS', workspace: 'team-b' },
+  ];
+
+  it('scopes counts to the selected workspace', () => {
+    expect(countByCloud(recordsInWorkspace(records, 'team-a'))).toEqual({
+      gcp: 1,
+    });
+    expect(countByCloud(recordsInWorkspace(records, 'team-b'))).toEqual({
+      gcp: 1,
+      aws: 1,
+    });
+  });
+
+  it('keeps every record for the All Workspaces option', () => {
+    expect(countByCloud(recordsInWorkspace(records, 'all'))).toEqual({
+      gcp: 2,
+      aws: 1,
+    });
+  });
+
+  it('treats a record without a workspace as outside a specific workspace', () => {
+    expect(
+      countByCloud(recordsInWorkspace([{ cloud: 'GCP' }], 'team-a'))
+    ).toEqual({});
   });
 });
