@@ -113,6 +113,24 @@ export const CLOUDS_LIST = [
   'Yotta',
   'Quantacloud',
 ];
+// Providers the /provider_gpu_offerings endpoint reports by default — the
+// GPU market providers the org buys from plus AWS/GCP. Keyed lowercase like
+// the endpoint's response `providers` map. The endpoint falls back to this
+// same list server-side when the request body's `clouds` is null/empty, so
+// the dashboard and server agree on the full default set (server default:
+// sky/server/server.py provider_gpu_offerings).
+export const PROVIDER_OFFERINGS_CLOUDS = [
+  'aws',
+  'gcp',
+  'shadeform',
+  'spheron',
+  'lambda',
+  'vast',
+  'latitude',
+  'quantacloud',
+  'primeintellect',
+  'ornn',
+];
 
 export const CLOUD_CANONICALIZATIONS = Object.fromEntries([
   ...CLOUDS_LIST.map((cloud) => [cloud.toLowerCase(), cloud]),
