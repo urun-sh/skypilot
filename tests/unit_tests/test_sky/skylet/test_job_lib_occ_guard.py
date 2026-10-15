@@ -15,6 +15,7 @@ Red-first: these tests fail on the unguarded update_status().
 
 import json
 import os
+import time
 
 import pytest
 
@@ -73,14 +74,18 @@ def test_update_status_keeps_pending_occ_row(isolated_jobs_db):
     assert job_lib.get_status(job_id) == job_lib.JobStatus.PENDING
 
 
-def test_update_status_still_demotes_stale_real_jobs(isolated_jobs_db):
+def test_update_status_still_demotes_stale_real_jobs(isolated_jobs_db,
+                                                     monkeypatch):
     """The guard must be narrow: a plain INIT row (no urun_occ) that is stale
-    (submitted before boot time) still gets demoted."""
+    still gets demoted. Simulate the production stale scenario the way it
+    actually happens — the instance REBOOTED after the job was submitted
+    (submitted_at < boot_time), so the INIT row has no live driver — instead
+    of mutating the row's submitted_at, which is environment-sensitive."""
     job_id, _ = job_lib.add_job("real-job", "realhash", "rt-not-occ", "{}")
-    # Backdate past _INIT_SUBMIT_GRACE_PERIOD so the stale-INIT branch fires.
-    job_lib._DB.cursor.execute(  # pylint: disable=protected-access
-        "UPDATE jobs SET submitted_at=0 WHERE job_id=?", (job_id,))
-    job_lib._DB.conn.commit()
+    assert job_lib.get_status(job_id) == job_lib.JobStatus.INIT
+    # A boot_time in the FUTURE means every submitted_at predates the boot.
+    monkeypatch.setattr(job_lib.psutil, "boot_time",
+                        lambda: time.time() + 86400)
 
     job_lib.update_status()
 
