@@ -43,36 +43,56 @@ _CSV_COLUMNS = [
     "SpotPrice",
 ]
 
-_df = None
+# (stat stamp of the catalog CSV, materialized frame), published in ONE
+# assignment; None until the first load.
+_cache = None
+
+
+def _load_df() -> "pd.DataFrame":
+    """Read and clean the catalog CSV. Caller applies the stat stamp."""
+    try:
+        df = common.read_catalog(_CATALOG_PATH)
+    except FileNotFoundError as exc:
+        # FAIL LOUD. An empty frame here is indistinguishable from
+        # "Latitude has no capacity right now", so an unconfigured
+        # controller would silently look like a stocked-out provider and
+        # every Latitude claim would be refused for the wrong reason.
+        # Greptile caught this class of bug on the Spheron carry (#338).
+        raise RuntimeError(
+            f"Latitude catalog {_CATALOG_PATH!r} is missing. It is "
+            "written by sky.catalog.data_fetchers.fetch_latitude (needs "
+            "LATITUDESH_API_KEY). Refusing to report an empty catalog, "
+            "which would read as 'no capacity' rather than 'not "
+            "configured'.") from exc
+    df = df[df["InstanceType"].notna()]
+    if "AcceleratorName" in df.columns:
+        df = df[df["AcceleratorName"].notna()]
+        df = df.assign(
+            AcceleratorName=df["AcceleratorName"].astype(str).str.strip())
+    return df.reset_index(drop=True)
 
 
 def _get_df() -> "pd.DataFrame":
-    global _df
-    if _df is None:
-        try:
-            df = common.read_catalog(_CATALOG_PATH)
-        except FileNotFoundError as exc:
-            # FAIL LOUD. An empty frame here is indistinguishable from
-            # "Latitude has no capacity right now", so an unconfigured
-            # controller would silently look like a stocked-out provider and
-            # every Latitude claim would be refused for the wrong reason.
-            # Greptile caught this class of bug on the Spheron carry (#338).
-            raise RuntimeError(
-                f"Latitude catalog {_CATALOG_PATH!r} is missing. It is "
-                "written by sky.catalog.data_fetchers.fetch_latitude (needs "
-                "LATITUDESH_API_KEY). Refusing to report an empty catalog, "
-                "which would read as 'no capacity' rather than 'not "
-                "configured'."
-            ) from exc
-        else:
-            df = df[df["InstanceType"].notna()]
-            if "AcceleratorName" in df.columns:
-                df = df[df["AcceleratorName"].notna()]
-                df = df.assign(
-                    AcceleratorName=df["AcceleratorName"].astype(str).str.strip()
-                )
-            _df = df.reset_index(drop=True)
-    return _df
+    """Get the dataframe, re-reading when the CSV on disk changes.
+
+    The catalog CSV is REWRITTEN under this process by
+    latitude_catalog_refresh (skypilot-controller). Caching the materialized
+    frame forever silently froze the catalog for long-lived interpreters
+    (the shadeform twin of this file rejected a region the vendor had added
+    with "Invalid region", prod-usw2 2026-10-14). The stat comparison makes
+    candidate enumeration and launch validation agree.
+    """
+    global _cache
+    stamp = common.catalog_stat(_CATALOG_PATH)
+    cache = _cache
+    if cache is None or cache[0] != stamp:
+        # ONE assignment: a concurrent same-interpreter caller must never
+        # see the new stamp beside the old frame (or the reverse) -- a
+        # mixed pair would freeze the old frame for exactly as long as the
+        # stamp stays current (CodeRabbit, urun-sh/skypilot#48).
+        _cache = (stamp, _load_df())
+        cache = _cache
+    return cache[1]
 
 
 def _is_not_found_error(err: ValueError) -> bool:
@@ -94,12 +114,10 @@ def instance_type_exists(instance_type: str) -> bool:
 
 
 def validate_region_zone(
-    region: Optional[str], zone: Optional[str]
-) -> Tuple[Optional[str], Optional[str]]:
+        region: Optional[str],
+        zone: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     if zone is not None:
-        raise ValueError(
-            f"Latitude does not support zones, got zone {zone!r}"
-        )
+        raise ValueError(f"Latitude does not support zones, got zone {zone!r}")
     return common.validate_region_zone_impl("latitude", _get_df(), region, zone)
 
 
@@ -109,16 +127,15 @@ def get_hourly_cost(
     region: Optional[str] = None,
     zone: Optional[str] = None,
 ) -> float:
-    return common.get_hourly_cost_impl(
-        _get_df(), instance_type, use_spot, region, zone
-    )
+    return common.get_hourly_cost_impl(_get_df(), instance_type, use_spot,
+                                       region, zone)
 
 
 def get_vcpus_mem_from_instance_type(
-    instance_type: str,
-) -> Tuple[Optional[float], Optional[float]]:
+    instance_type: str,) -> Tuple[Optional[float], Optional[float]]:
     return _call_or_default(
-        lambda: common.get_vcpus_mem_from_instance_type_impl(_get_df(), instance_type),
+        lambda: common.get_vcpus_mem_from_instance_type_impl(
+            _get_df(), instance_type),
         (None, None),
     )
 
@@ -137,19 +154,16 @@ def get_default_instance_type(
     del disk_tier, local_disk
     return _call_or_default(
         lambda: common.get_instance_type_for_cpus_mem_impl(
-            _get_df(), cpus, memory, region, zone, use_spot, max_hourly_cost
-        ),
+            _get_df(), cpus, memory, region, zone, use_spot, max_hourly_cost),
         None,
     )
 
 
 def get_accelerators_from_instance_type(
-    instance_type: str,
-) -> Optional[Dict[str, Union[int, float]]]:
+    instance_type: str,) -> Optional[Dict[str, Union[int, float]]]:
     return _call_or_default(
         lambda: common.get_accelerators_from_instance_type_impl(
-            _get_df(), instance_type
-        ),
+            _get_df(), instance_type),
         None,
     )
 
@@ -182,12 +196,12 @@ def get_instance_type_for_accelerator(
     )
 
 
-def get_region_zones_for_instance_type(
-    instance_type: str, use_spot: bool
-) -> List["cloud.Region"]:
+def get_region_zones_for_instance_type(instance_type: str,
+                                       use_spot: bool) -> List["cloud.Region"]:
     df = _get_df()
     df_filtered = df[df["InstanceType"] == instance_type]
-    return _call_or_default(lambda: common.get_region_zones(df_filtered, use_spot), [])
+    return _call_or_default(
+        lambda: common.get_region_zones(df_filtered, use_spot), [])
 
 
 def list_accelerators(

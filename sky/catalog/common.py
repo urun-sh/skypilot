@@ -301,6 +301,31 @@ def read_catalog(filename: str,
     return LazyDataFrame(catalog_path, update_if_stale_func=_update_catalog)
 
 
+def catalog_stat(filename: str) -> Optional[Tuple[int, int, int]]:
+    """Stat stamp of a catalog CSV: (mtime_ns, size, inode), None if absent.
+
+    Runtime-refreshed catalogs (shadeform, spheron, ...) REWRITE this file
+    under a running process. Catalog modules that materialize read_catalog's
+    LazyDataFrame into a module-level DataFrame compare this stamp on every
+    use to notice the rewrite and re-read (see shadeform_catalog._get_df);
+    without it a long-lived interpreter answers every request from the
+    snapshot taken at first use, so a region the vendor added afterwards is
+    proposed as a candidate from a fresher read in another process and then
+    rejected here as 'Invalid region' (prod-usw2 2026-10-14,
+    kansascity-usa-6 RTXPro6000).
+
+    The inode, not just (mtime, size), is in the stamp: the refreshers
+    install the new CSV with os.replace, which changes the inode even when
+    size and mtime could theoretically coincide.
+    """
+    path = get_catalog_path(filename)
+    try:
+        stat_result = os.stat(path)
+    except OSError:
+        return None
+    return (stat_result.st_mtime_ns, stat_result.st_size, stat_result.st_ino)
+
+
 def _get_instance_type(
     df: 'pd.DataFrame',
     instance_type: str,
