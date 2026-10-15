@@ -219,8 +219,10 @@ class _Fingerprint:
     @staticmethod
     def of(public_key: str) -> str:
         blob = base64.b64decode(public_key.strip().split()[1])
+        # UNPADDED, like the real API and ssh-keygen -lf print it
+        # (the padded form is the exact bug this suite pins down).
         return "SHA256:" + base64.b64encode(
-            hashlib.sha256(blob).digest()).decode("ascii")
+            hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
 
 
 # Properly-padded base64 blobs (the fingerprint derivation decodes them):
@@ -276,6 +278,41 @@ class TestEnsureHelpers(unittest.TestCase):
         client = api.QuantacloudClient("gpu_live_k", transport=_Transport([]))
         with self.assertRaises(api.QuantacloudError):
             client.ensure_ssh_key("skypilot", "not-a-key")
+
+    def test_fingerprint_matches_ssh_keygen_and_real_api(self):
+        """Live receipt (ENG-515, 2026-10-15): the real API's key list and
+        ssh-keygen -lf both print UNPADDED SHA256 base64. The padded
+        derivation never matched, so every launch after the first key
+        registration POSTed a duplicate and 400'd INVALID_SSH_KEY —
+        five consecutive worker launches died on exactly this.
+
+        The pinned pair is the dev-usw2 controller's actual sky key
+        (RSA-2048) and its real ssh-keygen fingerprint.
+        """
+        controller_pub = (
+            "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCrE9GGOxAKBnUXDbV3g8+ouQK6"
+            "Uz5vYwRvnJzEIpUz5e/EOTZL7cyUnOaToXd4slOScB0Y41OavghXav8Gkxf7IoFZ"
+            "TW/ml+xJB/I6btQ8mFeP7xEYwItbKNcRFC+GUQTBhpyZd9fepVmqtaq+o/fFJAuI"
+            "XK1hwpI9YPwYyG9aY8Qv1J2oTYd1SPdCHNsB99aRgDkaGUb7xEoqPMmPKACn9KX8"
+            "RovNs40aab7Gz40nPplSWS1JNa8cdt7Okn7XwP9h3mPlUXHdmgQx11ioybighMtR"
+            "r3fzvidtEejJ4dw9UjHsuvm6MYwHZGNveAQSC+e9QDWJFBVZJhB12gIHziOP")
+        real_fingerprint = (
+            "SHA256:VBO5QzPjzG8Bd25RC8IXNr+pfm6CCxMDjpoFq4ZdVaU")
+        derived = api._ssh_fingerprint(controller_pub)
+        self.assertEqual(derived, real_fingerprint)
+        self.assertFalse(derived.endswith("="))
+        # The exact live failure mode: an existing registration with the
+        # API-shaped fingerprint must MATCH (one call, no duplicate POST).
+        transport = _Transport([
+            (200,
+             json.dumps([
+                 self._key_row("k_live", controller_pub, name="skypilot")
+             ]).encode()),
+        ])
+        client = api.QuantacloudClient("gpu_live_k", transport=transport)
+        self.assertEqual(
+            client.ensure_ssh_key("skypilot", controller_pub), "k_live")
+        self.assertEqual(len(transport.calls), 1)
 
 
 class _FakeClock:
