@@ -15,7 +15,6 @@ Red-first: these tests fail on the unguarded update_status().
 
 import json
 import os
-import time
 
 import pytest
 
@@ -77,15 +76,13 @@ def test_update_status_keeps_pending_occ_row(isolated_jobs_db):
 def test_update_status_still_demotes_stale_real_jobs(isolated_jobs_db,
                                                      monkeypatch):
     """The guard must be narrow: a plain INIT row (no urun_occ) that is stale
-    still gets demoted. Simulate the production stale scenario the way it
-    actually happens — the instance REBOOTED after the job was submitted
-    (submitted_at < boot_time), so the INIT row has no live driver — instead
-    of mutating the row's submitted_at, which is environment-sensitive."""
+    still gets demoted. Staleness is forced through job_lib's own INIT grace
+    window (a negative grace makes a fresh INIT row already past it) — no
+    patching of the lazily-imported psutil proxy, whose attribute writes are
+    import-order sensitive under the full suite."""
     job_id, _ = job_lib.add_job("real-job", "realhash", "rt-not-occ", "{}")
     assert job_lib.get_status(job_id) == job_lib.JobStatus.INIT
-    # A boot_time in the FUTURE means every submitted_at predates the boot.
-    monkeypatch.setattr(job_lib.psutil, "boot_time",
-                        lambda: time.time() + 86400)
+    monkeypatch.setattr(job_lib, "_INIT_SUBMIT_GRACE_PERIOD", -1)
 
     job_lib.update_status()
 
