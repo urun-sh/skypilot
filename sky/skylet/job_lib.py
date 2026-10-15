@@ -1008,6 +1008,16 @@ def update_status() -> None:
     # of the jobs in the database, to avoid stale job status.
     nonterminal_jobs = _get_jobs(user_hash=None,
                                  status_list=JobStatus.nonterminal_statuses())
+    # urun occupant mirror rows (metadata.urun_occ, written by the node's
+    # urun_occ_to_jobs sync) have no ray driver pid BY DESIGN -- their status
+    # is owned by the occupancy heartbeat, not by this reconciler, which
+    # would otherwise demote every one of them to FAILED_DRIVER (observed
+    # live: a RUNNING occupant row flipped to FAILED_DRIVER within one
+    # JobSchedulerEvent).
+    nonterminal_jobs = [
+        job for job in nonterminal_jobs
+        if not job.get('metadata', {}).get('urun_occ')
+    ]
     nonterminal_job_ids = [job['job_id'] for job in nonterminal_jobs]
 
     update_job_status(nonterminal_job_ids)
