@@ -167,8 +167,9 @@ def parse_instance_type_token(instance_type: str) -> Tuple[str, int]:
             '`<accelerator>:<count>` Packet.ai token (e.g. rtxpro6000:1)')
     return accelerator, int(count)
 
+
 _RAM_GB_RE = re.compile(r'([0-9]+(?:\.[0-9]+)?)\s*GB\s*ram', re.IGNORECASE)
-_VCPU_RE = re.compile(r'([0-9]+)\s*vCPU', re.IGNORECASE)
+_VCPU_RE = re.compile(r'(?<![0-9.])([0-9]+(?:\.[0-9]+)?)\s*vCPU', re.IGNORECASE)
 
 
 def _description_ram_gb(description: Any) -> Optional[float]:
