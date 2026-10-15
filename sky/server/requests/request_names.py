@@ -18,6 +18,7 @@ class RequestName(str, enum.Enum):
     KUBERNETES_LABEL_GPUS = 'kubernetes_label_gpus'
     LIST_ACCELERATORS = 'list_accelerators'
     LIST_ACCELERATOR_COUNTS = 'list_accelerator_counts'
+    PROVIDER_GPU_OFFERINGS = 'provider_gpu_offerings'
     OPTIMIZE = 'optimize'
     # Cluster requests
     CLUSTER_LAUNCH = 'launch'

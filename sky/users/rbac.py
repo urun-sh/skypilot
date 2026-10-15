@@ -263,6 +263,10 @@ _DEFAULT_VIEWER_ALLOWLIST = [
         'method': 'POST'
     },
     {
+        'path': '/provider_gpu_offerings',
+        'method': 'POST'
+    },
+    {
         'path': '/validate',
         'method': 'POST'
     },

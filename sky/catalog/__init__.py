@@ -5,6 +5,7 @@ import typing
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 from sky.catalog.config import fallback_to_default_catalog
+from sky.catalog.offerings import get_provider_gpu_offerings
 from sky.skylet import constants
 from sky.utils import resources_utils
 from sky.utils import subprocess_utils
@@ -386,6 +387,7 @@ def is_image_tag_valid(tag: str,
 
 __all__ = [
     'list_accelerators',
+    'get_provider_gpu_offerings',
     'list_accelerator_counts',
     'get_region_zones_for_instance_type',
     'get_hourly_cost',

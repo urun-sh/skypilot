@@ -1583,6 +1583,21 @@ async def list_accelerator_counts(
     )
 
 
+@app.post('/provider_gpu_offerings')
+async def provider_gpu_offerings(
+        request: fastapi.Request,
+        provider_gpu_offerings_body: payloads.ProviderGpuOfferingsBody) -> None:
+    """Gets current GPU offerings from local provider catalogs."""
+    await executor.schedule_request_async(
+        request_id=request.state.request_id,
+        request_name=request_names.RequestName.PROVIDER_GPU_OFFERINGS,
+        request_body=provider_gpu_offerings_body,
+        func=catalog.get_provider_gpu_offerings,
+        schedule_type=requests_lib.ScheduleType.SHORT,
+        auth_user=request.state.auth_user,
+    )
+
+
 @app.post('/validate')
 async def validate(validate_body: payloads.ValidateBody) -> None:
     """Validates the user's DAG."""
