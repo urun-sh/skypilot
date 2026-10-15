@@ -35,11 +35,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 import os
-import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+import sys
+import tempfile
+from typing import (Any, Dict, Iterable, Iterator, List, Optional, Sequence,
+                    Tuple)
 
 from sky.adaptors import ornn as ornn_api
 from sky.catalog.data_fetchers import fetch_latitude
@@ -343,9 +344,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     out = args.output
     if not out:
         from sky.catalog import common as catalog_common
-        out = str(
-            catalog_common.get_catalog_path(f"{REGION}/vms.csv",
-                                            create_new=True))
+        out = str(catalog_common.get_catalog_path(f"{REGION}/vms.csv"))
     written = write_csv(rows, out)
     print(f"Wrote {written} rows to {out}")
     return 0

@@ -197,7 +197,7 @@ describe('Cloud panel provider rows', () => {
       jobs: 0,
     });
     expect(data.enabledClouds).toBe(1);
-    expect(data.totalClouds).toBe(29);
+    expect(data.totalClouds).toBe(30);
   });
 
   it('aggregates the same rows in the legacy getCloudInfrastructure path', async () => {

@@ -448,6 +448,16 @@ class TestFetcherRows(unittest.TestCase):
         self.assertNotIn("ornn:nvidia_h100_sxm:1", by_type)
         self.assertNotIn("ornn:nvidia_h200_sxm:1", by_type)
 
+    def test_write_csv_creates_missing_parent_dir(self):
+        # get_catalog_path is side-effect free; the writer must create
+        # the versioned catalog's ornn/ parent itself.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "ornn", "vms.csv")
+            written = fetch_ornn.write_csv(
+                [next(iter(fetch_ornn.iter_rows(self.BOOKS)))], out)
+            self.assertEqual(written, 1)
+            self.assertTrue(os.path.exists(out))
+
     def test_row_shape(self):
         row = next(iter(fetch_ornn.iter_rows(self.BOOKS)))
         record = dict(zip(fetch_ornn.CSV_COLUMNS, row))
