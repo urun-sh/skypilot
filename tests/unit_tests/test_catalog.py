@@ -817,15 +817,41 @@ _OFFERINGS_CSV_HEADER = (
     'InstanceType,AcceleratorName,AcceleratorCount,vCPUs,MemoryGiB,'
     'GpuInfo,Price,SpotPrice,Region\n')
 
+# Header of a vast catalog written by a fetcher that carries live
+# stock: AvailableUnits (machines collapsed into the stub row).
+_OFFERINGS_CSV_HEADER_STOCK = (
+    'InstanceType,AcceleratorName,AcceleratorCount,vCPUs,MemoryGiB,'
+    'GpuInfo,Price,SpotPrice,Region,AvailableUnits\n')
 
-def _write_offerings_csv(catalog_dir, cloud, rows):
+
+def _write_offerings_csv(catalog_dir,
+                         cloud,
+                         rows,
+                         header=_OFFERINGS_CSV_HEADER):
     cloud_dir = os.path.join(catalog_dir, cloud)
     os.makedirs(cloud_dir, exist_ok=True)
     csv_path = os.path.join(cloud_dir, 'vms.csv')
     with open(csv_path, 'w', encoding='utf-8') as f:
-        f.write(_OFFERINGS_CSV_HEADER)
+        f.write(header)
         f.write('\n'.join(rows) + '\n')
     return csv_path
+
+
+# The three stock tiers across the default clouds (see
+# catalog_offerings._STOCK_MODES): 'units' = live counts, 'in_stock' =
+# rows live-filtered at fetch, 'catalog' = offering coverage only.
+_EXPECTED_STOCK_MODES = {
+    'aws': 'catalog',
+    'gcp': 'catalog',
+    'shadeform': 'in_stock',
+    'spheron': 'units',
+    'lambda': 'in_stock',
+    'vast': 'units',
+    'latitude': 'in_stock',
+    'quantacloud': 'units',
+    'primeintellect': 'units',
+    'ornn': 'units',
+}
 
 
 def _patch_catalog_dir(monkeypatch, tmp_path):
@@ -850,11 +876,15 @@ def test_provider_gpu_offerings_aggregates_catalog(tmp_path, monkeypatch):
             'vast-cpu-x8,,8,32,64,,2.10,1.20,us-east',
         ])
     result = catalog.get_provider_gpu_offerings(clouds=['vast'])
+    # This fixture's vast CSV predates the AvailableUnits column, so
+    # the region buckets carry prices only (units/listings None) —
+    # the honest label for a catalog that cannot carry counts.
     assert result == {
         'providers': {
             'vast': {
                 'present': True,
                 'updated_at': os.path.getmtime(csv_path),
+                'stock_mode': 'units',
                 'gpus': [
                     {
                         'name': 'A100',
@@ -862,6 +892,22 @@ def test_provider_gpu_offerings_aggregates_catalog(tmp_path, monkeypatch):
                         'price': 3.0,
                         'spot_price': 2.1,
                         'regions': ['us-east', 'us-west'],
+                        'region_details': [
+                            {
+                                'region': 'us-east',
+                                'units': None,
+                                'listings': None,
+                                'price': 3.5,
+                                'spot_price': 2.2,
+                            },
+                            {
+                                'region': 'us-west',
+                                'units': None,
+                                'listings': None,
+                                'price': 3.0,
+                                'spot_price': 2.1,
+                            },
+                        ],
                     },
                     {
                         'name': 'RTX6000ADA',
@@ -869,6 +915,22 @@ def test_provider_gpu_offerings_aggregates_catalog(tmp_path, monkeypatch):
                         'price': 0.5,
                         'spot_price': 0.3,
                         'regions': ['us-east', 'us-west'],
+                        'region_details': [
+                            {
+                                'region': 'us-east',
+                                'units': None,
+                                'listings': None,
+                                'price': 0.5,
+                                'spot_price': 0.3,
+                            },
+                            {
+                                'region': 'us-west',
+                                'units': None,
+                                'listings': None,
+                                'price': 0.9,
+                                'spot_price': 0.55,
+                            },
+                        ],
                     },
                 ],
             },
@@ -907,6 +969,7 @@ def test_provider_gpu_offerings_missing_catalog_never_fetches(
             'ornn': {
                 'present': False,
                 'updated_at': None,
+                'stock_mode': 'units',
                 'gpus': None,
             },
         },
@@ -925,9 +988,12 @@ def test_provider_gpu_offerings_default_clouds_no_network(
     assert sorted(result['providers'].keys()) == sorted(
         catalog_offerings.DEFAULT_OFFERINGS_CLOUDS)
     for cloud in catalog_offerings.DEFAULT_OFFERINGS_CLOUDS:
+        # stock_mode is published even for absent catalogs (the tier is
+        # a property of the provider, not of the data on disk).
         assert result['providers'][cloud] == {
             'present': False,
             'updated_at': None,
+            'stock_mode': _EXPECTED_STOCK_MODES[cloud],
             'gpus': None,
         }
 
@@ -946,6 +1012,8 @@ def test_provider_gpu_offerings_missing_prices(tmp_path, monkeypatch):
         ])
     result = catalog.get_provider_gpu_offerings(clouds=['lambda'])
     gpus = result['providers']['lambda']['gpus']
+    # lambda rows are already live-filtered (in_stock tier): no counts
+    # published, but each region bucket still carries its minima.
     assert gpus == [
         {
             'name': 'A100',
@@ -953,6 +1021,24 @@ def test_provider_gpu_offerings_missing_prices(tmp_path, monkeypatch):
             'price': 2.5,
             'spot_price': 1.1,
             'regions': ['us-east', 'us-west'],
+            'region_details': [
+                {
+                    'region': 'us-east',
+                    'units': None,
+                    'listings': None,
+                    # us-east row has an EMPTY on-demand price: the
+                    # region bucket has no price, only a spot price.
+                    'price': None,
+                    'spot_price': 1.1,
+                },
+                {
+                    'region': 'us-west',
+                    'units': None,
+                    'listings': None,
+                    'price': 2.5,
+                    'spot_price': 1.8,
+                },
+            ],
         },
         {
             'name': 'H100',
@@ -960,6 +1046,13 @@ def test_provider_gpu_offerings_missing_prices(tmp_path, monkeypatch):
             'price': None,
             'spot_price': None,
             'regions': ['us-east'],
+            'region_details': [{
+                'region': 'us-east',
+                'units': None,
+                'listings': None,
+                'price': None,
+                'spot_price': None,
+            },],
         },
     ]
 
@@ -971,8 +1064,201 @@ def test_provider_gpu_offerings_unknown_cloud():
             'notacloud': {
                 'present': False,
                 'updated_at': None,
+                'stock_mode': 'catalog',
                 'gpus': None,
                 'error': 'unknown cloud',
             },
         },
     }
+
+
+def test_provider_gpu_offerings_region_details_row_multiplicity(
+        tmp_path, monkeypatch):
+    """Row-multiplicity stock providers (spheron/primeintellect/
+    quantacloud/ornn): one catalog row per LIVE offer, so within a
+    (GPU, Region) bucket units sums AcceleratorCount and listings
+    counts rows. Prices are per-region minima.
+    """
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(
+        tmp_path,
+        'spheron',
+        [
+            # EU: three live offers (1 + 1 + 2 GPUs = 4 chips).
+            'sph-rtx-eu1,RTX4090,1,16,32,"{}",1.50,0.70,EU',
+            'sph-rtx-eu2,RTX4090,1,16,32,"{}",1.20,0.60,EU',
+            'sph-rtx-eu4,RTX4090,2,32,64,"{}",2.40,1.10,EU',
+            # NA: one live offer.
+            'sph-rtx-na,RTX4090,1,16,32,"{}",1.90,0.90,NA',
+            # A second GPU type: single offer, no spot price.
+            'sph-h100,H100,8,96,640,"{}",9.90,,NA',
+        ])
+    result = catalog.get_provider_gpu_offerings(clouds=['spheron'])
+    provider = result['providers']['spheron']
+    assert provider['present'] is True
+    assert provider['stock_mode'] == 'units'
+    gpus = provider['gpus']
+    rtx = next(gpu for gpu in gpus if gpu['name'] == 'RTX4090')
+    # Sorted by region name; prices are the per-region minima.
+    assert rtx['region_details'] == [
+        {
+            'region': 'EU',
+            'units': 4,
+            'listings': 3,
+            'price': 1.2,
+            'spot_price': 0.6,
+        },
+        {
+            'region': 'NA',
+            'units': 1,
+            'listings': 1,
+            'price': 1.9,
+            'spot_price': 0.9,
+        },
+    ]
+    h100 = next(gpu for gpu in gpus if gpu['name'] == 'H100')
+    assert h100['region_details'] == [
+        {
+            'region': 'NA',
+            'units': 8,
+            'listings': 1,
+            'price': 9.9,
+            'spot_price': None,
+        },
+    ]
+
+
+def test_provider_gpu_offerings_vast_available_units(tmp_path, monkeypatch):
+    """Vast dedupes sibling offers per (InstanceType, Region,
+    HostingType) stub at fetch time, so its rows carry AvailableUnits
+    (machines collapsed into each row): units = sum(AvailableUnits x
+    AcceleratorCount), listings = sum(AvailableUnits) per (GPU,
+    Region) bucket — NOT row counts.
+    """
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(
+        tmp_path,
+        'vast',
+        [
+            # Stub row standing for 3 single-GPU machines, plus its
+            # spot-price marker row (AvailableUnits 0: no extra stock).
+            'vast-rtx-x1,RTX4090,1,16,32,"{}",1.20,0.60,EU,3',
+            'vast-rtx-x1-print,RTX4090,1,16,32,"{}",1.20,0.90,EU,0',
+            # A 2-GPU stub row standing for 2 machines.
+            'vast-rtx-x2,RTX4090,2,32,64,"{}",2.40,1.10,NA,2',
+        ],
+        header=_OFFERINGS_CSV_HEADER_STOCK)
+    result = catalog.get_provider_gpu_offerings(clouds=['vast'])
+    provider = result['providers']['vast']
+    assert provider['stock_mode'] == 'units'
+    gpu = provider['gpus'][0]
+    assert gpu['region_details'] == [
+        {
+            'region': 'EU',
+            'units': 3,  # 3 machines x 1 GPU
+            'listings': 3,
+            'price': 1.2,
+            'spot_price': 0.6,
+        },
+        {
+            'region': 'NA',
+            'units': 4,  # 2 machines x 2 GPUs
+            'listings': 2,
+            'price': 2.4,
+            'spot_price': 1.1,
+        },
+    ]
+
+
+def test_provider_gpu_offerings_catalog_only_no_stock(tmp_path, monkeypatch):
+    """Catalog-only clouds (aws, gcp, ...): no live-stock notion, so
+    units/listings are null; each region bucket still carries its
+    cheapest prices (offering coverage)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'aws', [
+        'p3.2xlarge,V100,1,8,61,"{}",3.06,1.20,us-east-1',
+        'p3.8xlarge,V100,4,32,244,"{}",12.24,4.80,us-east-1',
+        'p3.2xlarge-eu,V100,1,8,61,"{}",3.60,1.40,eu-west-1',
+    ])
+    result = catalog.get_provider_gpu_offerings(clouds=['aws'])
+    provider = result['providers']['aws']
+    assert provider['stock_mode'] == 'catalog'
+    gpu = provider['gpus'][0]
+    assert gpu['region_details'] == [
+        {
+            'region': 'eu-west-1',
+            'units': None,
+            'listings': None,
+            'price': 3.6,
+            'spot_price': 1.4,
+        },
+        {
+            'region': 'us-east-1',
+            'units': None,
+            'listings': None,
+            'price': 3.06,
+            'spot_price': 1.2,
+        },
+    ]
+
+
+def test_provider_gpu_offerings_stock_mode_tiers(tmp_path, monkeypatch):
+    """The three stock tiers are published per provider so the
+    dashboard can label stock honestly: 'units' (live counts),
+    'in_stock' (rows live-filtered at fetch; region presence means
+    in-stock at last refresh), 'catalog' (offering coverage only —
+    also the default for unknown clouds)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'ornn', [
+        'ornn-a100,A100,1,16,96,"{}",2.00,1.00,EU',
+    ])
+    _write_offerings_csv(tmp_path, 'shadeform', [
+        'shade-x1,H100,1,16,96,"{}",2.00,1.00,us-east',
+    ])
+    _write_offerings_csv(tmp_path, 'aws', [
+        'p3.2xlarge,V100,1,8,61,"{}",3.06,1.20,us-east-1',
+    ])
+    result = catalog.get_provider_gpu_offerings(
+        clouds=['ornn', 'shadeform', 'aws', 'notacloud'])
+    providers = result['providers']
+    assert providers['ornn']['stock_mode'] == 'units'
+    assert providers['shadeform']['stock_mode'] == 'in_stock'
+    assert providers['aws']['stock_mode'] == 'catalog'
+    # Unknown clouds default to the catalog tier.
+    assert providers['notacloud']['stock_mode'] == 'catalog'
+
+
+def test_provider_gpu_offerings_backward_compat_fields(tmp_path, monkeypatch):
+    """region_details/stock_mode are ADDITIVE: every pre-existing field
+    keeps its shape and values (provider: present/updated_at/gpus;
+    GPU: name/counts/price/spot_price/regions)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    csv_path = _write_offerings_csv(
+        tmp_path, 'vast', ['vast-a100-x1,A100,1,16,96,"{}",3.50,2.20,us-east'])
+    result = catalog.get_provider_gpu_offerings(clouds=['vast'])
+    provider = result['providers']['vast']
+    assert set(provider) == {'present', 'updated_at', 'stock_mode', 'gpus'}
+    assert provider['present'] is True
+    assert provider['updated_at'] == os.path.getmtime(csv_path)
+    gpu = provider['gpus'][0]
+    assert set(gpu) == {
+        'name',
+        'counts',
+        'price',
+        'spot_price',
+        'regions',
+        'region_details',
+    }
+    assert gpu['name'] == 'A100'
+    assert gpu['counts'] == [1]
+    assert gpu['price'] == 3.5
+    assert gpu['spot_price'] == 2.2
+    assert gpu['regions'] == ['us-east']
+    assert gpu['region_details'] == [{
+        'region': 'us-east',
+        # Pre-AvailableUnits vast CSV: no counts can be derived.
+        'units': None,
+        'listings': None,
+        'price': 3.5,
+        'spot_price': 2.2,
+    }]
