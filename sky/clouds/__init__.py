@@ -28,6 +28,7 @@ from sky.clouds.mithril import Mithril
 from sky.clouds.nebius import Nebius
 from sky.clouds.oci import OCI
 from sky.clouds.ornn import Ornn
+from sky.clouds.packet import Packet
 from sky.clouds.paperspace import Paperspace
 from sky.clouds.primeintellect import PrimeIntellect
 from sky.clouds.quantacloud import Quantacloud
@@ -64,6 +65,7 @@ __all__ = [
     'Vast',
     'Quantacloud',
     'Ornn',
+    'Packet',
     'OCI',
     'Verda',
     'Vsphere',
