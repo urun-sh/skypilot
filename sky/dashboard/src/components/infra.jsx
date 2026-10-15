@@ -298,8 +298,9 @@ export function ProviderOfferingsSection({ providers, loading, error }) {
           </span>
         </div>
         <p className="text-xs text-gray-500 mb-3">
-          What each provider currently offers — pulled from the provider APIs by
-          the controller every few hours, independent of live clusters.
+          What each provider currently offers — read from the provider catalog
+          CSVs on disk, which the controller refreshes from the provider APIs
+          every few hours. Not live API values; independent of live clusters.
         </p>
         <div className="overflow-x-auto rounded-md border shadow-sm bg-card">
           <table className="min-w-full text-sm">
@@ -3279,25 +3280,42 @@ export function GPUs() {
   // Provider Offerings data fetching. The server reads the provider catalog
   // CSVs the controller runner refreshes (and never triggers a fetch itself),
   // so there is no dashboard cache to respect — every refresh re-asks.
-  // Errors are captured here: the section renders its own error state and
-  // the rest of the page keeps working.
+  //
+  // The interval refresh (showLoadingIndicators: false) can interleave with a
+  // foreground refresh, so results apply only from the newest request
+  // (stale responses never overwrite newer data), while the loading state is
+  // owned by foreground requests as a group: it clears only when the last
+  // pending foreground request settles, however the interleaving goes.
+  const offeringsRequestSeq = React.useRef(0);
+  const offeringsForegroundPending = React.useRef(0);
   const fetchProviderOfferings = async (showLoadingIndicators = true) => {
+    const seq = ++offeringsRequestSeq.current;
     if (showLoadingIndicators) {
+      offeringsForegroundPending.current += 1;
       setOfferingsLoading(true);
     }
     try {
       const data = await getProviderOfferings();
+      if (seq !== offeringsRequestSeq.current) {
+        return; // A newer request superseded this response.
+      }
       setProviderOfferings(data?.providers || {});
       setOfferingsError(null);
     } catch (error) {
       console.error('Error fetching provider GPU offerings:', error);
+      if (seq !== offeringsRequestSeq.current) {
+        return;
+      }
       setProviderOfferings({});
       setOfferingsError(
         error?.message || 'Failed to load provider GPU offerings'
       );
     } finally {
       if (showLoadingIndicators) {
-        setOfferingsLoading(false);
+        offeringsForegroundPending.current -= 1;
+        if (offeringsForegroundPending.current === 0) {
+          setOfferingsLoading(false);
+        }
       }
     }
   };

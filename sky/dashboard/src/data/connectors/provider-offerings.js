@@ -7,10 +7,10 @@ import { apiClient } from '@/data/connectors/client';
  * runner refreshes every few hours. Independent of live clusters: a provider
  * with zero clusters still reports its offerings.
  *
- * Uses the same scheduled-request pattern as every other endpoint: POST
- * `/provider_gpu_offerings` answers with a request id in the
- * `X-Skypilot-Request-ID` header, then GET `/api/get?request_id=...` answers
- * with the result under a JSON-encoded `return_value`.
+ * Uses `apiClient.fetch` — the shared scheduled-request helper (POST answers
+ * with a request id, GET `/api/get?request_id=...` answers with the result
+ * under a JSON-encoded `return_value`) — so server-side error details are
+ * preserved the same way every other connector reports them.
  *
  * `clouds: null` asks the server for its default provider list (the same set
  * the dashboard keeps in `PROVIDER_OFFERINGS_CLOUDS`), so the section can
@@ -36,26 +36,9 @@ import { apiClient } from '@/data/connectors/client';
  * }
  */
 export async function getProviderOfferings() {
-  const response = await apiClient.post(`/provider_gpu_offerings`, {
+  const parsed = await apiClient.fetch('/provider_gpu_offerings', {
     clouds: null,
   });
-  if (!response.ok) {
-    const msg = `Failed to get provider GPU offerings with status ${response.status}`;
-    throw new Error(msg);
-  }
-  const id = response.headers.get('X-Skypilot-Request-ID');
-  // Handle empty request ID
-  if (!id) {
-    const msg = 'No request ID received from server for provider GPU offerings';
-    throw new Error(msg);
-  }
-  const fetchedData = await apiClient.get(`/api/get?request_id=${id}`);
-  if (!fetchedData.ok) {
-    const msg = `Failed to get provider GPU offerings result with status ${fetchedData.status}`;
-    throw new Error(msg);
-  }
-  const data = await fetchedData.json();
-  const parsed = data.return_value ? JSON.parse(data.return_value) : null;
   // Normalize so callers always get the contract shape even if the server
   // ever answers with just the providers map or nothing at all.
   return { providers: parsed?.providers || {} };
