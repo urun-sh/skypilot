@@ -1072,7 +1072,10 @@ def load_job_queue(payload: str) -> List[Dict[str, Any]]:
         job['status'] = JobStatus(job['status'])
         job['user_hash'] = job['username']
         user = global_user_state.get_user(job['user_hash'])
-        job['username'] = user.name if user is not None else None
+        # A job submitted from a client this API server has never seen (no
+        # users row) must still render: fall back to the raw hash instead of
+        # None, which ClusterJobRecord rejects and fails the whole queue.
+        job['username'] = user.name if user is not None else job['user_hash']
     return jobs
 
 
