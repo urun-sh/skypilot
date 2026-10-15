@@ -166,6 +166,7 @@ RunPod = clouds.RunPod
 Vast = clouds.Vast
 Latitude = clouds.Latitude
 Quantacloud = clouds.Quantacloud
+Packet = clouds.Packet
 Vsphere = clouds.Vsphere
 Fluidstack = clouds.Fluidstack
 Nebius = clouds.Nebius

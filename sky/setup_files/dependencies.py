@@ -291,6 +291,9 @@ cloud_dependencies: Dict[str, List[str]] = {
     # Ornn talks to mcp.ornn.com over urllib (JSON-RPC) from
     # sky/adaptors/ornn.py.
     'ornn': [],
+    # Packet.ai talks to dash.packet.ai over urllib from
+    # sky/adaptors/packet.py.
+    'packet': [],
     'slurm': ['python-hostlist'],
     'yotta': [],  # No dependencies needed for Yotta
     'verda': [],  # No dependencies needed for verda
