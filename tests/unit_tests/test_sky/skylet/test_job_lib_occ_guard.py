@@ -78,9 +78,8 @@ def test_update_status_still_demotes_stale_real_jobs(isolated_jobs_db):
     (submitted before boot time) still gets demoted."""
     job_id, _ = job_lib.add_job("real-job", "realhash", "rt-not-occ", "{}")
     # Backdate past _INIT_SUBMIT_GRACE_PERIOD so the stale-INIT branch fires.
-    with job_lib._DB.conn:  # pylint: disable=protected-access
-        job_lib._DB.cursor.execute(
-            "UPDATE jobs SET submitted_at=0 WHERE job_id=?", (job_id,))
+    job_lib._DB.cursor.execute(  # pylint: disable=protected-access
+        "UPDATE jobs SET submitted_at=0 WHERE job_id=?", (job_id,))
     job_lib._DB.conn.commit()
 
     job_lib.update_status()
