@@ -2607,6 +2607,10 @@ export function GPUs() {
   const [totalClouds, setTotalClouds] = useState(0);
   const [cloudClusterCounts, setCloudClusterCounts] = useState({});
   const [cloudJobCounts, setCloudJobCounts] = useState({});
+  // Per-context cluster/job counts, keyed by buildContextStatsKey(context).
+  // Restores the state dropped in #50 round 1: the Kubernetes/SSH tab
+  // renders still consume it (ReferenceError on the live page otherwise).
+  const [contextStats, setContextStats] = useState({});
   // Raw cluster/job records so Cloud panel counts can be re-scoped to the
   // selected workspace without refetching.
   const [cloudClusterRecords, setCloudClusterRecords] = useState([]);
