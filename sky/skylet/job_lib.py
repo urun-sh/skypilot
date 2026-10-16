@@ -872,7 +872,20 @@ def update_job_status(job_ids: List[int],
         with filelock.FileLock(_get_lock_path(job_id)):
             status = None
             job_record = _get_jobs_by_ids([job_id])[0]
-            original_status = job_record['status']
+            # urun occupant mirror rows (metadata.urun_occ, written by the
+            # node's urun_occ_to_jobs sync) have no ray driver pid or pending
+            # record BY DESIGN, so every probe below maps them to
+            # FAILED_DRIVER (the `status is None` branch) and tail_logs() --
+            # which calls update_job_status directly, no reconciler -- kills
+            # the very row the dashboard log view is tailing (live 2026-10-16,
+            # prod-usw2 379bac1118: `sky logs <cluster> 45` demoted a live
+            # PENDING occupant to FAILED_DRIVER). Same contract as the
+            # update_status() reconciler guard: the occupancy heartbeat owns
+            # these rows' status; return the stored status verbatim.
+            # NB: _get_jobs_by_ids returns metadata already json-parsed (dict).
+            if (job_record.get('metadata') or {}).get('urun_occ'):
+                statuses.append(original_status)
+                continue
             job_submitted_at = job_record['submitted_at']
             job_pid = job_record['pid']
 

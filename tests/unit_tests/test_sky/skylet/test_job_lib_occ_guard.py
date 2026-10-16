@@ -102,3 +102,28 @@ def test_update_status_leaves_terminal_occ_rows_alone(isolated_jobs_db):
     job_lib.update_status()
 
     assert job_lib.get_status(job_id) == job_lib.JobStatus.CANCELLED
+
+
+def test_update_job_status_keeps_occ_row(isolated_jobs_db):
+    """tail_logs() calls update_job_status() directly (no reconciler): a
+    live PENDING occupant row must survive a log-tail click."""
+    job_id = _add_occ_row("occ:test-tail-1", _set_pending)
+    assert job_lib.get_status(job_id) == job_lib.JobStatus.PENDING
+
+    statuses = job_lib.update_job_status([job_id])
+
+    assert statuses == [job_lib.JobStatus.PENDING]
+    assert job_lib.get_status(job_id) == job_lib.JobStatus.PENDING
+
+
+def test_update_job_status_still_demotes_stale_real_jobs(isolated_jobs_db,
+                                                         monkeypatch):
+    """Narrow guard: a stale non-occ INIT row is still demoted on the
+    tail_logs path."""
+    job_id, _ = job_lib.add_job("real-job", "realhash", "rt-not-occ", "{}")
+    assert job_lib.get_status(job_id) == job_lib.JobStatus.INIT
+    monkeypatch.setattr(job_lib, "_INIT_SUBMIT_GRACE_PERIOD", -1)
+
+    job_lib.update_job_status([job_id])
+
+    assert job_lib.get_status(job_id) == job_lib.JobStatus.FAILED_DRIVER
