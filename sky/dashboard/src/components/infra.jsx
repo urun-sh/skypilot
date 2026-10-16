@@ -260,7 +260,7 @@ const PROVIDER_TIER_LEGEND = [
   },
   {
     badge: PROVIDER_NO_CATALOG_BADGE,
-    meaning: 'not connected — missing credentials or refresh module',
+    meaning: 'local catalog data is unavailable',
   },
 ];
 

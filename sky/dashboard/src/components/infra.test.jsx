@@ -802,7 +802,7 @@ describe('ProvidersSection', () => {
       screen.getByText('price list only, no live availability')
     ).toBeInTheDocument();
     expect(
-      screen.getByText('not connected — missing credentials or refresh module')
+      screen.getByText('local catalog data is unavailable')
     ).toBeInTheDocument();
     expect(
       screen.getByText(
