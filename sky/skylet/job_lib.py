@@ -549,13 +549,39 @@ def get_exit_codes(job_id: int) -> Optional[List[int]]:
 
 
 @init_db
+def set_job_start_time(job_id: int, start_at: float) -> None:
+    """Stamp a job's start_at WITHOUT flipping status to RUNNING.
+
+    ``set_job_started`` is the RUNNING transition and stamps wall-clock now —
+    for a job that actually started before its row existed (a node's urun
+    occupant mirror row, admitted minutes before the sync daemon first wrote
+    it), the real start would be lost and the dashboard duration would read
+    0s for the whole boot. This setter records the actual start time; callers
+    still call ``set_job_started`` when the job genuinely becomes RUNNING.
+    """
+    # TODO(mraheja): remove pylint disabling when filelock version updated.
+    # pylint: disable=abstract-class-instantiated
+    assert _DB is not None
+    with filelock.FileLock(_get_lock_path(job_id)):
+        _DB.cursor.execute('UPDATE jobs SET start_at=(?) WHERE job_id=(?)',
+                           (start_at, job_id))
+        _DB.conn.commit()
+
+
+@init_db
 def set_job_started(job_id: int) -> None:
     # TODO(mraheja): remove pylint disabling when filelock version updated.
     # pylint: disable=abstract-class-instantiated
     assert _DB is not None
     with filelock.FileLock(_get_lock_path(job_id)):
+        # COALESCE(NULLIF(start_at, -1), now): a start time already stamped
+        # by set_job_start_time (the job's true, earlier start) wins over
+        # "now" — the RUNNING transition must never rewrite history for jobs
+        # that started pre-row. The schema's default is -1 (job_lib.py:102),
+        # so NULLIF maps "never started" to the fresh now().
         _DB.cursor.execute(
-            'UPDATE jobs SET status=(?), start_at=(?), end_at=NULL '
+            'UPDATE jobs SET status=(?), '
+            'start_at=COALESCE(NULLIF(start_at, -1), ?), end_at=NULL '
             'WHERE job_id=(?)', (JobStatus.RUNNING.value, time.time(), job_id))
         _DB.conn.commit()
 
