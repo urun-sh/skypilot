@@ -887,4 +887,27 @@ describe('ProvidersSection', () => {
       'Failed to load provider catalogs: Failed to get provider GPU offerings with status 502'
     );
   });
+  it('keeps live cloud rows when the catalog fetch fails', () => {
+    const { container } = renderProviders({
+      error: 'Failed to get provider GPU offerings with status 502',
+    });
+    // The cloud fetch and the catalog fetch are independent: the error is
+    // a notice above the table, never a takeover that hides fleet rows.
+    expect(summaryRows(container).length).toBeGreaterThan(0);
+    expect(screen.getByText('AWS')).toBeInTheDocument();
+    expect(container.textContent).toContain(
+      'catalog columns are blank until the next refresh'
+    );
+  });
+
+  it('keeps live cloud rows while the catalog is refreshing', () => {
+    const { container } = renderProviders({
+      loading: true,
+      providers: {},
+    });
+    // cloudRows present -> the rows render; the full skeleton only owns
+    // the no-data-at-all first load.
+    expect(summaryRows(container).length).toBeGreaterThan(0);
+    expect(screen.getByText('AWS')).toBeInTheDocument();
+  });
 });

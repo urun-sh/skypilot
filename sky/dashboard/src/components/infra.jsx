@@ -258,6 +258,7 @@ export function ProvidersSection({
   providers = {},
   gpuCapacity = {},
   gpuCapacityLoading = false,
+  statusByKey = null,
   loading = false,
   error = null,
 }) {
@@ -275,7 +276,12 @@ export function ProvidersSection({
     });
   };
 
-  if (loading || cloudInitialLoading) {
+  // Neither the loading skeleton nor the catalog error may clobber live
+  // cloud rows (CodeRabbit round 1): the cloud fetch and the offerings
+  // fetch are independent, so a failed catalog request leaves the
+  // fleet columns renderable and only the catalog columns go blank.
+  const hasCloudRows = cloudRows.length > 0;
+  if ((loading || cloudInitialLoading) && !hasCloudRows) {
     return (
       <div className="rounded-lg border bg-card text-card-foreground shadow-sm mb-6">
         <div className="p-5">
@@ -311,19 +317,15 @@ export function ProvidersSection({
       </div>
     );
   }
-
-  if (error) {
-    return (
-      <div className="rounded-lg border bg-card text-card-foreground shadow-sm mb-6">
-        <div className="p-5">
-          <h3 className="text-lg font-semibold mb-4">Providers</h3>
-          <p className="text-sm text-red-500">
-            Failed to load provider catalogs: {error}
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // A catalog error renders as an in-section notice; the table below
+  // still shows every cloud row (fleet columns), with the catalog
+  // columns falling back to their absent-provider rendering.
+  const catalogErrorNotice = error ? (
+    <p className="text-sm text-red-500 mb-3">
+      Failed to load provider catalogs: {error}. Fleet columns still show;
+      catalog columns are blank until the next refresh.
+    </p>
+  ) : null;
 
   // Default providers first (fixed order), then any extras the cloud rows
   // or the offerings endpoint report, so every default provider keeps a row
@@ -497,6 +499,7 @@ export function ProvidersSection({
           per-GPU offerings and live per-region stock. Catalogs refresh from
           provider APIs every few hours.
         </p>
+        {catalogErrorNotice}
         <div className="overflow-x-auto rounded-md border shadow-sm bg-card">
           <table className="min-w-full text-sm">
             <thead className="bg-gray-50">
@@ -550,6 +553,7 @@ export function ProvidersSection({
                           context={{
                             id: provider.cloud,
                             kind: 'cloud',
+                            status: statusByKey?.get(`cloud:${provider.cloud}`),
                           }}
                         />
                         <span
@@ -4249,6 +4253,7 @@ export function GPUs() {
         }
         cloudCountsLoading={clusterDataLoading || sshAndKubeJobsDataLoading}
         providers={providerOfferings}
+        statusByKey={extraStatusByKey}
         gpuCapacity={workspaceCloudGpuCapacity}
         gpuCapacityLoading={clusterDataLoading}
         loading={offeringsLoading}
