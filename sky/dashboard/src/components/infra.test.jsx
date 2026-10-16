@@ -774,12 +774,41 @@ describe('ProvidersSection', () => {
 
   it('renders the mode badge under each provider name', () => {
     renderProviders();
-    expect(screen.getAllByText('live units')).toHaveLength(2); // vast, spheron
-    expect(screen.getByText('in stock')).toBeInTheDocument(); // lambda
-    expect(screen.getByText('catalog')).toBeInTheDocument(); // aws
+    // +1 occurrence of each label: the legend line reuses the badges.
+    expect(screen.getAllByText('live units')).toHaveLength(3); // vast, spheron, legend
+    expect(screen.getAllByText('in stock')).toHaveLength(2); // lambda, legend
+    expect(screen.getAllByText('catalog')).toHaveLength(2); // aws, legend
     // Every absent provider (7 defaults + Fluidstack) keeps the outline
-    // no-catalog badge.
-    expect(screen.getAllByText('no catalog')).toHaveLength(8);
+    // no-catalog badge, plus the legend's own.
+    expect(screen.getAllByText('no catalog')).toHaveLength(9);
+  });
+
+  it('glosses the stock tiers in a compact legend line', () => {
+    renderProviders();
+    expect(screen.getByText('Stock tiers:')).toBeInTheDocument();
+    // The legend answers the "is this what we rented?" reading: every
+    // tier is provider-side bookable capacity, never our own fleet.
+    expect(
+      screen.getByText(
+        'bookable at the provider now, with live unit counts per region'
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'offered right now, but the provider publishes no unit counts'
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('price list only, no live availability')
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('local catalog data is unavailable')
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Stock is the provider’s side; our fleet is Clusters · Jobs · Our GPUs.'
+      )
+    ).toBeInTheDocument();
   });
 
   it('merges the live fleet: clusters, jobs and our GPUs in the row', () => {

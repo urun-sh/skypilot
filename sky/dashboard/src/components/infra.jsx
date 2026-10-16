@@ -241,6 +241,28 @@ const PROVIDER_NO_CATALOG_BADGE = {
   label: 'no catalog',
   className: 'border border-gray-200 text-gray-400',
 };
+// Stock tier legend: badges and wording derive from the maps above so
+// the glossary cannot drift from the badges it explains. All tiers
+// describe the provider's side — what is bookable right now — never
+// our own fleet, which lives in the Clusters/Jobs/Our GPUs columns.
+const PROVIDER_TIER_LEGEND = [
+  {
+    badge: PROVIDER_MODE_BADGES.units,
+    meaning: 'bookable at the provider now, with live unit counts per region',
+  },
+  {
+    badge: PROVIDER_MODE_BADGES.in_stock,
+    meaning: 'offered right now, but the provider publishes no unit counts',
+  },
+  {
+    badge: PROVIDER_MODE_BADGES.catalog,
+    meaning: 'price list only, no live availability',
+  },
+  {
+    badge: PROVIDER_NO_CATALOG_BADGE,
+    meaning: 'local catalog data is unavailable',
+  },
+];
 
 // The unified "Providers" section: ONE compact row per provider merging the
 // workspace-scoped live fleet (clusters, jobs, our GPUs) with what the
@@ -499,6 +521,23 @@ export function ProvidersSection({
           per-GPU offerings and live per-region stock. Catalogs refresh from
           provider APIs every few hours.
         </p>
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+          <span className="font-medium text-gray-500">Stock tiers:</span>
+          {PROVIDER_TIER_LEGEND.map(({ badge, meaning }) => (
+            <span key={badge.label} className="flex items-center gap-1">
+              <span
+                className={`px-1.5 py-0.5 rounded text-xs font-medium ${badge.className}`}
+              >
+                {badge.label}
+              </span>
+              <span>{meaning}</span>
+            </span>
+          ))}
+          <span>
+            Stock is the provider’s side; our fleet is Clusters · Jobs · Our
+            GPUs.
+          </span>
+        </div>
         {catalogErrorNotice}
         <div className="overflow-x-auto rounded-md border shadow-sm bg-card">
           <table className="min-w-full text-sm">
