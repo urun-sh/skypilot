@@ -1251,7 +1251,8 @@ def _get_job_queue(handle: backends.CloudVmRayResourceHandle,
                 }
                 # Copied from job_lib.load_job_queue.
                 user = global_user_state.get_user(job_dict['user_hash'])
-                job_dict['username'] = user.name if user is not None else None
+                job_dict['username'] = (user.name if user is not None else
+                                        job_dict['user_hash'])
                 jobs.append(job_dict)
             _annotate_job_links(jobs)
             return jobs
