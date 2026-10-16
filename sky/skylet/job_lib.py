@@ -872,7 +872,7 @@ def update_job_status(job_ids: List[int],
         with filelock.FileLock(_get_lock_path(job_id)):
             status = None
             job_record = _get_jobs_by_ids([job_id])[0]
-            # urun occupant mirror rows (metadata.urun_occ, written by the
+            original_status = job_record['status']
             # node's urun_occ_to_jobs sync) have no ray driver pid or pending
             # record BY DESIGN, so every probe below maps them to
             # FAILED_DRIVER (the `status is None` branch) and tail_logs() --
