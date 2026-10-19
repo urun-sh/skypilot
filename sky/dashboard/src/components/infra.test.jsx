@@ -666,7 +666,7 @@ describe('ProvidersSection', () => {
       ],
     },
     // Spheron-style raw region ids: hash-prefixed, five regions so the
-    // live-stock chips exercise the top-3 + `+N` collapse.
+    // live-stock chips exercise the all-regions listing.
     spheron: {
       present: true,
       updated_at: threeHoursAgo,
@@ -855,26 +855,39 @@ describe('ProvidersSection', () => {
     expect(detailRows(container)).toHaveLength(0);
   });
 
-  it('collapses live stock beyond the top-3 regions into a +N tooltip', () => {
+  it('shows every stocked region with its count, busiest first', () => {
     const { container } = renderProviders();
     fireEvent.click(screen.getByRole('button', { name: 'Expand Spheron' }));
     const rows = detailRows(container);
     expect(rows).toHaveLength(1);
-    // Chip bodies strip the hash prefix; the +N tooltip keeps the raw ids.
-    expect(screen.getByText('newyork-usa-1')).toBeInTheDocument();
+    // All five regions render as chips — none collapse behind a tooltip.
     expect(normalize(rows[0])).toContain('newyork-usa-1 ×27');
     expect(normalize(rows[0])).toContain('us-1 ×18');
     expect(normalize(rows[0])).toContain('eu-1 ×9');
-    const rest = screen.getByText('+2');
-    expect(rest.getAttribute('aria-label')).toBe(
-      '90e8fe74:la-1 ×5, 90e8fe74:ap-1 ×3'
-    );
+    expect(normalize(rows[0])).toContain('la-1 ×5');
+    expect(normalize(rows[0])).toContain('ap-1 ×3');
+    expect(screen.queryByText(/^\+2$/)).not.toBeInTheDocument();
     // The regions count button keeps the full raw list.
     expect(
       screen.getByRole('button', {
         name: '90e8fe74:ap-1, 90e8fe74:eu-1, 90e8fe74:la-1, 90e8fe74:newyork-usa-1, 90e8fe74:us-1',
       })
     ).toBeInTheDocument();
+  });
+
+  it('links each provider row to its verified console', () => {
+    renderProviders();
+    expect(
+      screen.getByRole('link', { name: 'Open Vast console' })
+    ).toHaveAttribute('href', 'https://cloud.vast.ai');
+    // Spheron's console URL is not verifiable — no link rendered.
+    expect(
+      screen.queryByRole('link', { name: 'Open Spheron console' })
+    ).not.toBeInTheDocument();
+    // Providers without a console entry render no link at all.
+    expect(
+      screen.queryByRole('link', { name: 'Open Fluidstack console' })
+    ).not.toBeInTheDocument();
   });
 
   it('words the in_stock tier honestly in the detail rows', () => {

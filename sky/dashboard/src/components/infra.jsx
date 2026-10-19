@@ -12,6 +12,7 @@ import {
   PlayIcon,
   ChevronRightIcon,
   ChevronDownIcon,
+  ExternalLinkIcon,
 } from 'lucide-react';
 import { useMobile } from '@/hooks/useMobile';
 import { useUrlFilterState } from '@/hooks/useUrlFilterState';
@@ -264,6 +265,20 @@ const PROVIDER_TIER_LEGEND = [
   },
 ];
 
+// Verified provider consoles, linked from each provider row. Providers
+// whose console URL could not be verified (or has none) render no link.
+const PROVIDER_LINKS = {
+  aws: 'https://console.aws.amazon.com/ec2/',
+  gcp: 'https://console.cloud.google.com/compute',
+  lambda: 'https://cloud.lambdalabs.com/instances',
+  shadeform: 'https://shadeform.ai',
+  latitude: 'https://www.latitude.sh',
+  vast: 'https://cloud.vast.ai',
+  primeintellect: 'https://www.primeintellect.ai',
+  ornn: 'https://compute.ornn.com',
+  packet: 'https://dash.packet.ai',
+};
+
 // The unified "Providers" section: ONE compact row per provider merging the
 // workspace-scoped live fleet (clusters, jobs, our GPUs) with what the
 // provider catalog currently offers (stock tier, cheapest price, freshness).
@@ -459,8 +474,8 @@ export function ProvidersSection({
     );
   };
 
-  // Live per-region stock, compact: top-3 regions by units as chips, the
-  // rest collapsed into a `+N` chip whose tooltip lists them all.
+  // Live per-region stock: every stocked region with its unit count,
+  // busiest first — chips wrap, so nothing hides behind a tooltip.
   const renderLiveStockCell = (gpu, mode) => {
     if (mode === 'in_stock') {
       return (
@@ -476,14 +491,9 @@ export function ProvidersSection({
     if (stocked.length === 0) {
       return <span className="text-gray-400 text-xs font-medium">—</span>;
     }
-    const top = stocked.slice(0, 3);
-    const rest = stocked.slice(3);
-    const restText = rest
-      .map(([region, detail]) => `${region} ×${detail.units}`)
-      .join(', ');
     return (
       <div className="flex flex-wrap items-center gap-1 text-xs text-gray-500">
-        {top.map(([region, detail], index) => (
+        {stocked.map(([region, detail], index) => (
           <span key={region} className="whitespace-nowrap">
             {index > 0 && <span className="text-gray-300 mr-1">·</span>}
             <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 rounded font-medium">
@@ -492,17 +502,6 @@ export function ProvidersSection({
             ×{detail.units}
           </span>
         ))}
-        {rest.length > 0 && (
-          <NonCapitalizedTooltip content={restText}>
-            <button
-              type="button"
-              aria-label={restText}
-              className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded font-medium"
-            >
-              +{rest.length}
-            </button>
-          </NonCapitalizedTooltip>
-        )}
       </div>
     );
   };
@@ -609,6 +608,18 @@ export function ProvidersSection({
                         >
                           {badge.label}
                         </span>
+                        {PROVIDER_LINKS[provider.cloud] && (
+                          <a
+                            href={PROVIDER_LINKS[provider.cloud]}
+                            target="_blank"
+                            rel="noreferrer"
+                            aria-label={`Open ${provider.name} console`}
+                            title={`Open ${provider.name} console`}
+                            className="text-gray-300 hover:text-gray-500"
+                          >
+                            <ExternalLinkIcon className="w-3.5 h-3.5" />
+                          </a>
+                        )}
                       </div>
                     </td>
                     <td className="p-3 text-gray-600">{stockLabel}</td>
