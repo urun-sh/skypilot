@@ -15,11 +15,18 @@ times before succeeding, and the mapping helpers are patched, so each test
 pins exactly the retry/forget boundary.
 """
 
+import tempfile
+from pathlib import Path
+
 import unittest
 from unittest import mock
 
 from sky.provision.quantacloud import instance as qc_instance
 from sky.provision.quantacloud import utils
+
+# The lock file rides beside _STATE_PATH; point it at a tmp dir so the
+# suite never touches the real ~/.sky.
+_STATE_DIR = Path(tempfile.mkdtemp(prefix="qc-instance-test-"))
 
 
 class _StubClient:
@@ -40,20 +47,21 @@ def _patched_adapter(failures,
                      *,
                      retry_if_missing,
                      reload_state=None,
-                     mapped_id="dep-123"):
+                     mapped_id="dep-123",
+                     real_forget=False):
     """Run query_instances against the stub, returning (result, forgot).
 
     ``reload_state`` (optional) overrides what the SECOND ``_load_state``
-    call returns — the expiration path's re-read (CodeRabbit's
-    concurrent-writer guard): pass a fresh state whose mapping names a
-    DIFFERENT deployment to pin that the stale snapshot never clobbers a
-    concurrent writer's new mapping. ``mapped_id`` is the ``_mapped_id``
-    patch target (a constant, or a per-call sequence for the same pin).
+    call returns — the expiration path's re-read: pass a fresh state whose
+    mapping names a DIFFERENT deployment to pin that the stale snapshot
+    never clobbers a concurrent writer's new mapping. ``mapped_id`` is the
+    ``_mapped_id`` patch target (a constant, or a per-call sequence).
+    With ``real_forget``, the REAL ``_forget`` runs (its lock + re-read +
+    deployment guard) and ``_save_state`` records into ``forgot`` (a
+    skipped guard never saves); otherwise ``_forget`` itself is a recorder.
     """
     state = {"mappings": {}}
     forgot = []
-    # side_effect ALWAYS a list (a bare dict would be iterated key-by-key)
-    # and ALWAYS two deep (the initial load + the expiration re-read).
     load_states = [state, reload_state if reload_state is not None else state]
     if isinstance(mapped_id, (list, tuple)):
         mapped_id_patch = mock.patch.object(qc_instance,
@@ -63,17 +71,27 @@ def _patched_adapter(failures,
         mapped_id_patch = mock.patch.object(qc_instance,
                                             "_mapped_id",
                                             return_value=mapped_id)
+    if real_forget:
+        forget_patch = mock.patch.object(
+            qc_instance,
+            "_save_state",
+            side_effect=lambda st: forgot.append(st))
+    else:
+        forget_patch = mock.patch.object(
+            qc_instance,
+            "_forget",
+            side_effect=lambda name, dep=None: forgot.append(name))
     with mock.patch.object(qc_instance.time, "sleep", lambda s: None), \
          mock.patch.object(qc_instance, "_client",
                            return_value=_StubClient(failures)), \
          mock.patch.object(qc_instance, "_load_state",
                            side_effect=load_states), \
          mapped_id_patch, \
+         forget_patch, \
          mock.patch.object(
-             qc_instance, "_forget",
-             side_effect=lambda st, name: forgot.append(name)), \
-         mock.patch.object(
-             qc_instance, "_sky_status", return_value=mock.sentinel.status):
+             qc_instance, "_sky_status", return_value=mock.sentinel.status), \
+         mock.patch.object(qc_instance, "_STATE_PATH",
+                           str(_STATE_DIR / "clusters.json")):
         result = qc_instance.query_instances("cluster",
                                              "cluster-on-cloud",
                                              retry_if_missing=retry_if_missing)
@@ -135,7 +153,8 @@ class QueryInstancesRetryContract(unittest.TestCase):
             result, forgot = _patched_adapter(1,
                                               retry_if_missing=True,
                                               reload_state=fresh,
-                                              mapped_id=["dep-123", "dep-999"])
+                                              mapped_id=["dep-123", "dep-999"],
+                                              real_forget=True)
         self.assertEqual(result, {})
         self.assertEqual(forgot, [])
 

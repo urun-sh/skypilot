@@ -32,11 +32,13 @@ funded deploy (the Latitude lesson: documented root, real ubuntu).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
 import time
 import typing
+from filelock import FileLock
 from typing import Any, Dict, List, Optional, Tuple
 
 from sky import sky_logging
@@ -158,9 +160,38 @@ def _save_state(state: Dict[str, Dict[str, Any]]) -> None:
         raise
 
 
-def _forget(state: Dict[str, Dict[str, Any]],
-            cluster_name_on_cloud: str) -> None:
-    if cluster_name_on_cloud in state:
+@contextlib.contextmanager
+def _state_lock():
+    """Serialize every read-check-mutate-save transaction on the
+    cluster-identity store (CodeRabbit, this PR): run_instances' create,
+    the stale-mapping cleanups, stop's forget, and query_instances'
+    expiration path all do load -> check -> mutate -> save on the ONE
+    JSON file; interleaving two of them can lose a mapping (the
+    concurrent-writer class). One lock file beside the state; plain
+    readers stay lock-free (the fail-loud parse)."""
+    os.makedirs(os.path.dirname(_STATE_PATH), exist_ok=True)
+    lock = FileLock(_STATE_PATH + '.lock', timeout=120)
+    with lock:
+        yield
+
+
+def _forget(cluster_name_on_cloud: str,
+            deployment_id: Optional[str] = None) -> None:
+    """Remove the mapping under the state lock, re-reading the CURRENT
+    state first (CodeRabbit, this PR): every caller's in-memory snapshot
+    can be stale by the time it forgets — another writer may have saved a
+    NEW mapping for the same cluster name — so the forget transaction is
+    load -> check -> delete -> save, all under the lock, and with
+    ``deployment_id`` given it removes OUR OWN mapping only when it
+    still names THAT deployment (a concurrent writer's replacement is
+    never clobbered)."""
+    with _state_lock():
+        state = _load_state()
+        current_id = _mapped_id(state, cluster_name_on_cloud)
+        if current_id is None:
+            return
+        if deployment_id is not None and current_id != deployment_id:
+            return
         del state[cluster_name_on_cloud]
         _save_state(state)
 
@@ -197,11 +228,11 @@ def run_instances(
             deployment = client.get_deployment(deployment_id)
         except utils.QuantacloudNotFoundError:
             # Stale mapping (already terminated server-side): forget it.
-            _forget(state, cluster_name_on_cloud)
+            _forget(cluster_name_on_cloud)
             deployment_id = None
         else:
             if not _is_live(deployment):
-                _forget(state, cluster_name_on_cloud)
+                _forget(cluster_name_on_cloud)
                 deployment_id = None
             else:
                 status = utils.deployment_status(deployment)
@@ -287,15 +318,16 @@ def run_instances(
     # Record the identity + the provider-reported SSH user for every later
     # operation (query/cluster-info/terminate) — deployments have no name
     # field to find them by (see module docstring).
-    state = _load_state()
-    state[cluster_name_on_cloud] = {
-        'deployment_id': deployment_id,
-        'region': region,
-        'ssh_user': client.ssh_user(deployment) or SSH_USER,
-        'instance_type': str((config.node_config or {}).get('InstanceType') or
-                             ''),
-    }
-    _save_state(state)
+    with _state_lock():
+        state = _load_state()
+        state[cluster_name_on_cloud] = {
+            'deployment_id': deployment_id,
+            'region': region,
+            'ssh_user': client.ssh_user(deployment) or SSH_USER,
+            'instance_type': str(
+                (config.node_config or {}).get('InstanceType') or ''),
+        }
+        _save_state(state)
 
     return common.ProvisionRecord(
         provider_name=PROVIDER_NAME,
@@ -370,7 +402,7 @@ def terminate_instances(
     # stop_deployment is idempotent (404 / cannot-stop validation errors
     # are success inside the client).
     client.stop_deployment(deployment_id)
-    _forget(state, cluster_name_on_cloud)
+    _forget(cluster_name_on_cloud)
     logger.info('quantacloud deployment %s stopped (terminated)', deployment_id)
 
 
@@ -474,17 +506,11 @@ def query_instances(
                 # Gone server-side: forget the mapping so nothing
                 # resurrects it, and report absence — no instances for
                 # this cluster (the same signal a Latitude server list
-                # gives when the box was deleted). RE-READ the state
-                # before removing anything (CodeRabbit, this PR): the
-                # retry window above is long enough for a concurrent
-                # writer to have saved a NEW mapping for this cluster
-                # name; deleting the stale snapshot's key and saving
-                # the whole stale object would clobber it. Remove OUR
-                # OWN mapping, and only if it still names THIS
-                # deployment.
-                current = _load_state()
-                if _mapped_id(current, cluster_name_on_cloud) == deployment_id:
-                    _forget(current, cluster_name_on_cloud)
+                # gives when the box was deleted). _forget re-reads the
+                # CURRENT state under the lock and removes OUR OWN
+                # mapping only (a concurrent writer's replacement can
+                # never be clobbered).
+                _forget(cluster_name_on_cloud, deployment_id)
                 return {}
             time.sleep(_QUERY_RETRY_INTERVAL_S)
     return {deployment_id: (_sky_status(deployment), None)}
