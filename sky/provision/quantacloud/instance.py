@@ -428,6 +428,7 @@ def get_cluster_info(
         ssh_user=ssh_user,
     )
 
+
 #: The bounded read-after-write window for `query_instances`'s
 #: `retry_if_missing` re-poll: a just-created deployment can 404 on the
 #: provider's first status poll until the create lands server-side. 60s at
@@ -462,7 +463,8 @@ def query_instances(
     # StopFailover class). With retry_if_missing, re-poll a bounded window
     # before concluding absence; the steady-state behavior (a box that is
     # REALLY gone) is unchanged.
-    deadline = time.monotonic() + _QUERY_RETRY_WINDOW_S if retry_if_missing else 0.0
+    deadline = time.monotonic(
+    ) + _QUERY_RETRY_WINDOW_S if retry_if_missing else 0.0
     while True:
         try:
             deployment = client.get_deployment(deployment_id)
@@ -472,12 +474,20 @@ def query_instances(
                 # Gone server-side: forget the mapping so nothing
                 # resurrects it, and report absence — no instances for
                 # this cluster (the same signal a Latitude server list
-                # gives when the box was deleted).
-                _forget(state, cluster_name_on_cloud)
+                # gives when the box was deleted). RE-READ the state
+                # before removing anything (CodeRabbit, this PR): the
+                # retry window above is long enough for a concurrent
+                # writer to have saved a NEW mapping for this cluster
+                # name; deleting the stale snapshot's key and saving
+                # the whole stale object would clobber it. Remove OUR
+                # OWN mapping, and only if it still names THIS
+                # deployment.
+                current = _load_state()
+                if _mapped_id(current, cluster_name_on_cloud) == deployment_id:
+                    _forget(current, cluster_name_on_cloud)
                 return {}
             time.sleep(_QUERY_RETRY_INTERVAL_S)
     return {deployment_id: (_sky_status(deployment), None)}
-
 
 
 def open_ports(

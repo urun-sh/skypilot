@@ -36,21 +36,47 @@ class _StubClient:
         return {"deploymentId": deployment_id, "state": "ACTIVE"}
 
 
-def _patched_adapter(failures, *, retry_if_missing):
-    """Run query_instances against the stub, returning (result, forgot)."""
+def _patched_adapter(failures,
+                     *,
+                     retry_if_missing,
+                     reload_state=None,
+                     mapped_id="dep-123"):
+    """Run query_instances against the stub, returning (result, forgot).
+
+    ``reload_state`` (optional) overrides what the SECOND ``_load_state``
+    call returns — the expiration path's re-read (CodeRabbit's
+    concurrent-writer guard): pass a fresh state whose mapping names a
+    DIFFERENT deployment to pin that the stale snapshot never clobbers a
+    concurrent writer's new mapping. ``mapped_id`` is the ``_mapped_id``
+    patch target (a constant, or a per-call sequence for the same pin).
+    """
     state = {"mappings": {}}
     forgot = []
-    with mock.patch.object(qc_instance, "_client", return_value=_StubClient(failures)), \
-         mock.patch.object(qc_instance, "_load_state", return_value=state), \
-         mock.patch.object(
-             qc_instance, "_mapped_id", return_value="dep-123"), \
+    # side_effect ALWAYS a list (a bare dict would be iterated key-by-key)
+    # and ALWAYS two deep (the initial load + the expiration re-read).
+    load_states = [state, reload_state if reload_state is not None else state]
+    if isinstance(mapped_id, (list, tuple)):
+        mapped_id_patch = mock.patch.object(qc_instance,
+                                            "_mapped_id",
+                                            side_effect=list(mapped_id))
+    else:
+        mapped_id_patch = mock.patch.object(qc_instance,
+                                            "_mapped_id",
+                                            return_value=mapped_id)
+    with mock.patch.object(qc_instance.time, "sleep", lambda s: None), \
+         mock.patch.object(qc_instance, "_client",
+                           return_value=_StubClient(failures)), \
+         mock.patch.object(qc_instance, "_load_state",
+                           side_effect=load_states), \
+         mapped_id_patch, \
          mock.patch.object(
              qc_instance, "_forget",
              side_effect=lambda st, name: forgot.append(name)), \
          mock.patch.object(
              qc_instance, "_sky_status", return_value=mock.sentinel.status):
-        result = qc_instance.query_instances(
-            "cluster", "cluster-on-cloud", retry_if_missing=retry_if_missing)
+        result = qc_instance.query_instances("cluster",
+                                             "cluster-on-cloud",
+                                             retry_if_missing=retry_if_missing)
     return result, forgot
 
 
@@ -67,8 +93,9 @@ class QueryInstancesRetryContract(unittest.TestCase):
                                return_value={"mappings": {}}), \
              mock.patch.object(qc_instance, "_mapped_id", return_value=None):
             self.assertEqual(
-                qc_instance.query_instances(
-                    "c", "c-on-cloud", retry_if_missing=True), {})
+                qc_instance.query_instances("c",
+                                            "c-on-cloud",
+                                            retry_if_missing=True), {})
 
     def test_first_poll_404_with_retry_repolls_and_keeps_the_mapping(self):
         """The -10-class window: a just-created deployment 404s once, the
@@ -76,8 +103,7 @@ class QueryInstancesRetryContract(unittest.TestCase):
         reports its status."""
         result, forgot = _patched_adapter(1, retry_if_missing=True)
         self.assertEqual(forgot, [])
-        self.assertEqual(
-            result, {"dep-123": (mock.sentinel.status, None)})
+        self.assertEqual(result, {"dep-123": (mock.sentinel.status, None)})
 
     def test_steady_state_404_still_forgets_the_mapping(self):
         """Without the flag (every steady-state poll), a 404 is the REAL
@@ -95,6 +121,23 @@ class QueryInstancesRetryContract(unittest.TestCase):
             result, forgot = _patched_adapter(1, retry_if_missing=True)
         self.assertEqual(result, {})
         self.assertEqual(forgot, ["cluster-on-cloud"])
+
+    def test_expiration_never_clobbers_a_concurrent_writers_new_mapping(self):
+        """CodeRabbit (this PR): the retry window is long enough for a
+        concurrent writer to have saved a NEW mapping for this cluster
+        name. The expiration path must re-read the CURRENT state and
+        remove OUR OWN mapping only if it still names THIS deployment —
+        never delete-and-save the stale snapshot wholesale."""
+        with mock.patch.object(qc_instance, "_QUERY_RETRY_WINDOW_S", 0.0):
+            # The re-read state: the cluster name now maps to a NEW
+            # deployment (a concurrent writer's replacement box).
+            fresh = {"mappings": {}}
+            result, forgot = _patched_adapter(1,
+                                              retry_if_missing=True,
+                                              reload_state=fresh,
+                                              mapped_id=["dep-123", "dep-999"])
+        self.assertEqual(result, {})
+        self.assertEqual(forgot, [])
 
 
 if __name__ == "__main__":
