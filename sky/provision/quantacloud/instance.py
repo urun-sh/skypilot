@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import typing
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -427,12 +428,22 @@ def get_cluster_info(
         ssh_user=ssh_user,
     )
 
+#: The bounded read-after-write window for `query_instances`'s
+#: `retry_if_missing` re-poll: a just-created deployment can 404 on the
+#: provider's first status poll until the create lands server-side. 60s at
+#: 5s polls is well under every launch-decision timeout, and only ever
+#: taken when the caller explicitly asks for the retry (launch paths);
+#: steady-state status polls never enter it.
+_QUERY_RETRY_WINDOW_S = 60.0
+_QUERY_RETRY_INTERVAL_S = 5.0
+
 
 def query_instances(
     cluster_name: str,
     cluster_name_on_cloud: str,
     provider_config: Optional[Dict[str, Any]] = None,
     non_terminated_only: bool = True,
+    retry_if_missing: bool = False,
 ) -> Dict[str, Tuple[Optional[status_lib.ClusterStatus], Optional[str]]]:
     del cluster_name, provider_config, non_terminated_only
     client = _client()
@@ -440,15 +451,33 @@ def query_instances(
     deployment_id = _mapped_id(state, cluster_name_on_cloud)
     if deployment_id is None:
         return {}
-    try:
-        deployment = client.get_deployment(deployment_id)
-    except utils.QuantacloudNotFoundError:
-        # Gone server-side: forget the mapping so nothing resurrects it,
-        # and report absence — no instances for this cluster (the same
-        # signal a Latitude server list gives when the box was deleted).
-        _forget(state, cluster_name_on_cloud)
-        return {}
+    # The 25th (live receipts: the -17 StopFailoverError + the -19 launch
+    # TypeError, ENG-575, 2026-10-19): a JUST-CREATED deployment can 404
+    # on the provider's first status poll — the read-after-write window
+    # between the create and the get server-side. The pre-fix code
+    # TypeErrored on the kwarg the caller passes (every other cloud
+    # adapter in this tree accepts it), and even without the TypeError it
+    # would _forget the mapping on that first 404 — treating the
+    # just-launched box as deleted and stranding the launch (the
+    # StopFailover class). With retry_if_missing, re-poll a bounded window
+    # before concluding absence; the steady-state behavior (a box that is
+    # REALLY gone) is unchanged.
+    deadline = time.monotonic() + _QUERY_RETRY_WINDOW_S if retry_if_missing else 0.0
+    while True:
+        try:
+            deployment = client.get_deployment(deployment_id)
+            break
+        except utils.QuantacloudNotFoundError:
+            if time.monotonic() >= deadline:
+                # Gone server-side: forget the mapping so nothing
+                # resurrects it, and report absence — no instances for
+                # this cluster (the same signal a Latitude server list
+                # gives when the box was deleted).
+                _forget(state, cluster_name_on_cloud)
+                return {}
+            time.sleep(_QUERY_RETRY_INTERVAL_S)
     return {deployment_id: (_sky_status(deployment), None)}
+
 
 
 def open_ports(
