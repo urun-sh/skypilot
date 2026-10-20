@@ -102,6 +102,13 @@ ORDER_ENDED = "ended"
 # Manual activation refusal bodies.
 REFUSAL_IMAGE_REQUIRED = "image_required"
 REFUSAL_NOT_FOUND = "not_found"
+# ornn_access_show refuses with this body while a fresh fill is still
+# pendingOperation=activate — the fill→deploy window (measured ~4 min,
+# 2026-10-08 receipts). A live fill died +16s on this refusal (ENG-580,
+# 2026-10-20: order 57829c4e filled at $1.80, wait_until_ready raised
+# before the VM could deploy). In wait_until_ready it is a POLL signal,
+# bounded by the deadline like any other not-yet-ready state.
+ACCESS_PENDING_REFUSAL = "cannot launch in its current state"
 
 
 class OrnnError(RuntimeError):
@@ -867,7 +874,19 @@ class OrnnClient:
             status = str(reservation.get("status") or "").strip().lower()
             if status:
                 last_status = status
-            machines = self.show_access(reservation_id)
+            # The fill→deploy window: ornn_access_show REFUSES with
+            # ACCESS_PENDING_REFUSAL while the reservation is still
+            # pendingOperation=activate (the VM has not deployed yet).
+            # That is a poll signal, not a verdict — swallow it and keep
+            # the deadline bound; every other access error stays loud and
+            # typed (ENG-580: a filled bid died +16s on this exact
+            # refusal before the VM could deploy).
+            try:
+                machines = self.show_access(reservation_id)
+            except OrnnError as e:
+                if ACCESS_PENDING_REFUSAL not in str(e):
+                    raise
+                machines = []
             if machines:
                 return reservation
             if status == STATUS_CANCELLED:
