@@ -393,6 +393,45 @@ class TestWaitUntilReady(unittest.TestCase):
                 now=lambda: clock["t"])
         self.assertIn("refusing to wait longer", str(ctx.exception))
 
+    def _pending_refusal(self):
+        # The exact live refusal body receipted 2026-10-20 (ENG-580):
+        # a filled $1.80 bid died +16s on this instead of polling
+        # through the pendingOperation=activate window.
+        return _mcp_result(
+            "reservation cannot launch in its current state",
+            is_error=True)
+
+    def test_pending_activation_refusal_is_polled_through(self):
+        # fill→deploy window: access_show refuses while the reservation
+        # is pendingOperation=activate; the wait must poll through it
+        # within the deadline and succeed once machines materialize.
+        script = _tool_script(
+            *([_mcp_result({"reservationId": "r1", "status": "active"}),
+               self._pending_refusal()] * 3 +
+              [_mcp_result({"reservationId": "r1", "status": "active"}),
+               _mcp_result({"machines": [{"host": "h", "port": 22}]})]))
+        client, _ = _client(script)
+        reservation = client.wait_until_ready("r1",
+                                              timeout_s=60,
+                                              poll_interval_s=5,
+                                              sleep=lambda s: None)
+        self.assertEqual(reservation["status"], "active")
+
+    def test_other_access_refusals_stay_fatal(self):
+        # Only the pending-activation body is a poll signal; any other
+        # access_show refusal must stay loud, typed, and immediate —
+        # never a silent endless wait on a dead reservation.
+        script = _tool_script(
+            _mcp_result({"reservationId": "r1", "status": "active"}),
+            _mcp_result("some unrelated refusal", is_error=True))
+        client, _ = _client(script)
+        with self.assertRaises(api.OrnnError) as ctx:
+            client.wait_until_ready("r1",
+                                    timeout_s=60,
+                                    poll_interval_s=5,
+                                    sleep=lambda s: None)
+        self.assertIn("some unrelated refusal", str(ctx.exception))
+
 
 class TestMachineEndpoint(unittest.TestCase):
 
