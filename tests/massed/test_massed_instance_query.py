@@ -93,6 +93,25 @@ class QueryInstancesRetryContract(unittest.TestCase):
             )
         self.assertEqual(result, {})
 
+    def test_booting_instance_maps_to_init_not_terminated(self):
+        # A PRESENT instance that has not finished booting must read INIT,
+        # never None: the provision contract treats None as
+        # terminated/terminating, and the refresh path would drop the
+        # cluster record while the box is still booting (CodeRabbit on
+        # the massed lane PR).
+        finder = _AppearAfter(0, dict(_ROW, os_booted=0, ip=None))
+        client = mock.Mock()
+        with mock.patch.object(provision, '_client',
+                               return_value=client), \
+             mock.patch.object(provision, '_find_by_name', finder):
+            result = provision.query_instances(
+                cluster_name='c',
+                cluster_name_on_cloud='urun-massed-e2e',
+            )
+        from sky.utils import status_lib
+        self.assertEqual(result,
+                         {'uuid-1': (status_lib.ClusterStatus.INIT, None)})
+
 
 if __name__ == '__main__':
     unittest.main()

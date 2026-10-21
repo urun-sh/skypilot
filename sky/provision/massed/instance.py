@@ -84,14 +84,16 @@ def _sky_status(instance: Dict[str, Any]):
 
     The steady-state signal is the ``os_booted`` flag plus the ip (the
     provider's status strings are not documented as a closed set);
-    anything not booted-with-ip maps to None = transitional (SkyPilot
-    keeps waiting). A terminated instance is ABSENT from the account
-    list (termination removes it), so absence — not a status string — is
-    the terminal signal here.
+    anything not booted-with-ip maps to INIT = transitional — a PRESENT,
+    booting instance must not read as None, which the provision contract
+    treats as terminated/terminating (the refresh path would drop the
+    cluster record while the box is still booting). A terminated instance
+    is ABSENT from the account list (termination removes it), so absence
+    — not a status string — is the terminal signal here.
     """
     if utils.MassedClient.instance_booted(instance):
         return status_lib.ClusterStatus.UP
-    return None
+    return status_lib.ClusterStatus.INIT
 
 
 def _find_by_name(client: 'utils.MassedClient',

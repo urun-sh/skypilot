@@ -325,7 +325,6 @@ class Massed(clouds.Cloud):
             'instance_type': resources.instance_type,
             'custom_resources': custom_resources,
             'region': region.name,
-            'use_spot': str(resources.use_spot),
         }
 
     def _get_feasible_launchable_resources(
