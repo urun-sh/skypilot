@@ -30,6 +30,7 @@ MassedClient = massed_api.MassedClient
 MassedError = massed_api.MassedError
 MassedAuthError = massed_api.MassedAuthError
 MassedNotFoundError = massed_api.MassedNotFoundError
+REGION_ANY = massed_api.REGION_ANY
 
 
 def client_from_env() -> MassedClient:

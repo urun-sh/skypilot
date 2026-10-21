@@ -162,7 +162,8 @@ def normalise_accelerator(family_slug: Optional[str]) -> str:
     slug = str(family_slug or '').strip().lower()
     if not slug:
         return ''
-    return _ACCELERATOR_MAP.get(slug, slug.replace('_', '').replace('-', '').upper())
+    return _ACCELERATOR_MAP.get(slug,
+                                slug.replace('_', '').replace('-', '').upper())
 
 
 def _vram_gib_per_gpu(description: Any) -> Optional[float]:
@@ -190,8 +191,8 @@ def _capacity(product: Dict[str, Any]) -> int:
     return value
 
 
-def _product_rows(product_name: str,
-                  product: Dict[str, Any]) -> Iterator[List[Any]]:
+def _product_rows(product_name: str, product: Dict[str,
+                                                   Any]) -> Iterator[List[Any]]:
     """One product -> one CSV row per region with capacity, or nothing.
 
     Skips (fail closed, never a garbage row): non-GPU products (the
@@ -205,8 +206,10 @@ def _product_rows(product_name: str,
     gpu_count, family = parsed
     instance_type = (product.get('instance_type') or {})
     raw_cents = instance_type.get('price_cents_per_hour')
-    if isinstance(raw_cents, bool) or not isinstance(raw_cents, (
-            int, float)) or float(raw_cents) <= 0:
+    if isinstance(
+            raw_cents,
+            bool) or not isinstance(raw_cents,
+                                    (int, float)) or float(raw_cents) <= 0:
         return  # unpriceable: skip rather than quote as free
     # CENTS per hour -> USD per hour (the catalog's Price unit): 219 -> 2.19.
     price = float(raw_cents) / 100.0
@@ -251,8 +254,7 @@ def _product_rows(product_name: str,
         ]
 
 
-def iter_rows(inventory: Dict[str, Dict[str, Any]]
-              ) -> Iterator[List[Any]]:
+def iter_rows(inventory: Dict[str, Dict[str, Any]]) -> Iterator[List[Any]]:
     """Yield one CSV row per in-capacity (product, region) we will rent."""
     for product_name, product in (inventory or {}).items():
         if not isinstance(product, dict):
@@ -278,9 +280,8 @@ def verify_zero_stock(inventory: Dict[str, Dict[str, Any]],
     stocked = sorted(
         str(name)
         for name, product in (inventory or {}).items()
-        if isinstance(product, dict) and _parse_product(str(name)
-                                                         ) is not None and
-        _capacity(product) > 0)
+        if isinstance(product, dict) and
+        _parse_product(str(name)) is not None and _capacity(product) > 0)
     if stocked:
         raise MassedCatalogError(
             f'no rentable catalog rows will be written from {len(inventory or {})} '

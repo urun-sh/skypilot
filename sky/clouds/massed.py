@@ -177,10 +177,8 @@ class Massed(clouds.Cloud):
 
     @classmethod
     def get_accelerators_from_instance_type(
-        cls, instance_type: str
-    ) -> Optional[Dict[str, Union[int, float]]]:
-        return massed_catalog.get_accelerators_from_instance_type(
-            instance_type)
+            cls, instance_type: str) -> Optional[Dict[str, Union[int, float]]]:
+        return massed_catalog.get_accelerators_from_instance_type(instance_type)
 
     @classmethod
     def get_default_instance_type(
@@ -327,7 +325,7 @@ class Massed(clouds.Cloud):
             'instance_type': resources.instance_type,
             'custom_resources': custom_resources,
             'region': region.name,
-            'use_spot': resources.use_spot,
+            'use_spot': str(resources.use_spot),
         }
 
     def _get_feasible_launchable_resources(

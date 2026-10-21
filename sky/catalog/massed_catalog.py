@@ -125,8 +125,7 @@ def validate_region_zone(
     if zone is not None:
         raise ValueError(
             f'MassedCompute does not support zones, but got zone {zone!r}.')
-    return common.validate_region_zone_impl('massed', _get_df(), region,
-                                            zone)
+    return common.validate_region_zone_impl('massed', _get_df(), region, zone)
 
 
 def get_hourly_cost(

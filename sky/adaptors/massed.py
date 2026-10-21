@@ -54,9 +54,9 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any, Callable, Dict, List, Optional
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional
 
 API_BASE = 'https://vm.massedcompute.com/api/v1'
 
@@ -188,12 +188,10 @@ class MassedClient:
             try:
                 return exc.code, exc.read()
             except (TimeoutError, OSError) as read_exc:
-                raise MassedError(
-                    f'{method} {path} failed reading the error '
-                    f'body: {read_exc}') from read_exc
+                raise MassedError(f'{method} {path} failed reading the error '
+                                  f'body: {read_exc}') from read_exc
         except urllib.error.URLError as exc:  # pragma: no cover - network path
-            raise MassedError(
-                f'{method} {path} failed: {exc.reason}') from exc
+            raise MassedError(f'{method} {path} failed: {exc.reason}') from exc
         except (TimeoutError, OSError) as exc:
             raise MassedError(f'{method} {path} failed: {exc}') from exc
 
@@ -316,7 +314,8 @@ class MassedClient:
                 f'{type(inventory).__name__}')
         return {
             str(name): row
-            for name, row in inventory.items() if isinstance(row, dict)
+            for name, row in inventory.items()
+            if isinstance(row, dict)
         }
 
     def list_images(self) -> List[Dict[str, Any]]:
@@ -341,11 +340,10 @@ class MassedClient:
         box without drivers and the launch fails far from the cause).
         """
         for image in self.list_images():
-            if str(image.get('vm_image_name') or '').strip(
-            ) == DEFAULT_IMAGE_NAME:
+            if str(image.get('vm_image_name') or
+                   '').strip() == DEFAULT_IMAGE_NAME:
                 image_id = image.get('vm_image_id')
-                if isinstance(image_id, int) and not isinstance(
-                        image_id, bool):
+                if isinstance(image_id, int) and not isinstance(image_id, bool):
                     return image_id
         raise MassedError(
             f'GET /images carries no {DEFAULT_IMAGE_NAME!r} image with a '
@@ -477,9 +475,8 @@ class MassedClient:
                 'refusing to launch without a productName (the stable '
                 'catalog product name, e.g. gpu_1x_pro_6000_blackwell)')
         if not isinstance(image_id, int) or isinstance(image_id, bool):
-            raise MassedError(
-                f'refusing to launch with a non-numeric imageId '
-                f'{image_id!r}')
+            raise MassedError(f'refusing to launch with a non-numeric imageId '
+                              f'{image_id!r}')
         body: Dict[str, Any] = {
             'imageId': image_id,
             'productName': str(product_name).strip(),

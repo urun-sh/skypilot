@@ -128,8 +128,8 @@ def run_instances(
     # InstanceType is the STABLE product name (the launch API's
     # productName, e.g. gpu_1x_pro_6000_blackwell) — the catalog token is
     # passed through verbatim; there is no ephemeral id inside it.
-    product_name = str(
-        (config.node_config or {}).get('InstanceType') or '').strip()
+    product_name = str((config.node_config or {}).get('InstanceType') or
+                       '').strip()
     if not product_name:
         raise utils.MassedError(
             'node_config is missing InstanceType (the MassedCompute '
@@ -166,7 +166,7 @@ def run_instances(
         image_id = client.default_image_id()
         # regionName 'any' lets the provider place the box wherever the
         # product has capacity; a pinned catalog Region token pins it.
-        region_name = str(region or '').strip() or utils.MassedClient.REGION_ANY
+        region_name = str(region or '').strip() or utils.REGION_ANY
         instance_uuid = client.launch_instance(
             image_id=image_id,
             product_name=product_name,

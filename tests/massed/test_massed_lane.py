@@ -11,8 +11,8 @@ import unittest
 from unittest import mock
 
 from sky.catalog.data_fetchers import fetch_massed
-from sky.provision.massed import utils
 from sky.provision.massed import instance as provision
+from sky.provision.massed import utils
 
 
 def _product(name='gpu_1x_pro_6000_blackwell',
@@ -37,9 +37,10 @@ def _product(name='gpu_1x_pro_6000_blackwell',
                 'storage_gb': storage_gb,
             },
         },
-        'regions_with_capacity_available': [
-            {'name': r, 'description': r} for r in regions
-        ],
+        'regions_with_capacity_available': [{
+            'name': r,
+            'description': r
+        } for r in regions],
         'capacity_available': capacity,
     }
 
@@ -82,11 +83,16 @@ class TestFetcherRows(unittest.TestCase):
                         'name': 'cpu_16_small',
                         'description': '16 vCPU',
                         'price_cents_per_hour': 10,
-                        'specs': {'vcpu_count': 16, 'memory_gib': 32,
-                                  'storage_gb': 100},
+                        'specs': {
+                            'vcpu_count': 16,
+                            'memory_gib': 32,
+                            'storage_gb': 100
+                        },
                     },
-                    'regions_with_capacity_available': [
-                        {'name': 'us-east-1', 'description': 'us-east-1'}],
+                    'regions_with_capacity_available': [{
+                        'name': 'us-east-1',
+                        'description': 'us-east-1'
+                    }],
                     'capacity_available': 5,
                 },
             }))
@@ -96,11 +102,14 @@ class TestFetcherRows(unittest.TestCase):
         # A sold-out product is a fact, not a row: capacity 0 prices nothing.
         rows = list(
             fetch_massed.iter_rows(
-                _inventory(**{
-                    'gpu_8x_pro_6000_blackwell': _product(
-                        name='gpu_8x_pro_6000_blackwell', cents=1752,
-                        capacity=0, regions=())
-                })))
+                _inventory(
+                    **{
+                        'gpu_8x_pro_6000_blackwell': _product(
+                            name='gpu_8x_pro_6000_blackwell',
+                            cents=1752,
+                            capacity=0,
+                            regions=())
+                    })))
         product_names = {r[0] for r in rows}
         self.assertNotIn('gpu_8x_pro_6000_blackwell', product_names)
         self.assertEqual(product_names, {'gpu_1x_pro_6000_blackwell'})
@@ -116,9 +125,8 @@ class TestZeroStockCrossCheck(unittest.TestCase):
             fetch_massed.verify_zero_stock(_inventory(), rows=[])
 
     def test_honest_zero_stock_passes(self):
-        empty = _inventory(**{
-            'gpu_1x_pro_6000_blackwell': _product(capacity=0, regions=())
-        })
+        empty = _inventory(
+            **{'gpu_1x_pro_6000_blackwell': _product(capacity=0, regions=())})
         fetch_massed.verify_zero_stock(empty, rows=[])
 
     def test_rows_present_never_refuses(self):
@@ -130,7 +138,8 @@ class TestZeroStockCrossCheck(unittest.TestCase):
 class TestProvisionerLaunch(unittest.TestCase):
     """run_instances: the productName passthrough and the launch body."""
 
-    def _config(self, instance_type='gpu_1x_pro_6000_blackwell',
+    def _config(self,
+                instance_type='gpu_1x_pro_6000_blackwell',
                 public_key='ssh-ed25519 AAAA real-material'):
         node_config = {'InstanceType': instance_type}
         if public_key is not None:
@@ -146,7 +155,9 @@ class TestProvisionerLaunch(unittest.TestCase):
         client.default_image_id.return_value = 7
         client.launch_instance.return_value = 'uuid-1'
         client.wait_until_booted.return_value = {
-            'uuid': 'uuid-1', 'ip': '1.2.3.4', 'os_booted': 1,
+            'uuid': 'uuid-1',
+            'ip': '1.2.3.4',
+            'os_booted': 1,
         }
         with mock.patch.object(provision, '_client', return_value=client):
             record = provision.run_instances(
