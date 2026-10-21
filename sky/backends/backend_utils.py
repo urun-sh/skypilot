@@ -1477,6 +1477,12 @@ def _add_auth_to_cluster_config(cloud: clouds.Cloud, tmp_yaml_path: str):
             # so it takes the same generic configure_ssh_info path as
             # Spheron/Latitude/Quantacloud.
             clouds.Ornn,
+            # MassedCompute registers its SSH key per-launch too
+            # (sky/provision/massed/instance.py matches key MATERIAL by
+            # name via ensure_ssh_key before launching the VM), so it
+            # takes the same generic configure_ssh_info path as
+            # Spheron/Latitude/Quantacloud.
+            clouds.Massed,
         )):
         config = auth.configure_ssh_info(config)
     elif isinstance(cloud, clouds.GCP):

@@ -751,7 +751,8 @@ ALL_CLOUDS = ('aws', 'azure', 'gcp', 'ibm', 'lambda', 'scp', 'oci',
               'kubernetes', 'runpod', 'vast', 'vsphere', 'cudo', 'fluidstack',
               'paperspace', 'primeintellect', 'do', 'nebius', 'ssh', 'slurm',
               'hyperbolic', 'seeweb', 'shadeform', 'yotta', 'mithril', 'verda',
-              'spheron', 'latitude', 'quantacloud', 'ornn', 'packet')
+              'spheron', 'latitude', 'quantacloud', 'ornn', 'packet',
+              'massed')
 # END constants used for service catalog.
 
 # The user ID of the SkyPilot system.

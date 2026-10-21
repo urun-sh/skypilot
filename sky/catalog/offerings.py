@@ -37,6 +37,7 @@ DEFAULT_OFFERINGS_CLOUDS = [
     'primeintellect',
     'ornn',
     'packet',
+    'massed',
 ]
 
 _CLOUDS_CSV_FILENAME = '{cloud}/vms.csv'
@@ -84,6 +85,7 @@ _STOCK_MODES: Dict[str, str] = {
     'primeintellect': STOCK_MODE_UNITS,
     'quantacloud': STOCK_MODE_UNITS,
     'ornn': STOCK_MODE_UNITS,
+    'massed': STOCK_MODE_UNITS,
     'latitude': STOCK_MODE_IN_STOCK,
     'lambda': STOCK_MODE_IN_STOCK,
     'shadeform': STOCK_MODE_IN_STOCK,

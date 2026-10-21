@@ -167,6 +167,7 @@ Vast = clouds.Vast
 Latitude = clouds.Latitude
 Quantacloud = clouds.Quantacloud
 Packet = clouds.Packet
+Massed = clouds.Massed
 Vsphere = clouds.Vsphere
 Fluidstack = clouds.Fluidstack
 Nebius = clouds.Nebius
