@@ -55,10 +55,10 @@ import base64
 import hashlib
 import json
 import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional, Tuple
 
 API_BASE = 'https://dash.packet.ai/api/v1'
 
@@ -215,8 +215,12 @@ class PacketClient:
 
     # -- plumbing ---------------------------------------------------------
 
-    def _http(self, method: str, url: str, headers: Dict[str, str],
-              payload: Optional[bytes], timeout_s: Optional[int] = None):
+    def _http(self,
+              method: str,
+              url: str,
+              headers: Dict[str, str],
+              payload: Optional[bytes],
+              timeout_s: Optional[int] = None):
         req = urllib.request.Request(url,
                                      data=payload,
                                      headers=headers,
@@ -289,7 +293,9 @@ class PacketClient:
                 status, raw, resp_headers = self._transport(
                     method, url, headers, payload)
             else:
-                status, raw, resp_headers = self._http(method, url, headers,
+                status, raw, resp_headers = self._http(method,
+                                                       url,
+                                                       headers,
                                                        payload,
                                                        timeout_s=timeout_s)
             if status == 429 and attempt < RATE_LIMIT_RETRIES:

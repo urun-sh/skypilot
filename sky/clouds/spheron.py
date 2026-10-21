@@ -28,10 +28,9 @@ import typing
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from sky import clouds
+from sky.catalog import spheron_catalog
 from sky.utils import registry
 from sky.utils import resources_utils
-
-from sky.catalog import spheron_catalog
 
 if typing.TYPE_CHECKING:
     from sky import resources as resources_lib
@@ -70,12 +69,11 @@ class Spheron(clouds.Cloud):
     _MAX_CLUSTER_NAME_LEN_LIMIT = 120
 
     _CLOUD_UNSUPPORTED_FEATURES = {
-        clouds.CloudImplementationFeatures.STOP: (
-            "Stop is offer-dependent on Spheron (supportsPause varies per "
-            "offer) and SkyPilot declares this per cloud, not per instance "
-            "type. Declared unsupported so a stop never silently becomes a "
-            "terminate, which destroys the disk."
-        ),
+        clouds.CloudImplementationFeatures.STOP:
+            ("Stop is offer-dependent on Spheron (supportsPause varies per "
+             "offer) and SkyPilot declares this per cloud, not per instance "
+             "type. Declared unsupported so a stop never silently becomes a "
+             "terminate, which destroys the disk."),
         clouds.CloudImplementationFeatures.MULTI_NODE: "Multi-node clusters are not supported on Spheron.",
         clouds.CloudImplementationFeatures.CUSTOM_DISK_TIER: "Offers ship fixed storage; disk tier is not selectable.",
         clouds.CloudImplementationFeatures.CUSTOM_NETWORK_TIER: "Network tier is not selectable on Spheron.",
@@ -83,10 +81,9 @@ class Spheron(clouds.Cloud):
         clouds.CloudImplementationFeatures.HOST_CONTROLLERS: "Host controllers are not supported on Spheron.",
         clouds.CloudImplementationFeatures.HIGH_AVAILABILITY_CONTROLLERS: "High availability controllers are not supported on Spheron.",
         clouds.CloudImplementationFeatures.CLONE_DISK_FROM_CLUSTER: "Disk cloning is not supported on Spheron.",
-        clouds.CloudImplementationFeatures.IMAGE_ID: (
-            "Images come from the offer's own os_options list; an arbitrary "
-            "image id cannot be requested."
-        ),
+        clouds.CloudImplementationFeatures.IMAGE_ID:
+            ("Images come from the offer's own os_options list; an arbitrary "
+             "image id cannot be requested."),
         clouds.CloudImplementationFeatures.DOCKER_IMAGE: "Docker image selection is not exposed by the Spheron API.",
         clouds.CloudImplementationFeatures.CUSTOM_MULTI_NETWORK: "Custom multi-network is not supported on Spheron.",
     }
@@ -126,8 +123,7 @@ class Spheron(clouds.Cloud):
         del accelerators, resources
         assert zone is None, "Spheron does not support zones."
         regions = spheron_catalog.get_region_zones_for_instance_type(
-            instance_type, use_spot
-        )
+            instance_type, use_spot)
         if region is not None:
             regions = [r for r in regions if r.name == region]
         return regions
@@ -143,24 +139,25 @@ class Spheron(clouds.Cloud):
         use_spot: bool = False,
     ) -> Iterator[None]:
         del num_nodes
-        regions = cls.regions_with_offering(
-            instance_type, accelerators, use_spot, zone=None,
-            region=region)
+        regions = cls.regions_with_offering(instance_type,
+                                            accelerators,
+                                            use_spot,
+                                            zone=None,
+                                            region=region)
         for r in regions:
             assert r.zones is None, r
             yield r.zones
 
     @classmethod
     def get_vcpus_mem_from_instance_type(
-        cls, instance_type: str
-    ) -> Tuple[Optional[float], Optional[float]]:
+            cls, instance_type: str) -> Tuple[Optional[float], Optional[float]]:
         return spheron_catalog.get_vcpus_mem_from_instance_type(instance_type)
 
     @classmethod
     def get_accelerators_from_instance_type(
-        cls, instance_type: str
-    ) -> Optional[Dict[str, Union[int, float]]]:
-        return spheron_catalog.get_accelerators_from_instance_type(instance_type)
+            cls, instance_type: str) -> Optional[Dict[str, Union[int, float]]]:
+        return spheron_catalog.get_accelerators_from_instance_type(
+            instance_type)
 
     @classmethod
     def get_default_instance_type(
@@ -195,9 +192,10 @@ class Spheron(clouds.Cloud):
         region: Optional[str] = None,
         zone: Optional[str] = None,
     ) -> float:
-        return spheron_catalog.get_hourly_cost(
-            instance_type, use_spot=use_spot, region=region, zone=zone
-        )
+        return spheron_catalog.get_hourly_cost(instance_type,
+                                               use_spot=use_spot,
+                                               region=region,
+                                               zone=zone)
 
     def accelerators_to_hourly_cost(
         self,
@@ -267,16 +265,14 @@ class Spheron(clouds.Cloud):
         except api.SpheronError as exc:
             return False, str(exc)
         if balance <= 0:
-            return False, (
-                f"Spheron credentials are valid but the team "
-                f"balance is {balance} USD; every deploy will fail "
-                f"until the account is funded."
-            )
+            return False, (f"Spheron credentials are valid but the team "
+                           f"balance is {balance} USD; every deploy will fail "
+                           f"until the account is funded.")
         return True, None
 
     @classmethod
     def check_credentials(
-        cls, cloud_capability: clouds.CloudCapability
+            cls, cloud_capability: clouds.CloudCapability
     ) -> Tuple[bool, Optional[str]]:
         """Check Spheron credentials for the requested capability.
 
@@ -289,9 +285,7 @@ class Spheron(clouds.Cloud):
         """
         if cloud_capability == clouds.CloudCapability.COMPUTE:
             return cls._check_compute_credentials()
-        return False, (
-            f"Spheron does not support {cloud_capability.value}."
-        )
+        return False, (f"Spheron does not support {cloud_capability.value}.")
 
     # -- provisioning ------------------------------------------------------
 
@@ -308,8 +302,10 @@ class Spheron(clouds.Cloud):
         del cluster_name, dryrun, volume_mounts, num_nodes
         assert zones is None, "Spheron does not support zones."
         resources = resources.assert_launchable()
-        acc_dict = self.get_accelerators_from_instance_type(resources.instance_type)
-        custom_resources = resources_utils.make_ray_custom_resources_str(acc_dict)
+        acc_dict = self.get_accelerators_from_instance_type(
+            resources.instance_type)
+        custom_resources = resources_utils.make_ray_custom_resources_str(
+            acc_dict)
         # InstanceType is "{provider}_{offerId}" -- the provisioner needs both
         # halves, because the deploy API requires them together.
         provider, _, offer_id = (resources.instance_type or "").partition("_")
@@ -355,8 +351,7 @@ class Spheron(clouds.Cloud):
             if default_instance_type is None:
                 return resources_utils.FeasibleResources([], [], None)
             return resources_utils.FeasibleResources(
-                _make([default_instance_type]), [], None
-            )
+                _make([default_instance_type]), [], None)
 
         assert len(accelerators) == 1, resources
         acc, acc_count = list(accelerators.items())[0]
@@ -369,13 +364,12 @@ class Spheron(clouds.Cloud):
                 memory=resources.memory,
                 region=resources.region,
                 zone=resources.zone,
-            )
-        )
+            ))
         if instance_list is None:
-            return resources_utils.FeasibleResources([], fuzzy_candidate_list, None)
-        return resources_utils.FeasibleResources(
-            _make(instance_list), fuzzy_candidate_list, None
-        )
+            return resources_utils.FeasibleResources([], fuzzy_candidate_list,
+                                                     None)
+        return resources_utils.FeasibleResources(_make(instance_list),
+                                                 fuzzy_candidate_list, None)
 
     @classmethod
     def query_status(
@@ -390,5 +384,4 @@ class Spheron(clouds.Cloud):
         # the authority and this path is not used.
         raise NotImplementedError(
             "Spheron uses StatusVersion.SKYPILOT; status comes from "
-            "sky.provision.spheron.query_instances."
-        )
+            "sky.provision.spheron.query_instances.")

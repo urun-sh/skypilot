@@ -47,7 +47,6 @@ _DEAD_ON_ARRIVAL_HOSTS = frozenset({
     152941,
 })
 
-
 # The claim's proven whole-instance hourly price ceiling rides in
 # create_instance_kwargs (the same control-key channel 'login' and
 # 'api_key' use): the runner injects it via the launch Resources'
@@ -68,6 +67,7 @@ class VastOfferPriceExceedsCeilingError(RuntimeError):
     The message carries the ceiling, the offending machine ids and their
     live whole-box prices -- the provider body, preserved.
     """
+
 
 def is_vm_image(image: Optional[str]) -> bool:
     """Whether `image` makes Vast boot a KVM VM instead of a container."""
@@ -256,8 +256,8 @@ def launch(name: str,
     if region_token:
         instance_list = [
             offer for offer in instance_list
-            if str(offer.get('geolocation') or '').split(',')[-1].strip()
-            == region_token
+            if str(offer.get('geolocation') or '').split(',')[-1].strip() ==
+            region_token
         ]
     # Same client-side treatment as the region token above: drop offers
     # from the dead-on-arrival hosts (_DEAD_ON_ARRIVAL_HOSTS, ENG-493
@@ -282,17 +282,15 @@ def launch(name: str,
         ceiling = float(ceiling_raw)
         under = [
             offer for offer in instance_list
-            if offer.get('dph_total') is not None
-            and float(offer['dph_total']) <= ceiling
+            if offer.get('dph_total') is not None and
+            float(offer['dph_total']) <= ceiling
         ]
         if instance_list and not under:
-            detail = ', '.join(
-                'machine {machine_id} ${price}/hr'.format(
-                    machine_id=offer.get('machine_id'),
-                    price=(offer.get('dph_total')
-                           if offer.get('dph_total') is not None
-                           else 'unpriced'))
-                for offer in instance_list[:5])
+            detail = ', '.join('machine {machine_id} ${price}/hr'.format(
+                machine_id=offer.get('machine_id'),
+                price=(offer.get('dph_total') if offer.
+                       get('dph_total') is not None else 'unpriced'))
+                               for offer in instance_list[:5])
             raise VastOfferPriceExceedsCeilingError(
                 'every offer exceeds the claim\'s price ceiling '
                 f'${ceiling}/hr (whole instance): {detail}; refusing '
@@ -311,9 +309,9 @@ def launch(name: str,
         price = offer.get('dph_total')
         return float(price) if price is not None else float('inf')
 
-    instance_list = sorted(
-        instance_list,
-        key=lambda offer: (_offer_price(offer), offer.get('machine_id')))
+    instance_list = sorted(instance_list,
+                           key=lambda offer:
+                           (_offer_price(offer), offer.get('machine_id')))
 
     if isinstance(instance_list, int) or len(instance_list) == 0:
         raise RuntimeError('Failed to create instances, could not find an '
@@ -362,9 +360,12 @@ def launch(name: str,
     # Vast interruptible capacity is bid/price based and stops (billing disk)
     # when outbid. The uRun Vast lane is destroy-only and on-demand-only.
     if preemptible:
-        raise RuntimeError('Vast interruptible instances are not supported; use on-demand capacity')
+        raise RuntimeError(
+            'Vast interruptible instances are not supported; use on-demand capacity'
+        )
     if 'bid_price' in launch_params or 'price' in launch_params:
-        raise RuntimeError('Vast on-demand launches must not pass price/bid_price')
+        raise RuntimeError(
+            'Vast on-demand launches must not pass price/bid_price')
 
     # Handle onstart_cmd - read from file if onstart path provided
     user_onstart_cmd = launch_params.pop('onstart_cmd', None)

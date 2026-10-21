@@ -122,8 +122,7 @@ def run_instances(
     if len(live) > 1:
         raise utils.LatitudeError(
             f"cluster {cluster_name_on_cloud!r} has {len(live)} live servers; "
-            "refusing to guess which is the head"
-        )
+            "refusing to guess which is the head")
 
     created = []
     if live:
@@ -134,8 +133,7 @@ def run_instances(
                 f"server {server.get('id')} for cluster "
                 f"{cluster_name_on_cloud!r} is in failed_deployment; "
                 "terminate it before relaunching (not auto-retried — "
-                "report and decide)"
-            )
+                "report and decide)")
         if status in (utils.STATUS_OFF, utils.STATUS_RESCUE_MODE):
             # Adopted boxes in these steady states can never reach `on` on
             # their own: `off` is a hard power-off and `rescue_mode` is a
@@ -149,19 +147,16 @@ def run_instances(
                 f"server {server.get('id')} for cluster "
                 f"{cluster_name_on_cloud!r} is {status!r}; it cannot become "
                 "`on` on its own and this integration does not power boxes "
-                "back on — terminate it before relaunching"
-            )
+                "back on — terminate it before relaunching")
     else:
         node_config = config.node_config
         plan = node_config.get("InstanceType")
         if not plan:
             raise utils.LatitudeError(
                 'node_config is missing InstanceType (the Latitude plan slug, '
-                "e.g. g4-rtx6kpro-large)"
-            )
-        operating_system = (
-            node_config.get("latitude_operating_system") or utils.DEFAULT_OS
-        )
+                "e.g. g4-rtx6kpro-large)")
+        operating_system = (node_config.get("latitude_operating_system") or
+                            utils.DEFAULT_OS)
 
         # node_config['PublicKey'] is the ONE canonical source: backend_utils
         # puts Latitude on the generic `auth.configure_ssh_info` path, which
@@ -179,8 +174,7 @@ def run_instances(
                 "node_config['PublicKey'] is missing or was never "
                 f"substituted (got {public_key!r}); auth.configure_ssh_info "
                 "must run before provisioning — a Latitude server without "
-                "a real public key is unreachable"
-            )
+                "a real public key is unreachable")
 
         # The deploy API takes a project ID or slug; the lane's On-demand
         # project is found-or-created by slug so hourly deploys are
@@ -215,12 +209,11 @@ def run_instances(
     )
 
 
-def wait_instances(
-    region: str, cluster_name_on_cloud: str,
-    state: Optional[status_lib.ClusterStatus]
-) -> None:
+def wait_instances(region: str, cluster_name_on_cloud: str,
+                   state: Optional[status_lib.ClusterStatus]) -> None:
     """No-op: run_instances already blocks until `on`."""
     del region, cluster_name_on_cloud, state
+
 
 def stop_instances(
     cluster_name_on_cloud: str,
@@ -241,8 +234,7 @@ def stop_instances(
     del cluster_name_on_cloud, provider_config, worker_only
     raise NotImplementedError(
         "stop is unsupported on Latitude: power_off keeps billing hourly, "
-        "and DELETE destroys the disk. Use terminate_instances for teardown."
-    )
+        "and DELETE destroys the disk. Use terminate_instances for teardown.")
 
 
 def terminate_instances(
@@ -259,8 +251,7 @@ def terminate_instances(
         raise utils.LatitudeError(
             "refusing to terminate with an empty cluster_name_on_cloud: "
             "that filters nothing and would delete every server on the "
-            "account"
-        )
+            "account")
     client = _client()
     for server in client.list_servers(hostname=cluster_name_on_cloud):
         if not _is_live(server):
@@ -285,9 +276,9 @@ def get_cluster_info(
         if _is_live(s)
     ]
     if not servers:
-        return common.ClusterInfo(
-            instances={}, head_instance_id=None, provider_name=PROVIDER_NAME
-        )
+        return common.ClusterInfo(instances={},
+                                  head_instance_id=None,
+                                  provider_name=PROVIDER_NAME)
 
     instances: Dict[str, List[common.InstanceInfo]] = {}
     head_instance_id = None
@@ -304,8 +295,8 @@ def get_cluster_info(
                 ssh_port=SSH_PORT,
                 tags={},
                 node_name=str(
-                    (server.get("attributes") or {}).get("hostname") or server_id
-                ),
+                    (server.get("attributes") or {}).get("hostname") or
+                    server_id),
             )
         ]
         if head_instance_id is None:
@@ -329,7 +320,8 @@ def query_instances(
 ) -> Dict[str, Tuple[Optional[status_lib.ClusterStatus], Optional[str]]]:
     del cluster_name, provider_config
     client = _client()
-    result: Dict[str, Tuple[Optional[status_lib.ClusterStatus], Optional[str]]] = {}
+    result: Dict[str, Tuple[Optional[status_lib.ClusterStatus],
+                            Optional[str]]] = {}
     for server in client.list_servers(hostname=cluster_name_on_cloud):
         raw = utils.server_status(server)
         sky_status = _STATUS_MAP.get(raw)

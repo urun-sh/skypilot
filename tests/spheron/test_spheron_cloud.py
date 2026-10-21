@@ -10,38 +10,55 @@ from sky.clouds import spheron
 
 
 class TestRegionsWithOfferingAcceptsResources(unittest.TestCase):
+
     def test_accepts_resources_kwarg(self):
         with mock.patch.object(
-            spheron.spheron_catalog,
-            'get_region_zones_for_instance_type',
-            return_value=[],
+                spheron.spheron_catalog,
+                'get_region_zones_for_instance_type',
+                return_value=[],
         ):
             result = spheron.Spheron.regions_with_offering(
-                'gpu', None, False, None, None, resources=object(),
+                'gpu',
+                None,
+                False,
+                None,
+                None,
+                resources=object(),
             )
         self.assertEqual(result, [])
 
     def test_without_resources_kwarg(self):
         with mock.patch.object(
-            spheron.spheron_catalog,
-            'get_region_zones_for_instance_type',
-            return_value=[],
+                spheron.spheron_catalog,
+                'get_region_zones_for_instance_type',
+                return_value=[],
         ):
             result = spheron.Spheron.regions_with_offering(
-                'gpu', None, False, None, None,
+                'gpu',
+                None,
+                False,
+                None,
+                None,
             )
         self.assertEqual(result, [])
 
 
 class TestZonesProvisionLoop(unittest.TestCase):
+
     def _run(self, region='us-east', regions=None):
         with mock.patch.object(
-            spheron.Spheron, 'regions_with_offering', return_value=regions or [],
+                spheron.Spheron,
+                'regions_with_offering',
+                return_value=regions or [],
         ) as m:
-            result = list(spheron.Spheron.zones_provision_loop(
-                region=region, num_nodes=1,
-                instance_type='gpu', accelerators=None, use_spot=False,
-            ))
+            result = list(
+                spheron.Spheron.zones_provision_loop(
+                    region=region,
+                    num_nodes=1,
+                    instance_type='gpu',
+                    accelerators=None,
+                    use_spot=False,
+                ))
         return result, m
 
     def test_no_offering_yields_nothing(self):
@@ -73,45 +90,57 @@ class TestZonesProvisionLoop(unittest.TestCase):
 
 
 def _fake_client(status='STOPPED'):
+
     class _Client:
+
         def list_deployments(self, **kwargs):
             return [{
                 'id': 'deploy-1',
                 'name': 'test-cluster',  # matches cluster_name_on_cloud
                 'status': status,
             }]
+
     return _Client()
 
 
 class TestQueryInstancesKeepsStopped(unittest.TestCase):
+
     def test_stopped_visible_with_non_terminated_only_true(self):
         from sky.provision.spheron import instance as inst
         from sky.utils import status_lib
         with mock.patch.object(
-            inst, '_client', return_value=_fake_client('STOPPED'),
+                inst,
+                '_client',
+                return_value=_fake_client('STOPPED'),
         ):
             result = inst.query_instances(
-                'test-cluster', 'test-cluster',
+                'test-cluster',
+                'test-cluster',
                 non_terminated_only=True,
             )
         self.assertIn('deploy-1', result)
         self.assertEqual(
-            result['deploy-1'][0], status_lib.ClusterStatus.STOPPED,
+            result['deploy-1'][0],
+            status_lib.ClusterStatus.STOPPED,
         )
 
     def test_stopped_visible_with_non_terminated_only_false(self):
         from sky.provision.spheron import instance as inst
         from sky.utils import status_lib
         with mock.patch.object(
-            inst, '_client', return_value=_fake_client('STOPPED'),
+                inst,
+                '_client',
+                return_value=_fake_client('STOPPED'),
         ):
             result = inst.query_instances(
-                'test-cluster', 'test-cluster',
+                'test-cluster',
+                'test-cluster',
                 non_terminated_only=False,
             )
         self.assertIn('deploy-1', result)
         self.assertEqual(
-            result['deploy-1'][0], status_lib.ClusterStatus.STOPPED,
+            result['deploy-1'][0],
+            status_lib.ClusterStatus.STOPPED,
         )
 
 

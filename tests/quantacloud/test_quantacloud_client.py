@@ -305,13 +305,13 @@ class TestEnsureHelpers(unittest.TestCase):
         # API-shaped fingerprint must MATCH (one call, no duplicate POST).
         transport = _Transport([
             (200,
-             json.dumps([
-                 self._key_row("k_live", controller_pub, name="skypilot")
-             ]).encode()),
+             json.dumps(
+                 [self._key_row("k_live", controller_pub,
+                                name="skypilot")]).encode()),
         ])
         client = api.QuantacloudClient("gpu_live_k", transport=transport)
-        self.assertEqual(
-            client.ensure_ssh_key("skypilot", controller_pub), "k_live")
+        self.assertEqual(client.ensure_ssh_key("skypilot", controller_pub),
+                         "k_live")
         self.assertEqual(len(transport.calls), 1)
 
 

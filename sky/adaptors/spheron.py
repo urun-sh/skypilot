@@ -29,10 +29,10 @@ from __future__ import annotations
 import dataclasses
 import json
 import time
+from typing import Any, Dict, List, Optional
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
 
 API_BASE = "https://app.spheron.ai"
 
@@ -66,9 +66,8 @@ STATUS_TERMINATED_PROVIDER = "terminated-provider"
 _PENDING_STATUSES = frozenset({"deploying"})
 _FAILED_STATUSES = frozenset({"failed"})
 # Everything from which a deployment will never reach `running` again.
-_TERMINAL_STATUSES = (
-    frozenset({STATUS_TERMINATED, STATUS_TERMINATED_PROVIDER}) | _FAILED_STATUSES
-)
+_TERMINAL_STATUSES = (frozenset({STATUS_TERMINATED, STATUS_TERMINATED_PROVIDER})
+                      | _FAILED_STATUSES)
 # `?status=active` covers these, per the documented filter semantics.
 ACTIVE_STATUSES = frozenset({STATUS_RUNNING, "deploying", STATUS_STOPPED})
 
@@ -123,14 +122,12 @@ class Offer:
     @classmethod
     def from_payload(cls, group_gpu_type: str, raw: Dict[str, Any]) -> "Offer":
         missing = [
-            k
-            for k in ("provider", "offerId", "gpuCount", "price")
+            k for k in ("provider", "offerId", "gpuCount", "price")
             if raw.get(k) is None
         ]
         if missing:
             raise SpheronError(
-                f"offer is missing required fields {missing}: {sorted(raw)}"
-            )
+                f"offer is missing required fields {missing}: {sorted(raw)}")
         return cls(
             provider=str(raw["provider"]),
             offer_id=str(raw["offerId"]),
@@ -186,8 +183,7 @@ class Offer:
         if prefer_substrings and required:
             raise SpheronError(
                 f"offer {self.offer_id!r} has no OS matching "
-                f"{prefer_substrings}; available: {self.os_options}"
-            )
+                f"{prefer_substrings}; available: {self.os_options}")
         return self.os_options[0]
 
 
@@ -227,24 +223,20 @@ class DeploymentRequest:
         if region not in offer.regions:
             raise SpheronError(
                 f"region {region!r} is not offered by {offer.offer_id!r} "
-                f"(has {offer.regions})"
-            )
+                f"(has {offer.regions})")
         if operating_system not in offer.os_options:
             raise SpheronError(
-                f"OS {operating_system!r} is not offered by {offer.offer_id!r}"
-            )
+                f"OS {operating_system!r} is not offered by {offer.offer_id!r}")
         if (ssh_key_id is None) == (ssh_public_key is None):
             raise SpheronError(
                 "exactly one of ssh_key_id / ssh_public_key is required; "
-                "without one the instance is unreachable"
-            )
+                "without one the instance is unreachable")
         if cloud_init is not None and not offer.supports_cloud_init:
             # 56% of offers report supportsCloudInit: false. Silently dropping
             # the cloud-init would produce a VM that boots and never bootstraps.
             raise SpheronError(
                 f"offer {offer.offer_id!r} does not support cloudInit; "
-                "bootstrap must go over SSH for this offer"
-            )
+                "bootstrap must go over SSH for this offer")
         return cls(
             provider=offer.provider,
             offer_id=offer.offer_id,
@@ -298,8 +290,7 @@ class SpheronClient:
         if not api_key or not api_key.strip():
             raise SpheronAuthError(
                 "Spheron API key is empty; refusing to make unauthenticated "
-                'calls that would look like "no capacity"'
-            )
+                'calls that would look like "no capacity"')
         self._api_key = api_key.strip()
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
@@ -336,10 +327,12 @@ class SpheronClient:
 
         return self._interpret(status, raw, method, path)
 
-    def _http(
-        self, method: str, url: str, headers: Dict[str, str], payload: Optional[bytes]
-    ):
-        req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+    def _http(self, method: str, url: str, headers: Dict[str, str],
+              payload: Optional[bytes]):
+        req = urllib.request.Request(url,
+                                     data=payload,
+                                     headers=headers,
+                                     method=method)
         try:
             with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
                 # `resp.read()` runs OUTSIDE urlopen's URLError handling: a
@@ -353,14 +346,13 @@ class SpheronClient:
             except (TimeoutError, OSError) as read_exc:
                 raise SpheronError(
                     f"{method} {url.split('?')[0]} failed reading the error "
-                    f"body: {read_exc}"
-                ) from read_exc
+                    f"body: {read_exc}") from read_exc
         except urllib.error.URLError as exc:  # pragma: no cover - network path
             raise SpheronError(
-                f"{method} {url.split('?')[0]} failed: {exc.reason}"
-            ) from exc
+                f"{method} {url.split('?')[0]} failed: {exc.reason}") from exc
         except (TimeoutError, OSError) as exc:
-            raise SpheronError(f"{method} {url.split('?')[0]} failed: {exc}") from exc
+            raise SpheronError(
+                f"{method} {url.split('?')[0]} failed: {exc}") from exc
 
     def _interpret(self, status: int, raw: bytes, method: str, path: str):
         # Never include the URL query or headers in an error: no key leakage.
@@ -379,20 +371,15 @@ class SpheronClient:
         if status in (401, 403):
             raise SpheronAuthError(
                 f"{where}: HTTP {status}. Check SPHERON_API_KEY, and note the "
-                "API rejects a default python User-Agent."
-            )
+                "API rejects a default python User-Agent.")
         if status >= 400:
             detail = ""
             try:
                 parsed = json.loads(raw)
                 # Documented envelope: {"error": ..., "code": ..., "details": {}}
                 code = parsed.get("code")
-                message = (
-                    parsed.get("error")
-                    or parsed.get("error_message")
-                    or parsed.get("message")
-                    or ""
-                )
+                message = (parsed.get("error") or parsed.get("error_message") or
+                           parsed.get("message") or "")
                 detail = f"{code}: {message}" if code else str(message)
                 detail = detail[:300]
             except Exception:  # pylint: disable=broad-except
@@ -405,7 +392,8 @@ class SpheronClient:
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise SpheronError(f"{where}: response was not JSON ({exc})") from exc
+            raise SpheronError(
+                f"{where}: response was not JSON ({exc})") from exc
 
     # -- account ----------------------------------------------------------
 
@@ -453,16 +441,17 @@ class SpheronClient:
         offers: List[Offer] = []
         page = 1
         while True:
-            payload = (
-                self._call(
-                    "GET", "/api/gpu-offers", params={"page": page, "limit": page_limit}
-                )
-                or {}
-            )
+            payload = (self._call("GET",
+                                  "/api/gpu-offers",
+                                  params={
+                                      "page": page,
+                                      "limit": page_limit
+                                  }) or {})
             for group in payload.get("data", []):
                 gpu_type = group.get("gpuType")
                 if not gpu_type:
-                    raise SpheronError(f"gpu group without gpuType: {sorted(group)}")
+                    raise SpheronError(
+                        f"gpu group without gpuType: {sorted(group)}")
                 for raw in group.get("offers", []):
                     offers.append(Offer.from_payload(gpu_type, raw))
             total_pages = int(payload.get("totalPages") or 1)
@@ -479,12 +468,12 @@ class SpheronClient:
         return list(result or [])
 
     def add_ssh_key(self, name: str, public_key: str) -> Dict[str, Any]:
-        return (
-            self._call(
-                "POST", "/api/ssh-keys", body={"name": name, "publicKey": public_key}
-            )
-            or {}
-        )
+        return (self._call("POST",
+                           "/api/ssh-keys",
+                           body={
+                               "name": name,
+                               "publicKey": public_key
+                           }) or {})
 
     def ensure_ssh_key(self, name: str, public_key: str) -> str:
         """Return the id of a key matching ``public_key``, adding it if absent.
@@ -505,7 +494,8 @@ class SpheronClient:
         created = self.add_ssh_key(name, public_key)
         key_id = created.get("id") or created.get("_id")
         if not key_id:
-            raise SpheronError(f"POST /api/ssh-keys returned no id: {sorted(created)}")
+            raise SpheronError(
+                f"POST /api/ssh-keys returned no id: {sorted(created)}")
         return str(key_id)
 
     # -- deployments ------------------------------------------------------
@@ -544,9 +534,8 @@ class SpheronClient:
         type's provider minimum, and a provider minimum is charged in full even
         on an early terminate.
         """
-        return (
-            self._call("GET", f"/api/deployments/{deployment_id}/can-terminate") or {}
-        )
+        return (self._call(
+            "GET", f"/api/deployments/{deployment_id}/can-terminate") or {})
 
     @staticmethod
     def connection_info(deployment: Dict[str, Any]) -> Dict[str, Optional[str]]:
@@ -586,8 +575,7 @@ class SpheronClient:
         if poll_interval_s < MIN_POLL_INTERVAL_S:
             raise SpheronError(
                 f"poll_interval_s={poll_interval_s} is below the documented "
-                f"floor of {MIN_POLL_INTERVAL_S}s"
-            )
+                f"floor of {MIN_POLL_INTERVAL_S}s")
         deadline = now() + timeout_s
         last_status = None
         while True:
@@ -601,17 +589,13 @@ class SpheronClient:
                 if status == STATUS_TERMINATED_PROVIDER:
                     # Spot reclamation. Retrying the same SPOT offer will
                     # likely repeat; the caller should fall back to DEDICATED.
-                    hint = (
-                        " (reclaimed by the provider -- on SPOT this means "
-                        "the capacity was interrupted)"
-                    )
+                    hint = (" (reclaimed by the provider -- on SPOT this means "
+                            "the capacity was interrupted)")
                 raise SpheronError(
                     f"deployment {deployment_id} entered terminal status "
-                    f"{status!r} while waiting for running{hint}"
-                )
+                    f"{status!r} while waiting for running{hint}")
             if now() >= deadline:
                 raise SpheronError(
                     f"deployment {deployment_id} still {last_status!r} after "
-                    f"{timeout_s:.0f}s"
-                )
+                    f"{timeout_s:.0f}s")
             sleep(poll_interval_s)

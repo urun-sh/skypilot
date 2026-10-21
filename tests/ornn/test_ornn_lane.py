@@ -196,9 +196,8 @@ class TestProvisionerLifecycle(unittest.TestCase):
             # again).
             provision_instance.terminate_instances("c-on-cloud")
         self.assertEqual(set(seen), {"resv-1"})
-        self.assertEqual(
-            [c for c in stub.calls if c[0] == "cancel_spot_order"],
-            [("cancel_spot_order", "resv-1", True)])
+        self.assertEqual([c for c in stub.calls if c[0] == "cancel_spot_order"],
+                         [("cancel_spot_order", "resv-1", True)])
 
     def test_terminated_wait_failure_does_not_double_bid(self):
         """A wedged launch leaves the store entry; a RETRY must ADOPT the

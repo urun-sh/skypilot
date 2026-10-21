@@ -33,10 +33,9 @@ import typing
 from typing import Any, Dict, List, Optional, Tuple
 
 from sky import sky_logging
+from sky.adaptors import spheron as api
 from sky.provision import common
 from sky.utils import status_lib
-
-from sky.adaptors import spheron as api
 
 if typing.TYPE_CHECKING:
     pass
@@ -73,14 +72,13 @@ def _client() -> api.SpheronClient:
                 key = handle.read().strip()
     if not key:
         raise api.SpheronError(
-            "SPHERON_API_KEY is not set and ~/.spheron/api_key is absent"
-        )
+            "SPHERON_API_KEY is not set and ~/.spheron/api_key is absent")
     return api.SpheronClient(key)
 
 
 def _deployments_for_cluster(
-    client: api.SpheronClient, cluster_name_on_cloud: str
-) -> List[Dict[str, Any]]:
+        client: api.SpheronClient,
+        cluster_name_on_cloud: str) -> List[Dict[str, Any]]:
     """Deployments belonging to this cluster.
 
     SkyPilot has no tag mechanism here, so the deployment ``name`` carries the
@@ -88,8 +86,7 @@ def _deployments_for_cluster(
     makes it the correct (and only) place to put it.
     """
     return [
-        d
-        for d in client.list_deployments()
+        d for d in client.list_deployments()
         if str(d.get("name") or "") == cluster_name_on_cloud
     ]
 
@@ -107,8 +104,7 @@ def _sky_status(deployment: Dict[str, Any]):
     if raw not in _STATUS_MAP:
         raise api.SpheronError(
             f"unknown Spheron status {raw!r} on deployment "
-            f"{deployment.get('id')}; refusing to guess whether it is live"
-        )
+            f"{deployment.get('id')}; refusing to guess whether it is live")
     return _STATUS_MAP[raw]
 
 
@@ -136,8 +132,7 @@ def run_instances(
     if len(existing) > 1:
         raise api.SpheronError(
             f"cluster {cluster_name_on_cloud!r} has {len(existing)} live "
-            "deployments; refusing to guess which is the head"
-        )
+            "deployments; refusing to guess which is the head")
 
     if existing:
         deployment = existing[0]
@@ -152,8 +147,7 @@ def run_instances(
                 f"deployment {deployment.get('id')} for cluster "
                 f"{cluster_name_on_cloud!r} is STOPPED and Spheron exposes no "
                 "resume in this integration; terminate it before relaunching "
-                "(note: terminating deletes the disk)"
-            )
+                "(note: terminating deletes the disk)")
         created = []
     else:
         node_config = config.node_config
@@ -162,8 +156,7 @@ def run_instances(
         if not provider or not offer_id:
             raise api.SpheronError(
                 "node_config is missing spheron_provider/spheron_offer_id; "
-                'the instance type must be "{provider}_{offerId}"'
-            )
+                'the instance type must be "{provider}_{offerId}"')
 
         offer = _resolve_offer(client, provider, offer_id)
         ssh_key_id = _ensure_key(client, config)
@@ -177,8 +170,7 @@ def run_instances(
             # (nvidia-smi -L) is what actually gates a driverless image --
             # before any paid boot.
             operating_system=offer.pick_os(
-                ["cuda"] if offer.gpu_count else None, required=False
-            ),
+                ["cuda"] if offer.gpu_count else None, required=False),
             ssh_key_id=ssh_key_id,
             # REQUIRED despite the manual calling it optional -- see module docstring.
             team_id=client.current_team_id(),
@@ -203,25 +195,25 @@ def run_instances(
     )
 
 
-def _resolve_offer(
-    client: api.SpheronClient, provider: str, offer_id: str
-) -> api.Offer:
+def _resolve_offer(client: api.SpheronClient, provider: str,
+                   offer_id: str) -> api.Offer:
     for offer in client.list_offers():
         if offer.provider == provider and offer.offer_id == offer_id:
             if offer.maintenance:
-                raise api.SpheronError(f"offer {offer_id!r} is flagged for maintenance")
+                raise api.SpheronError(
+                    f"offer {offer_id!r} is flagged for maintenance")
             return offer
     raise api.SpheronError(
         f"offer {provider}/{offer_id} is no longer listed; the catalog is "
-        "stale relative to live availability"
-    )
+        "stale relative to live availability")
 
 
 #: The literal the ray template carries until `configure_ssh_info` rewrites it.
 _SSH_PUBLIC_KEY_PLACEHOLDER = "skypilot:ssh_public_key_content"
 
 
-def _ensure_key(client: api.SpheronClient, config: common.ProvisionConfig) -> str:
+def _ensure_key(client: api.SpheronClient,
+                config: common.ProvisionConfig) -> str:
     """The public key for this deployment, or a loud failure.
 
     `node_config['PublicKey']` is the ONE canonical source: backend_utils puts
@@ -247,14 +239,12 @@ def _ensure_key(client: api.SpheronClient, config: common.ProvisionConfig) -> st
             "node_config['PublicKey'] is missing or was never substituted "
             f"(got {public_key!r}); auth.configure_ssh_info must run before "
             "provisioning -- a Spheron deployment without a real public key is "
-            "unreachable"
-        )
+            "unreachable")
     return client.ensure_ssh_key("skypilot", public_key)
 
 
-def wait_instances(
-    region: str, cluster_name_on_cloud: str, state: Optional[status_lib.ClusterStatus]
-) -> None:
+def wait_instances(region: str, cluster_name_on_cloud: str,
+                   state: Optional[status_lib.ClusterStatus]) -> None:
     """No-op: run_instances already blocks until `running`."""
     del region, cluster_name_on_cloud, state
 
@@ -275,8 +265,7 @@ def stop_instances(
     del provider_config, worker_only
     raise NotImplementedError(
         f"Spheron does not support stopping {cluster_name_on_cloud}; "
-        "terminate instead (this destroys the disk)."
-    )
+        "terminate instead (this destroys the disk).")
 
 
 #: Spheron enforces a MINIMUM RUNTIME (20min on every offer observed to date) and
@@ -331,11 +320,11 @@ def _terminate_when_permitted(client: Any, deployment_id: str) -> None:
                 f"({check.get('reason')}); minimumRuntime="
                 f"{check.get('minimumRuntime')}min, timeRemaining={remaining}min "
                 "-- waiting out the provider minimum rather than leaking the "
-                "instance"
-            )
+                "instance")
             if isinstance(remaining, (int, float)) and remaining > 0:
                 # +5s so we wake just AFTER the window opens, not on its edge.
-                wait_s = min(float(remaining) * 60 + 5, _TERMINATE_WINDOW_CEILING_S)
+                wait_s = min(
+                    float(remaining) * 60 + 5, _TERMINATE_WINDOW_CEILING_S)
         except api.SpheronError as exc:
             # The check itself failing must not skip the terminate: try it, and
             # only keep waiting if the provider says the minimum is the reason.
@@ -349,16 +338,13 @@ def _terminate_when_permitted(client: Any, deployment_id: str) -> None:
             except api.SpheronError as term_exc:
                 if "minimum runtime" not in str(term_exc).lower():
                     raise
-                logger.info(
-                    f"spheron: {deployment_id} refused "
-                    f"({term_exc}); waiting out the provider minimum"
-                )
+                logger.info(f"spheron: {deployment_id} refused "
+                            f"({term_exc}); waiting out the provider minimum")
         if time.monotonic() >= deadline:
             raise api.SpheronError(
                 f"spheron: {deployment_id} still refusing termination after "
                 f"{_TERMINATE_WINDOW_CEILING_S // 60}min -- refusing to return "
-                "success and leak a BILLING instance; the caller must retry"
-            )
+                "success and leak a BILLING instance; the caller must retry")
         time.sleep(wait_s)
 
 
@@ -387,8 +373,7 @@ def terminate_instances(
             f"cluster {cluster_name_on_cloud!r} matches {len(live)} live "
             f"deployments ({[d.get('id') for d in live]}); refusing to "
             "terminate because `name` is account-wide and mutable, so one of "
-            "these may not belong to this cluster"
-        )
+            "these may not belong to this cluster")
     for deployment in live:
         deployment_id = str(deployment.get("id"))
         _terminate_when_permitted(client, deployment_id)
@@ -403,9 +388,9 @@ def get_cluster_info(
     client = _client()
     deployments = _live(_deployments_for_cluster(client, cluster_name_on_cloud))
     if not deployments:
-        return common.ClusterInfo(
-            instances={}, head_instance_id=None, provider_name=PROVIDER_NAME
-        )
+        return common.ClusterInfo(instances={},
+                                  head_instance_id=None,
+                                  provider_name=PROVIDER_NAME)
 
     instances: Dict[str, List[common.InstanceInfo]] = {}
     head_instance_id = None
@@ -459,14 +444,14 @@ def query_instances(
     # would be a silent no-op, which this repo does not allow.
     del cluster_name, provider_config, non_terminated_only
     client = _client()
-    result: Dict[str, Tuple[Optional[status_lib.ClusterStatus], Optional[str]]] = {}
+    result: Dict[str, Tuple[Optional[status_lib.ClusterStatus],
+                            Optional[str]]] = {}
     for deployment in _deployments_for_cluster(client, cluster_name_on_cloud):
         raw_status = str(deployment.get("status") or "").lower()
         if raw_status not in _STATUS_MAP:
             raise api.SpheronError(
                 f"unknown Spheron status {raw_status!r} on deployment "
-                f"{deployment.get('id')}; refusing to guess its meaning"
-            )
+                f"{deployment.get('id')}; refusing to guess its meaning")
         sky_status = _STATUS_MAP[raw_status]
         if sky_status is None:
             continue  # gone

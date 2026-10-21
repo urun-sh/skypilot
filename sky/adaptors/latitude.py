@@ -40,10 +40,10 @@ from __future__ import annotations
 import dataclasses
 import json
 import time
+from typing import Any, Callable, Dict, List, Optional
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional
 
 API_BASE = "https://api.latitude.sh"
 
@@ -119,10 +119,12 @@ def _jsonapi_attributes(resource: Dict[str, Any], where: str) -> Dict[str, Any]:
 
 
 def _jsonapi_data(payload: Any, where: str) -> List[Dict[str, Any]]:
-    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"),
+                                                       list):
         raise LatitudeError(f"{where}: expected a JSON:API data array, got "
                             f"{type(payload).__name__}")
     return payload["data"]
+
 
 def _jsonapi_object(payload: Any, where: str) -> Dict[str, Any]:
     """A JSON:API single-object envelope, or a loud typed failure.
@@ -134,9 +136,8 @@ def _jsonapi_object(payload: Any, where: str) -> Dict[str, Any]:
     an object is schema breakage: fail loud, typed.
     """
     if not isinstance(payload, dict):
-        raise LatitudeError(
-            f"{where}: expected a JSON:API object, got "
-            f"{type(payload).__name__}")
+        raise LatitudeError(f"{where}: expected a JSON:API object, got "
+                            f"{type(payload).__name__}")
     return payload
 
 
@@ -149,13 +150,13 @@ class LatitudeClient:
         *,
         base_url: str = API_BASE,
         timeout_s: int = DEFAULT_TIMEOUT_S,
-        transport: Optional[Callable[[str, str, Dict[str, str], Optional[bytes]], Any]] = None,
+        transport: Optional[Callable[
+            [str, str, Dict[str, str], Optional[bytes]], Any]] = None,
     ):
         if not api_key or not api_key.strip():
             raise LatitudeAuthError(
                 "Latitude.sh API key is empty; refusing to make unauthenticated "
-                'calls that would look like "no capacity"'
-            )
+                'calls that would look like "no capacity"')
         self._api_key = api_key.strip()
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
@@ -164,10 +165,12 @@ class LatitudeClient:
 
     # -- plumbing ---------------------------------------------------------
 
-    def _http(
-        self, method: str, url: str, headers: Dict[str, str], payload: Optional[bytes]
-    ):
-        req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+    def _http(self, method: str, url: str, headers: Dict[str, str],
+              payload: Optional[bytes]):
+        req = urllib.request.Request(url,
+                                     data=payload,
+                                     headers=headers,
+                                     method=method)
         try:
             with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
                 # resp.read() runs OUTSIDE urlopen's URLError handling: a
@@ -181,14 +184,13 @@ class LatitudeClient:
             except (TimeoutError, OSError) as read_exc:
                 raise LatitudeError(
                     f"{method} {url.split('?')[0]} failed reading the error "
-                    f"body: {read_exc}"
-                ) from read_exc
+                    f"body: {read_exc}") from read_exc
         except urllib.error.URLError as exc:  # pragma: no cover - network path
             raise LatitudeError(
-                f"{method} {url.split('?')[0]} failed: {exc.reason}"
-            ) from exc
+                f"{method} {url.split('?')[0]} failed: {exc.reason}") from exc
         except (TimeoutError, OSError) as exc:
-            raise LatitudeError(f"{method} {url.split('?')[0]} failed: {exc}") from exc
+            raise LatitudeError(
+                f"{method} {url.split('?')[0]} failed: {exc}") from exc
 
     def _request_once(self, method: str, url: str, headers: Dict[str, str],
                       payload: Optional[bytes]):
@@ -223,8 +225,9 @@ class LatitudeClient:
             status, raw = self._request_once(method, url, headers, payload)
             if status == 429 and attempt < MAX_RATE_LIMIT_RETRIES:
                 retry_after = _retry_after_s(raw)
-                wait_s = min(retry_after if retry_after else 2.0 * (attempt + 1),
-                             MAX_RETRY_AFTER_S)
+                wait_s = min(
+                    retry_after if retry_after else 2.0 * (attempt + 1),
+                    MAX_RETRY_AFTER_S)
                 time.sleep(wait_s)
                 continue
             return self._interpret(status, raw, method, path)
@@ -250,13 +253,13 @@ class LatitudeClient:
             # so no raw exception escapes a LatitudeError-only caller.
             except ValueError as exc:
                 raise LatitudeError(
-                    f"{where}: response was not JSON ({exc})"
-                ) from exc
+                    f"{where}: response was not JSON ({exc})") from exc
         # Failure: JSON:API errors[] objects.
         errors: List[Dict[str, Any]] = []
         try:
             parsed = json.loads(raw)
-            if isinstance(parsed, dict) and isinstance(parsed.get("errors"), list):
+            if isinstance(parsed, dict) and isinstance(parsed.get("errors"),
+                                                       list):
                 errors = [e for e in parsed["errors"] if isinstance(e, dict)]
         except (ValueError, AttributeError):
             pass
@@ -272,19 +275,18 @@ class LatitudeClient:
         if status == 401:
             raise LatitudeAuthError(
                 f"{where}: HTTP 401. Check {API_KEY_ENV} (or rotate the key in "
-                "the Latitude.sh dashboard)."
-            )
+                "the Latitude.sh dashboard).")
         if status == 404:
             raise LatitudeNotFoundError(f"{where}: not found ({detail})")
         if errors:
             raise LatitudeError(f"{where}: HTTP {status}: {code}: {detail}")
         raise LatitudeError(
-            f"{where}: HTTP {status}: {raw[:200].decode('utf-8', 'replace')}"
-        )
+            f"{where}: HTTP {status}: {raw[:200].decode('utf-8', 'replace')}")
 
     def _paginate(
-        self, path: str, params: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:
+            self,
+            path: str,
+            params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Collect every ``data`` element across pages, or fail loud.
 
         Stops on a short page; a server that never shortens a page is cut off
@@ -303,8 +305,7 @@ class LatitudeClient:
                 return out
         raise LatitudeError(
             f"GET {path}: more than {MAX_PAGES} pages; refusing to silently "
-            "truncate"
-        )
+            "truncate")
 
     # -- account ----------------------------------------------------------
 
@@ -316,21 +317,31 @@ class LatitudeClient:
 
     # -- projects ---------------------------------------------------------
 
-    def list_projects(self, *, slug: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_projects(self,
+                      *,
+                      slug: Optional[str] = None) -> List[Dict[str, Any]]:
         params = {"filter[slug]": slug} if slug else None
         return self._paginate("/projects", params)
 
-    def create_project(self, name: str, description: str = "") -> Dict[str, Any]:
+    def create_project(self,
+                       name: str,
+                       description: str = "") -> Dict[str, Any]:
         attributes: Dict[str, Any] = {"name": name}
         if description:
             attributes["description"] = description
-        payload = _jsonapi_object(self._call(
-            "POST", "/projects",
-            body={"data": {"type": "projects", "attributes": attributes}},
-        ) or {}, "POST /projects")
+        payload = _jsonapi_object(
+            self._call(
+                "POST",
+                "/projects",
+                body={"data": {
+                    "type": "projects",
+                    "attributes": attributes
+                }},
+            ) or {}, "POST /projects")
         data = payload.get("data")
         if not isinstance(data, dict) or not data.get("id"):
-            raise LatitudeError(f"POST /projects returned no id: {sorted(payload)}")
+            raise LatitudeError(
+                f"POST /projects returned no id: {sorted(payload)}")
         return data
 
     def ensure_project(self, name: str) -> str:
@@ -370,15 +381,24 @@ class LatitudeClient:
         return self._paginate("/ssh_keys")
 
     def create_ssh_key(self, name: str, public_key: str) -> Dict[str, Any]:
-        payload = _jsonapi_object(self._call(
-            "POST", "/ssh_keys",
-            body={"data": {"type": "ssh_keys",
-                           "attributes": {"name": name,
-                                          "public_key": public_key}}},
-        ) or {}, "POST /ssh_keys")
+        payload = _jsonapi_object(
+            self._call(
+                "POST",
+                "/ssh_keys",
+                body={
+                    "data": {
+                        "type": "ssh_keys",
+                        "attributes": {
+                            "name": name,
+                            "public_key": public_key
+                        }
+                    }
+                },
+            ) or {}, "POST /ssh_keys")
         data = payload.get("data")
         if not isinstance(data, dict) or not data.get("id"):
-            raise LatitudeError(f"POST /ssh_keys returned no id: {sorted(payload)}")
+            raise LatitudeError(
+                f"POST /ssh_keys returned no id: {sorted(payload)}")
         return data
 
     def ensure_ssh_key(self, name: str, public_key: str) -> str:
@@ -413,22 +433,29 @@ class LatitudeClient:
         ssh_key_ids: List[str],
         billing: str = "hourly",
     ) -> Dict[str, Any]:
-        payload = _jsonapi_object(self._call(
-            "POST", "/servers",
-            body={"data": {"type": "servers",
-                           "attributes": {
-                               "project": project,
-                               "plan": plan,
-                               "site": site,
-                               "operating_system": operating_system,
-                               "hostname": hostname,
-                               "ssh_keys": ssh_key_ids,
-                               "billing": billing,
-                           }}},
-        ) or {}, "POST /servers")
+        payload = _jsonapi_object(
+            self._call(
+                "POST",
+                "/servers",
+                body={
+                    "data": {
+                        "type": "servers",
+                        "attributes": {
+                            "project": project,
+                            "plan": plan,
+                            "site": site,
+                            "operating_system": operating_system,
+                            "hostname": hostname,
+                            "ssh_keys": ssh_key_ids,
+                            "billing": billing,
+                        }
+                    }
+                },
+            ) or {}, "POST /servers")
         data = payload.get("data")
         if not isinstance(data, dict) or not data.get("id"):
-            raise LatitudeError(f"POST /servers returned no id: {sorted(payload)}")
+            raise LatitudeError(
+                f"POST /servers returned no id: {sorted(payload)}")
         return data
 
     def get_server(self, server_id: str) -> Dict[str, Any]:
@@ -446,7 +473,9 @@ class LatitudeClient:
         success (idempotent teardown)."""
         self._call("DELETE", f"/servers/{server_id}")
 
-    def list_servers(self, *, hostname: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_servers(self,
+                     *,
+                     hostname: Optional[str] = None) -> List[Dict[str, Any]]:
         """Team servers, optionally filtered by exact hostname.
 
         The exact-match filter is what reconcile uses — a prefix filter can
@@ -490,8 +519,7 @@ class LatitudeClient:
         if poll_interval_s < MIN_POLL_INTERVAL_S:
             raise LatitudeError(
                 f"poll_interval_s={poll_interval_s} is below the documented "
-                f"floor of {MIN_POLL_INTERVAL_S}s"
-            )
+                f"floor of {MIN_POLL_INTERVAL_S}s")
         deadline = now() + timeout_s
         last_status: Optional[str] = None
         while True:
@@ -504,14 +532,12 @@ class LatitudeClient:
             if status == STATUS_FAILED_DEPLOYMENT:
                 raise LatitudeError(
                     f"server {server_id} entered failed_deployment while "
-                    "waiting for on; not auto-retrying (report and decide)"
-                )
+                    "waiting for on; not auto-retrying (report and decide)")
             if now() >= deadline:
                 raise LatitudeError(
                     f"server {server_id} still "
                     f"{last_status or 'provisioning'!r} after "
-                    f"{timeout_s:.0f}s; refusing to wait longer"
-                )
+                    f"{timeout_s:.0f}s; refusing to wait longer")
             sleep(poll_interval_s)
 
 

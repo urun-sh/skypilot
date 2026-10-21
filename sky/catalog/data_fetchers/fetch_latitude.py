@@ -36,7 +36,6 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from sky.adaptors import latitude as latitude_api
 
-
 CSV_COLUMNS = [
     "InstanceType",
     "AcceleratorName",
@@ -86,23 +85,25 @@ def fetch_plans(api_key: str) -> List[Dict[str, Any]]:
     return client.list_plans()
 
 
-
-def _gpu_info_str(accelerator: str, count: int, vram_gb_per_gpu: Optional[float]) -> str:
+def _gpu_info_str(accelerator: str, count: int,
+                  vram_gb_per_gpu: Optional[float]) -> str:
     # JSON with double quotes swapped for single quotes, the convention the
     # other fetchers use for the GpuInfo column.
-    return json.dumps(_gpu_info_dict(accelerator, count, vram_gb_per_gpu)).replace('"', "'")
+    return json.dumps(_gpu_info_dict(accelerator, count,
+                                     vram_gb_per_gpu)).replace('"', "'")
 
 
-def _gpu_info_dict(accelerator: str, count: int, vram_gb_per_gpu: Optional[float]) -> Dict[str, Any]:
+def _gpu_info_dict(accelerator: str, count: int,
+                   vram_gb_per_gpu: Optional[float]) -> Dict[str, Any]:
     size_mib = int(vram_gb_per_gpu * 1024) if vram_gb_per_gpu else 0
     return {
-        "Gpus": [
-            {
-                "Name": accelerator,
-                "Count": count,
-                "MemoryInfo": {"SizeInMiB": size_mib},
-            }
-        ],
+        "Gpus": [{
+            "Name": accelerator,
+            "Count": count,
+            "MemoryInfo": {
+                "SizeInMiB": size_mib
+            },
+        }],
         "TotalGpuMemoryInMiB": size_mib * count,
     }
 
@@ -177,9 +178,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--api-key-env", default=latitude_api.API_KEY_ENV)
     parser.add_argument("--output", default="latitude/vms.csv")
-    parser.add_argument(
-        "--from-fixture", help="read a recorded payload instead of the network"
-    )
+    parser.add_argument("--from-fixture",
+                        help="read a recorded payload instead of the network")
     args = parser.parse_args(argv)
 
     if args.from_fixture:

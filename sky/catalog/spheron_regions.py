@@ -128,10 +128,8 @@ def great_circle_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
     lat1, lat2 = math.radians(a[0]), math.radians(b[0])
     dlat = lat2 - lat1
     dlon = math.radians(b[1] - a[1])
-    h = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    )
+    h = (math.sin(dlat / 2)**2 +
+         math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2)
     return 2 * radius_km * math.asin(math.sqrt(h))
 
 

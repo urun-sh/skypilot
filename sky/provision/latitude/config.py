@@ -4,8 +4,8 @@ from sky.provision import common
 
 
 def bootstrap_instances(
-    region: str, cluster_name: str, config: common.ProvisionConfig
-) -> common.ProvisionConfig:
+        region: str, cluster_name: str,
+        config: common.ProvisionConfig) -> common.ProvisionConfig:
     """Nothing to bootstrap.
 
     Latitude.sh has no VPC, subnet, security group or firewall to prepare:

@@ -68,50 +68,37 @@ class Latitude(clouds.Cloud):
     _MAX_CLUSTER_NAME_LEN_LIMIT = 120
 
     _CLOUD_UNSUPPORTED_FEATURES = {
-        clouds.CloudImplementationFeatures.STOP: (
-            "power_off does not stop hourly billing on Latitude.sh — only "
-            "DELETE stops the meter — so stop is refused rather than "
-            "silently keep-billing."
-        ),
-        clouds.CloudImplementationFeatures.SPOT_INSTANCE: (
-            "Latitude.sh bills hourly, monthly or reserved-yearly; there is "
-            "no interruptible/spot tier."
-        ),
-        clouds.CloudImplementationFeatures.MULTI_NODE: (
-            "Multi-node clusters are not supported on Latitude.sh."
-        ),
-        clouds.CloudImplementationFeatures.CUSTOM_DISK_TIER: (
-            "Plans ship fixed drives; disk tier is not selectable."
-        ),
-        clouds.CloudImplementationFeatures.CUSTOM_NETWORK_TIER: (
-            "Network tier is not selectable on Latitude.sh."
-        ),
-        clouds.CloudImplementationFeatures.STORAGE_MOUNTING: (
-            "Object storage mounting is not supported on Latitude.sh."
-        ),
-        clouds.CloudImplementationFeatures.HOST_CONTROLLERS: (
-            "Host controllers are not supported on Latitude.sh."
-        ),
-        clouds.CloudImplementationFeatures.HIGH_AVAILABILITY_CONTROLLERS: (
-            "High availability controllers are not supported on Latitude.sh."
-        ),
-        clouds.CloudImplementationFeatures.CLONE_DISK_FROM_CLUSTER: (
-            "Disk cloning is not supported on Latitude.sh."
-        ),
-        clouds.CloudImplementationFeatures.IMAGE_ID: (
-            "The operating system is a fixed safe default on this lane; an "
-            "arbitrary image id cannot be requested."
-        ),
-        clouds.CloudImplementationFeatures.DOCKER_IMAGE: (
-            "Bare metal boots the OS directly; there is no docker image "
-            "selection on Latitude.sh."
-        ),
-        clouds.CloudImplementationFeatures.CUSTOM_MULTI_NETWORK: (
-            "Custom multi-network is not supported on Latitude.sh."
-        ),
-        clouds.CloudImplementationFeatures.LOCAL_DISK: (
-            "Local disk is not selectable on Latitude.sh."
-        ),
+        clouds.CloudImplementationFeatures.STOP:
+            ("power_off does not stop hourly billing on Latitude.sh — only "
+             "DELETE stops the meter — so stop is refused rather than "
+             "silently keep-billing."),
+        clouds.CloudImplementationFeatures.SPOT_INSTANCE:
+            ("Latitude.sh bills hourly, monthly or reserved-yearly; there is "
+             "no interruptible/spot tier."),
+        clouds.CloudImplementationFeatures.MULTI_NODE:
+            ("Multi-node clusters are not supported on Latitude.sh."),
+        clouds.CloudImplementationFeatures.CUSTOM_DISK_TIER:
+            ("Plans ship fixed drives; disk tier is not selectable."),
+        clouds.CloudImplementationFeatures.CUSTOM_NETWORK_TIER:
+            ("Network tier is not selectable on Latitude.sh."),
+        clouds.CloudImplementationFeatures.STORAGE_MOUNTING:
+            ("Object storage mounting is not supported on Latitude.sh."),
+        clouds.CloudImplementationFeatures.HOST_CONTROLLERS:
+            ("Host controllers are not supported on Latitude.sh."),
+        clouds.CloudImplementationFeatures.HIGH_AVAILABILITY_CONTROLLERS:
+            ("High availability controllers are not supported on Latitude.sh."),
+        clouds.CloudImplementationFeatures.CLONE_DISK_FROM_CLUSTER:
+            ("Disk cloning is not supported on Latitude.sh."),
+        clouds.CloudImplementationFeatures.IMAGE_ID:
+            ("The operating system is a fixed safe default on this lane; an "
+             "arbitrary image id cannot be requested."),
+        clouds.CloudImplementationFeatures.DOCKER_IMAGE:
+            ("Bare metal boots the OS directly; there is no docker image "
+             "selection on Latitude.sh."),
+        clouds.CloudImplementationFeatures.CUSTOM_MULTI_NETWORK:
+            ("Custom multi-network is not supported on Latitude.sh."),
+        clouds.CloudImplementationFeatures.LOCAL_DISK:
+            ("Local disk is not selectable on Latitude.sh."),
     }
 
     PROVISIONER_VERSION = clouds.ProvisionerVersion.SKYPILOT
@@ -149,8 +136,7 @@ class Latitude(clouds.Cloud):
         del accelerators, resources
         assert zone is None, "Latitude does not support zones."
         regions = latitude_catalog.get_region_zones_for_instance_type(
-            instance_type, use_spot
-        )
+            instance_type, use_spot)
         if region is not None:
             regions = [r for r in regions if r.name == region]
         return regions
@@ -170,24 +156,25 @@ class Latitude(clouds.Cloud):
         # failure into the end of provisioning on the Spheron lane
         # (urun-sh/skypilot#5/#6).
         del num_nodes
-        regions = cls.regions_with_offering(
-            instance_type, accelerators, use_spot, zone=None, region=region
-        )
+        regions = cls.regions_with_offering(instance_type,
+                                            accelerators,
+                                            use_spot,
+                                            zone=None,
+                                            region=region)
         for r in regions:
             assert r.zones is None, r
             yield r.zones
 
     @classmethod
     def get_vcpus_mem_from_instance_type(
-        cls, instance_type: str
-    ) -> Tuple[Optional[float], Optional[float]]:
+            cls, instance_type: str) -> Tuple[Optional[float], Optional[float]]:
         return latitude_catalog.get_vcpus_mem_from_instance_type(instance_type)
 
     @classmethod
     def get_accelerators_from_instance_type(
-        cls, instance_type: str
-    ) -> Optional[Dict[str, Union[int, float]]]:
-        return latitude_catalog.get_accelerators_from_instance_type(instance_type)
+            cls, instance_type: str) -> Optional[Dict[str, Union[int, float]]]:
+        return latitude_catalog.get_accelerators_from_instance_type(
+            instance_type)
 
     @classmethod
     def get_default_instance_type(
@@ -221,9 +208,10 @@ class Latitude(clouds.Cloud):
         region: Optional[str] = None,
         zone: Optional[str] = None,
     ) -> float:
-        return latitude_catalog.get_hourly_cost(
-            instance_type, use_spot=use_spot, region=region, zone=zone
-        )
+        return latitude_catalog.get_hourly_cost(instance_type,
+                                                use_spot=use_spot,
+                                                region=region,
+                                                zone=zone)
 
     def accelerators_to_hourly_cost(
         self,
@@ -284,8 +272,7 @@ class Latitude(clouds.Cloud):
             return False, (
                 f"{api.API_KEY_ENV} is not set and {api.API_KEY_FILE} does "
                 "not exist. Create a key at https://www.latitude.sh/dashboard"
-                " (Settings & Billing -> API Keys)."
-            )
+                " (Settings & Billing -> API Keys).")
         try:
             api.LatitudeClient(key).get_profile()
         except api.LatitudeError as exc:
@@ -294,7 +281,7 @@ class Latitude(clouds.Cloud):
 
     @classmethod
     def check_credentials(
-        cls, cloud_capability: clouds.CloudCapability
+            cls, cloud_capability: clouds.CloudCapability
     ) -> Tuple[bool, Optional[str]]:
         """Check Latitude credentials for the requested capability.
 
@@ -371,21 +358,20 @@ class Latitude(clouds.Cloud):
             if default_instance_type is None:
                 return resources_utils.FeasibleResources([], [], None)
             return resources_utils.FeasibleResources(
-                _make([default_instance_type]), [], None
-            )
+                _make([default_instance_type]), [], None)
 
         assert len(accelerators) == 1, resources
         acc, acc_count = list(accelerators.items())[0]
-        (instance_list,
-         fuzzy_candidate_list) = latitude_catalog.get_instance_type_for_accelerator(
-             acc,
-             acc_count,
-             use_spot=resources.use_spot,
-             cpus=resources.cpus,
-             memory=resources.memory,
-             region=resources.region,
-             zone=resources.zone,
-         )
+        (instance_list, fuzzy_candidate_list
+        ) = latitude_catalog.get_instance_type_for_accelerator(
+            acc,
+            acc_count,
+            use_spot=resources.use_spot,
+            cpus=resources.cpus,
+            memory=resources.memory,
+            region=resources.region,
+            zone=resources.zone,
+        )
         if instance_list is None:
             return resources_utils.FeasibleResources([], fuzzy_candidate_list,
                                                      None)
@@ -405,8 +391,7 @@ class Latitude(clouds.Cloud):
         # the authority and this path is not used.
         raise NotImplementedError(
             "Latitude uses StatusVersion.SKYPILOT; status comes from "
-            "sky.provision.latitude.query_instances."
-        )
+            "sky.provision.latitude.query_instances.")
 
     @classmethod
     def get_image_size(cls, image_id: str, region: Optional[str]) -> float:

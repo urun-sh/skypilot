@@ -445,7 +445,6 @@ _SHARED_RAY_PORT_FLAGS = (
     '${SKYPILOT_RAY_METRICS_EXPORT_PORT:+'
     '--metrics-export-port=$SKYPILOT_RAY_METRICS_EXPORT_PORT}')
 
-
 # Env for every `ray start` SkyPilot issues (head and worker).
 # RAY_memory_monitor_refresh_ms=0 disables Ray's memory monitor: SkyPilot runs
 # the user's `run:` script as ONE Ray task, so the monitor's only possible

@@ -27,8 +27,7 @@ _ALL_ISO_ALPHA2 = (
     'PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG '
     'SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK '
     'TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU '
-    'WF WS YE YT ZA ZM ZW'
-).split()
+    'WF WS YE YT ZA ZM ZW').split()
 
 _VALID_TOKENS = {'AF', 'AS', 'EU', 'LC', 'NA', 'OC'}
 
@@ -45,8 +44,9 @@ class TestVastRegionShim(unittest.TestCase):
         """
         vast.vast()  # triggers import + patch
         from vastai import vastai_sdk
-        unresolved = [c for c in _ALL_ISO_ALPHA2
-                      if c not in vastai_sdk._regions_rev]
+        unresolved = [
+            c for c in _ALL_ISO_ALPHA2 if c not in vastai_sdk._regions_rev
+        ]
         self.assertEqual(
             unresolved, [],
             f'alpha-2 codes with no georegion after patch: {unresolved} — '
@@ -55,11 +55,13 @@ class TestVastRegionShim(unittest.TestCase):
     def test_table_tokens_are_valid(self):
         """Every table entry maps to one of the SDK's own georegion tokens."""
         from sky.adaptors.vast import _MISSING_GEOREGIONS
-        bad = {code: token for code, token in _MISSING_GEOREGIONS.items()
-               if token not in _VALID_TOKENS}
-        self.assertEqual(
-            bad, {},
-            f'table entries with non-SDK georegion tokens: {bad}')
+        bad = {
+            code: token
+            for code, token in _MISSING_GEOREGIONS.items()
+            if token not in _VALID_TOKENS
+        }
+        self.assertEqual(bad, {},
+                         f'table entries with non-SDK georegion tokens: {bad}')
 
     def test_table_codes_are_real_iso_codes(self):
         """Typo guard: every table key is an officially assigned code."""
@@ -98,9 +100,10 @@ class TestVastRegionShim(unittest.TestCase):
         vastai_sdk.queryFormatter(state, offers, None)
 
         # The geolocation must have been enriched with the georegion
-        self.assertIn('IE, EU', offer['geolocation'],
-                      f'Expected IE, EU in geolocation, got: '
-                      f'{offer["geolocation"]}')
+        self.assertIn(
+            'IE, EU', offer['geolocation'],
+            f'Expected IE, EU in geolocation, got: '
+            f'{offer["geolocation"]}')
 
     def test_queryformatter_handles_mo_offer(self):
         """The 2026-09-16 live crash: KeyError('MO') on a Macau offer.
@@ -122,9 +125,10 @@ class TestVastRegionShim(unittest.TestCase):
         state = {'georegion': True, 'chunked': False}
         vastai_sdk.queryFormatter(state, offers, None)
 
-        self.assertIn('MO, AS', offer['geolocation'],
-                      f'Expected MO, AS in geolocation, got: '
-                      f'{offer["geolocation"]}')
+        self.assertIn(
+            'MO, AS', offer['geolocation'],
+            f'Expected MO, AS in geolocation, got: '
+            f'{offer["geolocation"]}')
 
     def test_patch_is_idempotent(self):
         """Running the patch twice is safe (process-global singleton)."""
@@ -160,7 +164,9 @@ def _mock_offer(geolocation='Dublin, IE', price=1.27):
         'cpu_cores': 16,
         'cpu_ram': 192000,
         'gpu_total_ram': 98304,
-        'search': {'totalHour': price},
+        'search': {
+            'totalHour': price
+        },
         'min_bid': price,
         'geolocation': geolocation,
         'hosting_type': 0,
@@ -203,15 +209,13 @@ class TestVastCatalogFetch(unittest.TestCase):
                     import io
                     import runpy
                     with contextlib.redirect_stdout(io.StringIO()):
-                        runpy.run_module(
-                            'sky.catalog.data_fetchers.fetch_vast',
-                            run_name='__main__')
+                        runpy.run_module('sky.catalog.data_fetchers.fetch_vast',
+                                         run_name='__main__')
 
                     # ASSERT INSIDE the tempdir (it's deleted on exit)
                     csv_path = os.path.join(tmpdir, 'vast', 'vms.csv')
-                    self.assertTrue(
-                        os.path.exists(csv_path),
-                        'fetch_vast did not produce vast/vms.csv')
+                    self.assertTrue(os.path.exists(csv_path),
+                                    'fetch_vast did not produce vast/vms.csv')
                     with open(csv_path) as f:
                         lines = f.readlines()
                     self.assertGreater(
@@ -224,9 +228,9 @@ class TestVastCatalogFetch(unittest.TestCase):
                     # Verify the region was enriched (IE → EU)
                     if len(lines) > 1:
                         data_row = lines[1]
-                        self.assertIn('IE', data_row,
-                                      f'Expected IE country in CSV row: '
-                                      f'{data_row[:100]}')
+                        self.assertIn(
+                            'IE', data_row, f'Expected IE country in CSV row: '
+                            f'{data_row[:100]}')
                 finally:
                     os.chdir(old_cwd)
 
@@ -254,14 +258,12 @@ class TestVastCatalogFetch(unittest.TestCase):
                     import io
                     import runpy
                     with contextlib.redirect_stdout(io.StringIO()):
-                        runpy.run_module(
-                            'sky.catalog.data_fetchers.fetch_vast',
-                            run_name='__main__')
+                        runpy.run_module('sky.catalog.data_fetchers.fetch_vast',
+                                         run_name='__main__')
 
                     csv_path = os.path.join(tmpdir, 'vast', 'vms.csv')
-                    self.assertTrue(
-                        os.path.exists(csv_path),
-                        'fetch_vast did not produce vast/vms.csv')
+                    self.assertTrue(os.path.exists(csv_path),
+                                    'fetch_vast did not produce vast/vms.csv')
                     with open(csv_path) as f:
                         lines = f.readlines()
                     self.assertGreater(

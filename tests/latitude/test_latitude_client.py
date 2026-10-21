@@ -36,6 +36,7 @@ class _Transport:
 
 
 class TestClientPlumbing(unittest.TestCase):
+
     def test_bearer_and_jsonapi_headers(self):
         transport = _Transport([_page([])])
         client = api.LatitudeClient("sekret", transport=transport)
@@ -48,19 +49,27 @@ class TestClientPlumbing(unittest.TestCase):
         self.assertNotIn("sekret", transport.calls[0]["url"])
 
     def test_write_body_is_jsonapi_envelope(self):
-        transport = _Transport([(201, json.dumps(
-            {"data": {"id": "srv_1", "type": "servers",
-                      "attributes": {}}}).encode("utf-8"))])
+        transport = _Transport([(201,
+                                 json.dumps({
+                                     "data": {
+                                         "id": "srv_1",
+                                         "type": "servers",
+                                         "attributes": {}
+                                     }
+                                 }).encode("utf-8"))])
         client = api.LatitudeClient("k", transport=transport)
         client.create_server(
-            project="proj_1", plan="g4-rtx6kpro-large", site="ASH",
-            operating_system="ubuntu_24_04_x64_lts", hostname="h",
+            project="proj_1",
+            plan="g4-rtx6kpro-large",
+            site="ASH",
+            operating_system="ubuntu_24_04_x64_lts",
+            hostname="h",
             ssh_key_ids=["ssh_1"],
         )
         body = json.loads(transport.calls[0]["payload"])
         self.assertEqual(body["data"]["type"], "servers")
-        self.assertEqual(
-            body["data"]["attributes"]["plan"], "g4-rtx6kpro-large")
+        self.assertEqual(body["data"]["attributes"]["plan"],
+                         "g4-rtx6kpro-large")
         self.assertEqual(body["data"]["attributes"]["billing"], "hourly")
 
     def test_empty_key_refused(self):
@@ -69,9 +78,9 @@ class TestClientPlumbing(unittest.TestCase):
 
 
 class TestClientErrors(unittest.TestCase):
+
     def _client(self, status, body):
-        transport = _Transport([(status,
-                                  json.dumps(body).encode("utf-8"))])
+        transport = _Transport([(status, json.dumps(body).encode("utf-8"))])
         return api.LatitudeClient("k", transport=transport), transport
 
     def test_401_is_auth_error_without_key(self):
@@ -88,21 +97,31 @@ class TestClientErrors(unittest.TestCase):
     def test_jsonapi_error_detail_surfaces(self):
         # The provider's own refusal body must reach the consumer (the
         # INSUFFICIENT_FUNDS-style blindness that burned the shadeform lane).
-        client, _ = self._client(
-            409, {"errors": [{"code": "PLAN_UNAVAILABLE",
-                              "detail": "no stock at NRT"}]})
+        client, _ = self._client(409, {
+            "errors": [{
+                "code": "PLAN_UNAVAILABLE",
+                "detail": "no stock at NRT"
+            }]
+        })
         with self.assertRaises(api.LatitudeError) as ctx:
-            client.create_server(
-                project="p", plan="x", site="NRT",
-                operating_system="o", hostname="h", ssh_key_ids=[])
+            client.create_server(project="p",
+                                 plan="x",
+                                 site="NRT",
+                                 operating_system="o",
+                                 hostname="h",
+                                 ssh_key_ids=[])
         self.assertIn("PLAN_UNAVAILABLE", str(ctx.exception))
         self.assertIn("no stock at NRT", str(ctx.exception))
 
     def test_429_honors_retry_after_then_raises(self):
-        body = {"errors": [{
-            "code": "RATE_LIMIT_EXCEEDED",
-            "meta": {"retry_after": 0.5},
-        }]}
+        body = {
+            "errors": [{
+                "code": "RATE_LIMIT_EXCEEDED",
+                "meta": {
+                    "retry_after": 0.5
+                },
+            }]
+        }
         transport = _Transport([(429, json.dumps(body).encode("utf-8"))] * 4)
         client = api.LatitudeClient("k", transport=transport)
         with mock.patch("time.sleep") as slept:
@@ -110,8 +129,9 @@ class TestClientErrors(unittest.TestCase):
                 client.get_profile()
         # Three bounded backoffs honoring the provider's own hint...
         self.assertEqual(slept.call_count, 3)
-        self.assertTrue(all(c.args[0] <= api.MAX_RETRY_AFTER_S
-                            for c in slept.call_args_list))
+        self.assertTrue(
+            all(c.args[0] <= api.MAX_RETRY_AFTER_S
+                for c in slept.call_args_list))
         # ...then a loud failure, not a silent empty answer.
         self.assertEqual(ctx.exception.retry_after_s, 0.5)
 
@@ -133,7 +153,6 @@ class TestClientErrors(unittest.TestCase):
         transport = _Transport([(204, b"")])
         client = api.LatitudeClient("k", transport=transport)
         self.assertIsNone(client.delete_server("srv_x"))
-
 
     def test_non_dict_payload_raises_typed_error(self):
         # A top-level LIST/STRING payload would otherwise die with a bare
@@ -159,12 +178,17 @@ class TestClientErrors(unittest.TestCase):
             with self.assertRaises(api.LatitudeError):
                 client.get_profile()
 
+
 class TestPagination(unittest.TestCase):
+
     def test_short_page_stops(self):
         # A "full" page is exactly PAGE_SIZE rows; pagination continues
         # only while pages come back full.
-        full = [{"id": str(i), "type": "plans", "attributes": {}}
-                for i in range(api.PAGE_SIZE)]
+        full = [{
+            "id": str(i),
+            "type": "plans",
+            "attributes": {}
+        } for i in range(api.PAGE_SIZE)]
         tail = [{"id": "t1"}, {"id": "t2"}, {"id": "t3"}]
         transport = _Transport([_page(full), _page(tail)])
         client = api.LatitudeClient("k", transport=transport)
@@ -182,11 +206,14 @@ class TestPagination(unittest.TestCase):
 
 
 class TestEnsureHelpers(unittest.TestCase):
+
     def _key(self, key_id, material):
         return {
             "id": key_id,
             "type": "ssh_keys",
-            "attributes": {"public_key": f"ssh-ed25519 {material} me"},
+            "attributes": {
+                "public_key": f"ssh-ed25519 {material} me"
+            },
         }
 
     def test_ssh_key_matched_by_material_not_name(self):
@@ -202,8 +229,9 @@ class TestEnsureHelpers(unittest.TestCase):
     def test_ssh_key_created_when_material_unknown(self):
         transport = _Transport([
             _page([self._key("ssh_old", "OTHER")]),
-            (201, json.dumps(
-                {"data": self._key("ssh_new", "NEWKEY")}).encode()),
+            (201, json.dumps({
+                "data": self._key("ssh_new", "NEWKEY")
+            }).encode()),
         ])
         client = api.LatitudeClient("k", transport=transport)
         self.assertEqual(
@@ -211,14 +239,20 @@ class TestEnsureHelpers(unittest.TestCase):
             "ssh_new",
         )
         self.assertEqual(transport.calls[1]["method"], "POST")
-        self.assertIn("NEWKEY",
-                     json.loads(transport.calls[1]["payload"])
-                     ["data"]["attributes"]["public_key"])
+        self.assertIn(
+            "NEWKEY",
+            json.loads(transport.calls[1]["payload"])["data"]["attributes"]
+            ["public_key"])
 
     def test_project_adopted_by_slug(self):
         transport = _Transport([
-            _page([{"id": "proj_9", "type": "projects",
-                    "attributes": {"slug": "skypilot"}}]),
+            _page([{
+                "id": "proj_9",
+                "type": "projects",
+                "attributes": {
+                    "slug": "skypilot"
+                }
+            }]),
         ])
         client = api.LatitudeClient("k", transport=transport)
         self.assertEqual(client.ensure_project("skypilot"), "proj_9")
@@ -227,15 +261,21 @@ class TestEnsureHelpers(unittest.TestCase):
     def test_project_created_when_absent(self):
         transport = _Transport([
             _page([]),
-            (201, json.dumps({"data": {"id": "proj_2",
-                                       "type": "projects",
-                                       "attributes": {}}}).encode()),
+            (201,
+             json.dumps({
+                 "data": {
+                     "id": "proj_2",
+                     "type": "projects",
+                     "attributes": {}
+                 }
+             }).encode()),
         ])
         client = api.LatitudeClient("k", transport=transport)
         self.assertEqual(client.ensure_project("skypilot"), "proj_2")
 
 
 class _FakeClock:
+
     def __init__(self):
         self.t = 0.0
         self.sleeps = []
@@ -252,41 +292,52 @@ def _server(status):
     return {
         "id": "srv_1",
         "type": "servers",
-        "attributes": {"status": status, "primary_ipv4": "203.0.113.7"},
+        "attributes": {
+            "status": status,
+            "primary_ipv4": "203.0.113.7"
+        },
     }
 
 
 class TestWaitUntilOn(unittest.TestCase):
+
     def _client(self, statuses):
-        responses = [(200, json.dumps({"data": _server(s)}).encode())
-                     for s in statuses]
+        responses = [(200, json.dumps({
+            "data": _server(s)
+        }).encode()) for s in statuses]
         transport = _Transport(responses)
         return api.LatitudeClient("k", transport=transport)
 
     def test_polls_until_on(self):
         client = self._client(["queued", "commissioning", "on"])
         clock = _FakeClock()
-        server = client.wait_until_on(
-            "srv_1", timeout_s=600, poll_interval_s=15,
-            sleep=clock.sleep, now=clock.now)
+        server = client.wait_until_on("srv_1",
+                                      timeout_s=600,
+                                      poll_interval_s=15,
+                                      sleep=clock.sleep,
+                                      now=clock.now)
         self.assertEqual(api.LatitudeClient.server_status(server), "on")
 
     def test_failed_deployment_fails_closed(self):
         client = self._client(["queued", "failed_deployment"])
         clock = _FakeClock()
         with self.assertRaises(api.LatitudeError) as ctx:
-            client.wait_until_on(
-                "srv_1", timeout_s=600, poll_interval_s=15,
-                sleep=clock.sleep, now=clock.now)
+            client.wait_until_on("srv_1",
+                                 timeout_s=600,
+                                 poll_interval_s=15,
+                                 sleep=clock.sleep,
+                                 now=clock.now)
         self.assertIn("failed_deployment", str(ctx.exception))
 
     def test_deadline_expires_loudly(self):
         client = self._client(["queued"] * 10)
         clock = _FakeClock()
         with self.assertRaises(api.LatitudeError) as ctx:
-            client.wait_until_on(
-                "srv_1", timeout_s=100, poll_interval_s=15,
-                sleep=clock.sleep, now=clock.now)
+            client.wait_until_on("srv_1",
+                                 timeout_s=100,
+                                 poll_interval_s=15,
+                                 sleep=clock.sleep,
+                                 now=clock.now)
         self.assertIn("refusing to wait longer", str(ctx.exception))
 
     def test_poll_floor_enforced(self):

@@ -13,10 +13,19 @@ from sky.adaptors import primeintellect as _pi_api
 from sky.catalog.data_fetchers import fetch_primeintellect as fetcher
 
 
-def _offer(provider="dc_gnu", gpu_type="RTX_PRO_6000B_96GB", count=1,
-           price=1.35, data_center="us-east-1", country="US",
-           gpu_memory=96, stock="Available", vcpu=16, memory=144, disk=725,
-           images=None, cloud_id="gpu_1x"):
+def _offer(provider="dc_gnu",
+           gpu_type="RTX_PRO_6000B_96GB",
+           count=1,
+           price=1.35,
+           data_center="us-east-1",
+           country="US",
+           gpu_memory=96,
+           stock="Available",
+           vcpu=16,
+           memory=144,
+           disk=725,
+           images=None,
+           cloud_id="gpu_1x"):
     return {
         "cloudId": cloud_id,
         "gpuType": gpu_type,
@@ -27,30 +36,48 @@ def _offer(provider="dc_gnu", gpu_type="RTX_PRO_6000B_96GB", count=1,
         "country": country,
         "gpuCount": count,
         "gpuMemory": gpu_memory,
-        "vcpu": {"defaultCount": vcpu},
-        "memory": {"defaultCount": memory},
-        "disk": {"defaultCount": disk},
+        "vcpu": {
+            "defaultCount": vcpu
+        },
+        "memory": {
+            "defaultCount": memory
+        },
+        "disk": {
+            "defaultCount": disk
+        },
         "stockStatus": stock,
         "security": "secure_cloud",
-        "prices": {"onDemand": price, "isVariable": False,
-                   "currency": "USD"},
+        "prices": {
+            "onDemand": price,
+            "isVariable": False,
+            "currency": "USD"
+        },
         "images": images if images is not None else ["ubuntu_22_cuda_12"],
     }
 
 
 def _summary_entry(price=1.35):
-    return {"cheapest": {"onDemand": price, "communityPrice": None,
-                         "spotPrice": None},
-            "united_states": {"onDemand": price, "communityPrice": None,
-                              "spotPrice": None}}
+    return {
+        "cheapest": {
+            "onDemand": price,
+            "communityPrice": None,
+            "spotPrice": None
+        },
+        "united_states": {
+            "onDemand": price,
+            "communityPrice": None,
+            "spotPrice": None
+        }
+    }
 
 
 class TestFetcherRows(unittest.TestCase):
 
     def test_vm_class_offer_emits_token_datacenter_wholebox_price(self):
-        rows = list(fetcher.iter_rows([
-            _offer(cloud_id="gpu_1x_pro_6000_blackwell_Addendum_2"),
-        ]))
+        rows = list(
+            fetcher.iter_rows([
+                _offer(cloud_id="gpu_1x_pro_6000_blackwell_Addendum_2"),
+            ]))
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row[0],
@@ -74,26 +101,29 @@ class TestFetcherRows(unittest.TestCase):
         # runpod is container-shaped: it cannot run the VM bootstrap
         # ladder, so it must never appear as a rentable row (cheaper or
         # not).
-        rows = list(fetcher.iter_rows([
-            _offer(provider="runpod", price=0.50),
-            _offer(provider="dc_gnu", price=1.35),
-        ]))
+        rows = list(
+            fetcher.iter_rows([
+                _offer(provider="runpod", price=0.50),
+                _offer(provider="dc_gnu", price=1.35),
+            ]))
         self.assertEqual([r[0] for r in rows], ["dc_gnu:RTX_PRO_6000B_96GB:1"])
 
     def test_unknown_stock_and_unpriced_rows_skipped(self):
-        rows = list(fetcher.iter_rows([
-            _offer(stock="ComingSoon"),
-            _offer(price=None),
-            _offer(),
-        ]))
+        rows = list(
+            fetcher.iter_rows([
+                _offer(stock="ComingSoon"),
+                _offer(price=None),
+                _offer(),
+            ]))
         self.assertEqual(len(rows), 1)
 
     def test_same_triple_collapses_to_cheapest(self):
-        rows = list(fetcher.iter_rows([
-            _offer(price=1.50, cloud_id="c1"),
-            _offer(price=1.35, cloud_id="c2"),
-            _offer(price=1.90, cloud_id="c3"),
-        ]))
+        rows = list(
+            fetcher.iter_rows([
+                _offer(price=1.50, cloud_id="c1"),
+                _offer(price=1.35, cloud_id="c2"),
+                _offer(price=1.90, cloud_id="c3"),
+            ]))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][5], 1.35)
 
@@ -101,9 +131,10 @@ class TestFetcherRows(unittest.TestCase):
         # The 2-GPU Blackwell box reports gpuMemory=192 (TOTAL): the
         # per-GPU VRAM in GpuInfo must be 96, or a claim believes it
         # rented 192GB per card.
-        rows = list(fetcher.iter_rows([
-            _offer(count=2, price=2.70, gpu_memory=192),
-        ]))
+        rows = list(
+            fetcher.iter_rows([
+                _offer(count=2, price=2.70, gpu_memory=192),
+            ]))
         self.assertIn("'Gpus': [{", rows[0][7])
         self.assertIn("'SizeInMiB': 98304", rows[0][7])  # per-GPU: 192/2
         self.assertEqual(rows[0][5], 2.70)
@@ -112,26 +143,40 @@ class TestFetcherRows(unittest.TestCase):
         # The Ada/A6000 families map to their own tokens, but ONLY from
         # VM-class upstreams — the probe's massedcompute rows are
         # third-party (unmeasured deployment model) and drop.
-        rows = list(fetcher.iter_rows([
-            _offer(gpu_type="RTX6000Ada_48GB", provider="dc_kudu",
-                   data_center="us-east-1", price=0.75, gpu_memory=48,
-                   vcpu=12, memory=72, disk=350),
-            _offer(gpu_type="A6000_48GB", provider="dc_kudu",
-                   data_center="us-east-1", price=0.54, gpu_memory=48,
-                   vcpu=6, memory=48, disk=256),
-            _offer(gpu_type="RTX6000Ada_48GB", provider="massedcompute",
-                   data_center="us-central-2", price=0.75, gpu_memory=48,
-                   vcpu=12, memory=72, disk=350),
-        ]))
+        rows = list(
+            fetcher.iter_rows([
+                _offer(gpu_type="RTX6000Ada_48GB",
+                       provider="dc_kudu",
+                       data_center="us-east-1",
+                       price=0.75,
+                       gpu_memory=48,
+                       vcpu=12,
+                       memory=72,
+                       disk=350),
+                _offer(gpu_type="A6000_48GB",
+                       provider="dc_kudu",
+                       data_center="us-east-1",
+                       price=0.54,
+                       gpu_memory=48,
+                       vcpu=6,
+                       memory=48,
+                       disk=256),
+                _offer(gpu_type="RTX6000Ada_48GB",
+                       provider="massedcompute",
+                       data_center="us-central-2",
+                       price=0.75,
+                       gpu_memory=48,
+                       vcpu=12,
+                       memory=72,
+                       disk=350),
+            ]))
         self.assertEqual([r[1] for r in rows], ["RTX6000ADA", "RTXA6000"])
 
     def test_token_round_trip(self):
-        token = fetcher.instance_type_token("dc_gnu",
-                                            "RTX_PRO_6000B_96GB", 1)
+        token = fetcher.instance_type_token("dc_gnu", "RTX_PRO_6000B_96GB", 1)
         self.assertEqual(token, "dc_gnu:RTX_PRO_6000B_96GB:1")
-        self.assertEqual(
-            fetcher.parse_instance_type_token(token),
-            ("dc_gnu", "RTX_PRO_6000B_96GB", 1))
+        self.assertEqual(fetcher.parse_instance_type_token(token),
+                         ("dc_gnu", "RTX_PRO_6000B_96GB", 1))
 
     def test_parse_rejects_garbage(self):
         with self.assertRaises(fetcher.PrimeIntellectCatalogError):
@@ -153,7 +198,9 @@ class TestZeroStockCrossCheck(unittest.TestCase):
         # prices families — REFUSE, never write a blank catalog.
         with self.assertRaises(fetcher.PrimeIntellectCatalogError):
             fetcher.verify_zero_stock(
-                [], {"RTX_PRO_6000B_96GB": {"1": _summary_entry()}})
+                [], {"RTX_PRO_6000B_96GB": {
+                    "1": _summary_entry()
+                }})
 
     def test_missing_second_opinion_refuses(self):
         # An unverified empty is a fetch failure, never a sellout.
@@ -170,17 +217,17 @@ class TestZeroStockCrossCheck(unittest.TestCase):
             with open(fixture, "w", encoding="utf-8") as handle:
                 json.dump({"offers": [], "summary": {}}, handle)
             # argparse's exit path is irrelevant; call main with args.
-            self.assertEqual(fetcher.main(["--from-fixture", fixture,
-                                           "--output", out]), 0)
+            self.assertEqual(
+                fetcher.main(["--from-fixture", fixture, "--output", out]), 0)
             with open(out, encoding="utf-8") as handle:
                 content = handle.read()
-            self.assertEqual(
-                content.strip(),
-                ",".join(fetcher.CSV_COLUMNS))  # header-only: honest zero
+            self.assertEqual(content.strip(), ",".join(
+                fetcher.CSV_COLUMNS))  # header-only: honest zero
 
 
 # -- provisioner (stubbed client: no network, no state file — pods are
 # found BY NAME, which is the API's own identity) ------------------------
+
 
 class _StubClient:
     """Answers exactly what the instance module asks, recording calls."""
@@ -195,8 +242,10 @@ class _StubClient:
         self.calls.append(("list_pods", live_only))
         rows = self.pods
         if live_only:
-            rows = [p for p in rows if p.get("status") not in
-                    ("TERMINATED", "DELETING")]
+            rows = [
+                p for p in rows
+                if p.get("status") not in ("TERMINATED", "DELETING")
+            ]
         return rows
 
     def get_pod(self, pod_id):
@@ -219,22 +268,20 @@ class _StubClient:
         provider = kwargs.get("provider")
         rows = self.offers
         if provider is not None:
-            rows = [o for o in rows
-                    if o.get("provider") == provider]
+            rows = [o for o in rows if o.get("provider") == provider]
         ceiling = kwargs.get("max_whole_box_price")
         if ceiling is not None:
-            rows = [o for o in rows
-                    if o.get("prices", {}).get("onDemand",
-                                               float("inf")) <= ceiling]
+            rows = [
+                o for o in rows
+                if o.get("prices", {}).get("onDemand", float("inf")) <= ceiling
+            ]
         if rows:
-            return sorted(
-                rows,
-                key=lambda o: o["prices"]["onDemand"])[0]
-        same_provider = [o for o in self.offers
-                         if o.get("provider") == provider]
+            return sorted(rows, key=lambda o: o["prices"]["onDemand"])[0]
+        same_provider = [
+            o for o in self.offers if o.get("provider") == provider
+        ]
         if same_provider and ceiling is not None:
-            cheapest = min(same_provider,
-                           key=lambda o: o["prices"]["onDemand"])
+            cheapest = min(same_provider, key=lambda o: o["prices"]["onDemand"])
             # The REAL error classes: the provisioner's except clauses
             # must catch these (the typed human-decision vs stockout
             # distinction the eng-493 discipline rides on).
@@ -251,9 +298,14 @@ class _StubClient:
         self.calls.append(("create_pod", name, offer["cloudId"], team_id))
         if self.fail_create:
             raise self.fail_create
-        pod = {"id": "pod-new", "name": name, "status": "ACTIVE",
-               "sshConnection": "root@10.0.0.1 -p 22", "ip": "10.0.0.1",
-               "providerType": offer.get("provider")}
+        pod = {
+            "id": "pod-new",
+            "name": name,
+            "status": "ACTIVE",
+            "sshConnection": "root@10.0.0.1 -p 22",
+            "ip": "10.0.0.1",
+            "providerType": offer.get("provider")
+        }
         self.pods.append(pod)
         return pod
 
@@ -282,9 +334,14 @@ def _config(node_config=None, count=1, provider_config=None):
 
 
 def _pod(pod_id, status, name="sky-test-head", user="root"):
-    return {"id": pod_id, "name": name, "status": status,
-            "sshConnection": f"{user}@10.0.0.1 -p 22",
-            "ip": "10.0.0.1", "providerType": "dc_gnu"}
+    return {
+        "id": pod_id,
+        "name": name,
+        "status": status,
+        "sshConnection": f"{user}@10.0.0.1 -p 22",
+        "ip": "10.0.0.1",
+        "providerType": "dc_gnu"
+    }
 
 
 class TestProvisioner(unittest.TestCase):
@@ -296,19 +353,15 @@ class TestProvisioner(unittest.TestCase):
     def test_create_reresolves_the_live_offer_and_names_the_pod(self):
         from sky.provision.primeintellect import instance
 
-        stub = _StubClient(
-            offers=[_offer()],
-        )
+        stub = _StubClient(offers=[_offer()],)
         with self._patch_client(stub):
-            record = instance.run_instances(
-                "us-east-1", "sky-test", "sky-test", _config())
+            record = instance.run_instances("us-east-1", "sky-test", "sky-test",
+                                            _config())
         # The launch re-resolved against the LIVE list with the
         # dataCenter token AND the token's provider, and the pod carries
         # the cluster's name.
-        resolve_call = [c for c in stub.calls
-                        if c[0] == "resolve_launch_offer"]
-        self.assertEqual(resolve_call[0][1]["gpu_type"],
-                         "RTX_PRO_6000B_96GB")
+        resolve_call = [c for c in stub.calls if c[0] == "resolve_launch_offer"]
+        self.assertEqual(resolve_call[0][1]["gpu_type"], "RTX_PRO_6000B_96GB")
         self.assertEqual(resolve_call[0][1]["data_center"], "us-east-1")
         self.assertEqual(resolve_call[0][1]["provider"], "dc_gnu")
         self.assertIsNone(resolve_call[0][1]["max_whole_box_price"])
@@ -331,9 +384,10 @@ class TestProvisioner(unittest.TestCase):
                 "us-east-1", "sky-test", "sky-test",
                 _config(provider_config={
                     "create_instance_kwargs": {
-                        "max_hourly_cost_usd": "1.46"}}))
-        resolve_call = [c for c in stub.calls
-                        if c[0] == "resolve_launch_offer"]
+                        "max_hourly_cost_usd": "1.46"
+                    }
+                }))
+        resolve_call = [c for c in stub.calls if c[0] == "resolve_launch_offer"]
         self.assertEqual(resolve_call[0][1]["max_whole_box_price"], 1.46)
         # And the create happened: 1.35 <= 1.46 is rentable.
         self.assertTrue([c for c in stub.calls if c[0] == "create_pod"])
@@ -343,8 +397,8 @@ class TestProvisioner(unittest.TestCase):
         # back but repriced above what the quote proved — a typed
         # human-decision refusal, never a silent substitution and never
         # a stockout-shaped retry.
-        from sky.provision.primeintellect import instance
         from sky import exceptions
+        from sky.provision.primeintellect import instance
 
         stub = _StubClient(offers=[_offer(price=3.00)])
         with self._patch_client(stub):
@@ -353,27 +407,27 @@ class TestProvisioner(unittest.TestCase):
                     "us-east-1", "sky-test", "sky-test",
                     _config(provider_config={
                         "create_instance_kwargs": {
-                            "max_hourly_cost_usd": "1.46"}}))
+                            "max_hourly_cost_usd": "1.46"
+                        }
+                    }))
         self.assertIn("exceeds", str(ctx.exception))
-        self.assertFalse([c for c in stub.calls
-                          if c[0] == "create_pod"])
+        self.assertFalse([c for c in stub.calls if c[0] == "create_pod"])
 
     def test_create_never_substitutes_a_different_upstream(self):
         # The other half of the CodeRabbit-#519 finding: a dc_gnu token
         # must rent dc_gnu. A CHEAPER offer from a different VM-class
         # upstream (primecompute) exists, but it was never the quoted
         # identity — the launch must fail closed rather than rent it.
-        from sky.provision.primeintellect import instance
         from sky import exceptions
+        from sky.provision.primeintellect import instance
 
         cheaper = _offer(provider="primecompute", price=0.90)
         stub = _StubClient(offers=[cheaper])
         with self._patch_client(stub):
             with self.assertRaises(exceptions.ResourcesUnavailableError):
-                instance.run_instances(
-                    "us-east-1", "sky-test", "sky-test", _config())
-        self.assertFalse([c for c in stub.calls
-                          if c[0] == "create_pod"])
+                instance.run_instances("us-east-1", "sky-test", "sky-test",
+                                       _config())
+        self.assertFalse([c for c in stub.calls if c[0] == "create_pod"])
 
     def test_unsubstituted_public_key_placeholder_refused(self):
         from sky.provision.primeintellect import instance
@@ -383,30 +437,30 @@ class TestProvisioner(unittest.TestCase):
             with self.assertRaises(instance.utils.PrimeintellectError):
                 instance.run_instances(
                     "us-east-1", "sky-test", "sky-test",
-                    _config(node_config={
-                        "InstanceType": "dc_gnu:RTX_PRO_6000B_96GB:1",
-                        "PublicKey": "skypilot:ssh_public_key_content",
-                    }))
-        self.assertFalse([c for c in stub.calls
-                          if c[0] == "create_pod"])
+                    _config(
+                        node_config={
+                            "InstanceType": "dc_gnu:RTX_PRO_6000B_96GB:1",
+                            "PublicKey": "skypilot:ssh_public_key_content",
+                        }))
+        self.assertFalse([c for c in stub.calls if c[0] == "create_pod"])
 
     def test_no_live_offer_fails_closed(self):
-        from sky.provision.primeintellect import instance
         from sky import exceptions
+        from sky.provision.primeintellect import instance
 
         stub = _StubClient(offers=[])
         with self._patch_client(stub):
             with self.assertRaises(exceptions.ResourcesUnavailableError):
-                instance.run_instances(
-                    "us-east-1", "sky-test", "sky-test", _config())
+                instance.run_instances("us-east-1", "sky-test", "sky-test",
+                                       _config())
 
     def test_adopts_named_live_pod(self):
         from sky.provision.primeintellect import instance
 
         stub = _StubClient(pods=[_pod("p-live", "ACTIVE")])
         with self._patch_client(stub):
-            record = instance.run_instances(
-                "us-east-1", "sky-test", "sky-test", _config())
+            record = instance.run_instances("us-east-1", "sky-test", "sky-test",
+                                            _config())
         self.assertEqual(record.head_instance_id, "p-live")
         self.assertEqual(record.created_instance_ids, [])
         self.assertFalse([c for c in stub.calls if c[0] == "create_pod"])
@@ -416,28 +470,27 @@ class TestProvisioner(unittest.TestCase):
         # fast, never wait on it (the adoption rule).
         from sky.provision.primeintellect import instance
 
-        stub = _StubClient(pods=[_pod("p-err", "ERROR",
-                                     name="sky-test-head")])
+        stub = _StubClient(pods=[_pod("p-err", "ERROR", name="sky-test-head")])
         with self._patch_client(stub):
             with self.assertRaises(instance.utils.PrimeintellectError):
-                instance.run_instances(
-                    "us-east-1", "sky-test", "sky-test", _config())
+                instance.run_instances("us-east-1", "sky-test", "sky-test",
+                                       _config())
 
     def test_terminated_named_pod_is_not_adopted(self):
         # A TERMINATED pod with our name is history, not an endpoint —
         # the lane relaunches (into a foreign-pod refusal if others are
         # live, as designed).
-        from sky.provision.primeintellect import instance
         from sky import exceptions
+        from sky.provision.primeintellect import instance
 
-        stub = _StubClient(pods=[_pod("p-old", "TERMINATED",
-                                      name="sky-test-head")])
+        stub = _StubClient(
+            pods=[_pod("p-old", "TERMINATED", name="sky-test-head")])
         with self._patch_client(stub):
             # No live pods anywhere and no live offers -> capacity refusal
             # (NOT an adoption of the dead pod).
             with self.assertRaises(exceptions.ResourcesUnavailableError):
-                instance.run_instances(
-                    "us-east-1", "sky-test", "sky-test", _config())
+                instance.run_instances("us-east-1", "sky-test", "sky-test",
+                                       _config())
 
     def test_unmapped_foreign_live_pod_refuses_to_guess(self):
         from sky.provision.primeintellect import instance
@@ -445,8 +498,8 @@ class TestProvisioner(unittest.TestCase):
         stub = _StubClient(pods=[_pod("p-x", "ACTIVE", name="console-box")])
         with self._patch_client(stub):
             with self.assertRaises(instance.utils.PrimeintellectError) as ctx:
-                instance.run_instances(
-                    "us-east-1", "sky-test", "sky-test", _config())
+                instance.run_instances("us-east-1", "sky-test", "sky-test",
+                                       _config())
         self.assertIn("refusing to guess", str(ctx.exception))
 
     def test_terminate_deletes_named_pods_only(self):
@@ -457,8 +510,8 @@ class TestProvisioner(unittest.TestCase):
             _pod("p-theirs", "ACTIVE", name="console-box"),
         ])
         with self._patch_client(stub):
-            instance.terminate_instances(
-                "us-east-1", "sky-test", "sky-test", None)
+            instance.terminate_instances("us-east-1", "sky-test", "sky-test",
+                                         None)
         self.assertEqual([c for c in stub.calls if c[0] == "delete_pod"],
                          [("delete_pod", "p-mine")])  # ours only, never
         # the console experiment
@@ -469,8 +522,7 @@ class TestProvisioner(unittest.TestCase):
         stub = _StubClient()
         with self._patch_client(stub):
             with self.assertRaises(instance.utils.PrimeintellectError):
-                instance.terminate_instances("us-east-1", "sky-test", "",
-                                             None)
+                instance.terminate_instances("us-east-1", "sky-test", "", None)
         self.assertFalse(stub.calls)
 
     def test_stop_is_refused_loudly(self):
@@ -479,8 +531,7 @@ class TestProvisioner(unittest.TestCase):
         from sky.provision.primeintellect import instance
 
         with self.assertRaises(NotImplementedError):
-            instance.stop_instances("us-east-1", "sky-test", "sky-test",
-                                    None)
+            instance.stop_instances("us-east-1", "sky-test", "sky-test", None)
 
     def test_query_status_maps_steady_states(self):
         from sky.provision import common
@@ -497,7 +548,6 @@ class TestProvisioner(unittest.TestCase):
         # Transitional rows are excluded under non_terminated_only.
         self.assertNotIn("p-b", statuses)
 
-
     def test_create_bills_the_team_wallet_when_the_env_names_one(self):
         # The 2026-10-07 wallet-target ruling: the funded money sits on the
         # TEAM wallet; a pod WITHOUT a team block bills the PERSONAL one.
@@ -509,8 +559,8 @@ class TestProvisioner(unittest.TestCase):
         with self._patch_client(stub):
             with mock.patch.dict(os.environ,
                                  {"PRIME_INTELLECT_TEAM_ID": "team-123"}):
-                instance.run_instances(
-                    "us-east-1", "sky-test", "sky-test", _config())
+                instance.run_instances("us-east-1", "sky-test", "sky-test",
+                                       _config())
         create_call = [c for c in stub.calls if c[0] == "create_pod"]
         self.assertEqual(create_call[0][3], "team-123")
 
@@ -521,12 +571,15 @@ class TestProvisioner(unittest.TestCase):
         from sky.provision.primeintellect import instance
 
         stub = _StubClient(offers=[_offer()])
-        env = {k: v for k, v in os.environ.items()
-               if k != "PRIME_INTELLECT_TEAM_ID"}
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k != "PRIME_INTELLECT_TEAM_ID"
+        }
         with self._patch_client(stub):
             with mock.patch.dict(os.environ, env, clear=True):
-                instance.run_instances(
-                    "us-east-1", "sky-test", "sky-test", _config())
+                instance.run_instances("us-east-1", "sky-test", "sky-test",
+                                       _config())
         create_call = [c for c in stub.calls if c[0] == "create_pod"]
         self.assertIsNone(create_call[0][3])
 
@@ -548,8 +601,7 @@ class TestCloudWiring(unittest.TestCase):
         from sky.backends import cloud_vm_ray_backend
         from sky.clouds import PrimeIntellect
         self.assertEqual(
-            cloud_vm_ray_backend._get_cluster_config_template(
-                PrimeIntellect()),
+            cloud_vm_ray_backend._get_cluster_config_template(PrimeIntellect()),
             "primeintellect-ray.yml.j2",
         )
 
@@ -561,14 +613,11 @@ class TestCloudWiring(unittest.TestCase):
         import inspect
 
         from sky.backends import backend_utils
-        source = inspect.getsource(
-            backend_utils._add_auth_to_cluster_config)
+        source = inspect.getsource(backend_utils._add_auth_to_cluster_config)
         tree = ast.parse(source)
         calls = {
-            node.func.attr
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and
-            isinstance(node.func, ast.Attribute)
+            node.func.attr for node in ast.walk(tree) if
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         }
         self.assertIn("setup_primeintellect_authentication", calls,
                       "PrimeIntellect missing from the auth dispatch chain")
@@ -597,10 +646,9 @@ class TestCloudWiring(unittest.TestCase):
     def test_credential_file_mount_is_lane_scoped(self):
         from sky.clouds import PrimeIntellect
         mounts = PrimeIntellect().get_credential_file_mounts()
-        self.assertEqual(
-            mounts,
-            {"~/.prime-intellect/credentials":
-             "~/.prime-intellect/credentials"})
+        self.assertEqual(mounts, {
+            "~/.prime-intellect/credentials": "~/.prime-intellect/credentials"
+        })
 
     def test_dependency_extra_registered(self):
         # The 'primeintellect' extra must exist so `pip install
@@ -608,16 +656,15 @@ class TestCloudWiring(unittest.TestCase):
         # coherent.
         from sky.setup_files import dependencies
         self.assertIn("primeintellect", dependencies.cloud_dependencies)
-        self.assertEqual(
-            dependencies.cloud_dependencies["primeintellect"], [])
+        self.assertEqual(dependencies.cloud_dependencies["primeintellect"], [])
 
     def test_provisioner_package_registered(self):
         # The dispatch wrapper resolves `sky.provision.<cloud>` by name;
         # a missing import is a dead lane at first launch.
         from sky.provision import primeintellect
-        for op in ("run_instances", "terminate_instances",
-                   "query_instances", "get_cluster_info", "stop_instances",
-                   "wait_instances", "open_ports", "cleanup_ports"):
+        for op in ("run_instances", "terminate_instances", "query_instances",
+                   "get_cluster_info", "stop_instances", "wait_instances",
+                   "open_ports", "cleanup_ports"):
             self.assertTrue(hasattr(primeintellect, op),
                             f"provisioner missing {op}")
 
@@ -640,9 +687,10 @@ class TestCloudWiring(unittest.TestCase):
         # primeintellect which is not enabled" (the urun-sh/skypilot#4
         # bug class).
         import inspect
+
         from sky.clouds import PrimeIntellect
-        params = list(inspect.signature(
-            PrimeIntellect.check_credentials).parameters)
+        params = list(
+            inspect.signature(PrimeIntellect.check_credentials).parameters)
         self.assertEqual(params[0], "cloud_capability")
 
 
