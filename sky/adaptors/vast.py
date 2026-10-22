@@ -113,13 +113,13 @@ def _patch_sdk_regions():
     dropped from the table.
     """
     from vastai import vastai_sdk
+
     # Fail loudly if the SDK internals we patch have moved (version drift)
     if not hasattr(vastai_sdk, '_regions_rev'):
         raise RuntimeError(
             'vastai-sdk internal _regions_rev not found — the SDK has '
             'changed shape. The georegion completion shim needs review. '
-            'Expected vastai-sdk 0.2.x (pinned 0.2.5 in skypilot-controller).'
-        )
+            'Expected vastai-sdk 0.2.x (pinned 0.2.5 in skypilot-controller).')
     for code, token in _MISSING_GEOREGIONS.items():
         vastai_sdk._regions_rev.setdefault(code, token)
 
@@ -159,8 +159,7 @@ def _patch_sdk_instances_endpoint():
         url = _orig_apiurl(args, subpath, query_args)
         if subpath == '/instances':
             # The collection endpoint is dead on v0; per-id routes stay v0.
-            return url.replace('/api/v0/instances?',
-                               '/api/v1/instances/?', 1)
+            return url.replace('/api/v0/instances?', '/api/v1/instances/?', 1)
         return url
 
     apiurl._skypilot_v1_instances = True

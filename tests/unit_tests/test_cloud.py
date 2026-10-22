@@ -45,6 +45,8 @@ def test_every_cloud_sets_its_own_repr():
         'these clouds inherit the placeholder Cloud._REPR, so '
         'validate_region_zone and is_image_tag_valid will look up '
         f'sky.catalog.<cloud>_catalog for them: {offenders}')
+
+
 class TestCloudEquality:
     """Cloud.__eq__/__hash__: value semantics over identity.
 

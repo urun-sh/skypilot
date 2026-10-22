@@ -35,7 +35,8 @@ def _deploy_vars(image_id):
     region = mock.Mock()
     region.name = 'EU'
     cloud = vast_cloud.Vast()
-    with mock.patch.object(cloud, 'get_accelerators_from_instance_type',
+    with mock.patch.object(cloud,
+                           'get_accelerators_from_instance_type',
                            return_value={'RTXPRO6000': 1}):
         return cloud.make_deploy_resources_variables(resources,
                                                      mock.Mock(),
@@ -55,7 +56,6 @@ class TestVastVmImage(unittest.TestCase):
         self.assertEqual(image, 'ghcr.io/acme/worker:1')
 
 
-
 class TestVastVmLaunch(unittest.TestCase):
     """A KVM VM launch needs a shebang onstart and direct SSH."""
 
@@ -68,7 +68,9 @@ class TestVastVmLaunch(unittest.TestCase):
             'geolocation': 'Czechia, CZ, EU'
         }]
         client.create_instance.side_effect = (
-            lambda **kw: captured.update(kw) or {'new_contract': 9})
+            lambda **kw: captured.update(kw) or {
+                'new_contract': 9
+            })
         client.show_instance.return_value = {'id': 9}
         with mock.patch.object(utils, 'vast') as vast_mod:
             vast_mod.vast.return_value = client
@@ -106,7 +108,8 @@ class TestVastSshEndpoint(unittest.TestCase):
         from sky.provision.vast import instance
         base = {'local_ipaddrs': '10.0.0.2 ', 'name': 'c-head'}
         base.update(info)
-        with mock.patch.object(instance, '_filter_instances',
+        with mock.patch.object(instance,
+                               '_filter_instances',
                                return_value={'1': base}):
             ci = instance.get_cluster_info('EU', 'c')
         node = ci.instances['1'][0]
@@ -116,7 +119,11 @@ class TestVastSshEndpoint(unittest.TestCase):
         self.assertEqual(
             self._endpoint({
                 'public_ipaddr': '194.228.55.129',
-                'ports': {'22/tcp': [{'HostPort': '39068'}]},
+                'ports': {
+                    '22/tcp': [{
+                        'HostPort': '39068'
+                    }]
+                },
                 'ssh_host': 'ssh2.vast.ai',
                 'ssh_port': 23248,
             }), ('194.228.55.129', 39068))

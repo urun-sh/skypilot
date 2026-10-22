@@ -54,10 +54,10 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional, Tuple
 
 API_BASE = 'https://api.primeintellect.ai/api/v1'
 
@@ -148,7 +148,10 @@ class PrimeintellectError(RuntimeError):
     instead of parsing strings (the shadeform INSUFFICIENT_FUNDS lesson).
     """
 
-    def __init__(self, message: str, *, code: str = '',
+    def __init__(self,
+                 message: str,
+                 *,
+                 code: str = '',
                  status_code: Optional[int] = None):
         super().__init__(message)
         self.code = code
@@ -172,7 +175,6 @@ class PrimeintellectRateLimited(PrimeintellectError):
     """429 that exhausted its bounded retries."""
 
 
-
 class PrimeintellectOfferPriceExceedsCeilingError(PrimeintellectError):
     """Every live offer matching the request exceeds the claim's proven
     price ceiling (eng-493's vast lesson, the CodeRabbit-#519 finding).
@@ -189,6 +191,7 @@ class PrimeintellectOfferPriceExceedsCeilingError(PrimeintellectError):
         self.cheapest_whole_box = cheapest_whole_box
         self.ceiling_whole_box = ceiling_whole_box
 
+
 class PrimeintellectValidationError(PrimeintellectError):
     """422 — the request body failed validation.
 
@@ -196,10 +199,13 @@ class PrimeintellectValidationError(PrimeintellectError):
     ``fields`` so a wrong cloudId/gpuType is diagnosable from the raise.
     """
 
-    def __init__(self, message: str, *,
+    def __init__(self,
+                 message: str,
+                 *,
                  fields: Optional[List[Tuple[str, str]]] = None,
                  status_code: Optional[int] = None):
-        super().__init__(message, code='validation_error',
+        super().__init__(message,
+                         code='validation_error',
                          status_code=status_code)
         self.fields = fields or []
 
@@ -224,8 +230,8 @@ def _error_fields(raw: bytes) -> List[Tuple[str, str]]:
                 pairs = []
                 for entry in errors:
                     if isinstance(entry, dict):
-                        pairs.append((str(entry.get('param') or ''),
-                                      str(entry.get('details') or '')))
+                        pairs.append((str(entry.get('param') or
+                                          ''), str(entry.get('details') or '')))
                 return pairs
     except (ValueError, AttributeError):
         pass
@@ -244,6 +250,7 @@ def _error_detail(raw: bytes) -> str:
         pass
     return ''
 
+
 def parse_ssh_connection(ssh_connection: Any) -> Tuple[Optional[str], int]:
     """Extract (user, port) from a pod's ``sshConnection`` string.
 
@@ -256,9 +263,9 @@ def parse_ssh_connection(ssh_connection: Any) -> Tuple[Optional[str], int]:
     """
     if isinstance(ssh_connection, list):
         # Schema: items anyOf [string, null] — first usable entry wins.
-        ssh_connection = next(
-            (entry for entry in ssh_connection
-             if isinstance(entry, str) and entry.strip()), None)
+        ssh_connection = next((entry for entry in ssh_connection
+                               if isinstance(entry, str) and entry.strip()),
+                              None)
     if not isinstance(ssh_connection, str) or not ssh_connection.strip():
         return None, 22
     tokens = ssh_connection.replace('=', ' ').split()
@@ -397,18 +404,17 @@ class PrimeIntellectClient:
                 'needs Instances Read and write + Availability Read).',
                 status_code=status)
         if status == 404:
-            raise PrimeintellectNotFoundError(
-                f'{where}: not found', status_code=status)
+            raise PrimeintellectNotFoundError(f'{where}: not found',
+                                              status_code=status)
         if status == 422:
             fields = _error_fields(raw)
-            rendered = '; '.join(f'{p}: {d}'.strip(' :')
-                                 for p, d in fields if p or d)
+            rendered = '; '.join(
+                f'{p}: {d}'.strip(' :') for p, d in fields if p or d)
             if not rendered:
                 rendered = raw[:200].decode('utf-8', 'replace')
-            raise PrimeintellectValidationError(
-                f'{where}: HTTP 422 {rendered}',
-                fields=fields,
-                status_code=status)
+            raise PrimeintellectValidationError(f'{where}: HTTP 422 {rendered}',
+                                                fields=fields,
+                                                status_code=status)
         if status == 429:
             raise PrimeintellectRateLimited(
                 f'{where}: rate limited (no documented budget; bounded '
@@ -423,21 +429,20 @@ class PrimeIntellectClient:
             pass
         marker = body_text.lower()
         if status in (400, 402, 409, 503) and any(
-                word in marker for word in
-                ('stock', 'availab', 'capacity', 'unavailable', 'insufficient',
-                 'balance', 'credit')):
+                word in marker
+                for word in ('stock', 'availab', 'capacity', 'unavailable',
+                             'insufficient', 'balance', 'credit')):
             kind = ('insufficient funds/credits — a CONFIG error, not '
                     'capacity: top up at '
-                    'https://app.primeintellect.ai/dashboard/billing'
-                    if any(w in marker for w in
-                           ('insufficient', 'balance', 'credit'))
-                    else 'resources unavailable')
+                    'https://app.primeintellect.ai/dashboard/billing' if any(
+                        w in marker
+                        for w in ('insufficient', 'balance',
+                                  'credit')) else 'resources unavailable')
             raise PrimeintellectResourcesUnavailableError(
                 f'{where}: HTTP {status} {kind}: {body_text[:200]}',
                 status_code=status)
-        raise PrimeintellectError(
-            f'{where}: HTTP {status}: {body_text[:200]}',
-            status_code=status)
+        raise PrimeintellectError(f'{where}: HTTP {status}: {body_text[:200]}',
+                                  status_code=status)
 
     # -- account ----------------------------------------------------------
 
@@ -548,10 +553,11 @@ class PrimeIntellectClient:
         return [row for row in rows if isinstance(row, dict)]
 
     def create_ssh_key(self, name: str, public_key: str) -> Dict[str, Any]:
-        payload = self._call('POST', '/ssh_keys/', body={
-            'name': name,
-            'publicKey': public_key,
-        }) or {}
+        payload = self._call(
+            'POST', '/ssh_keys/', body={
+                'name': name,
+                'publicKey': public_key,
+            }) or {}
         if not isinstance(payload, dict) or not payload.get('id'):
             raise PrimeintellectError(
                 f'POST /ssh_keys/ returned no id: {sorted(payload)}')
@@ -602,8 +608,8 @@ class PrimeIntellectClient:
                 f'offer row is missing {missing}; refusing to build a pod '
                 'body from a partial row')
         images = [str(i) for i in (offer.get('images') or []) if i]
-        chosen = image or (PREFERRED_IMAGE if PREFERRED_IMAGE in images
-                          else (images[0] if images else PREFERRED_IMAGE))
+        chosen = image or (PREFERRED_IMAGE if PREFERRED_IMAGE in images else
+                           (images[0] if images else PREFERRED_IMAGE))
         pod_body: Dict[str, Any] = {
             'name': name,
             'cloudId': str(offer['cloudId']),
@@ -621,7 +627,9 @@ class PrimeIntellectClient:
             pod_body['country'] = str(offer['country'])
         body: Dict[str, Any] = {
             'pod': pod_body,
-            'provider': {'type': str(offer.get('provider') or '')},
+            'provider': {
+                'type': str(offer.get('provider') or '')
+            },
         }
         if team_id:
             body['team'] = {'teamId': team_id}
@@ -650,8 +658,10 @@ class PrimeIntellectClient:
         offset = 0
         while True:
             payload = self._call(
-                'GET', '/pods/', params={'offset': offset,
-                                         'limit': PAGE_SIZE}) or {}
+                'GET', '/pods/', params={
+                    'offset': offset,
+                    'limit': PAGE_SIZE
+                }) or {}
             if not isinstance(payload, dict):
                 raise PrimeintellectError('GET /pods/: expected an object, '
                                           f'got {type(payload).__name__}')
@@ -663,7 +673,7 @@ class PrimeIntellectClient:
             rows.extend(batch)
             total = payload.get('total_count')
             if (len(batch) < PAGE_SIZE or
-                    (isinstance(total, int) and len(rows) >= total)):
+                (isinstance(total, int) and len(rows) >= total)):
                 break
             offset += len(batch)
             if offset > MAX_PAGES * PAGE_SIZE:
@@ -671,9 +681,11 @@ class PrimeIntellectClient:
                                           f'{MAX_PAGES * PAGE_SIZE} pods; '
                                           'refusing to silently truncate')
         if live_only:
-            rows = [row for row in rows
-                    if str(row.get('status') or '') not in
-                    (STATUS_DELETING, STATUS_TERMINATED)]
+            rows = [
+                row for row in rows
+                if str(row.get('status') or '') not in (STATUS_DELETING,
+                                                        STATUS_TERMINATED)
+            ]
         return rows
 
     def get_pod_status(self, pod_ids: List[str]) -> List[Dict[str, Any]]:
@@ -790,11 +802,11 @@ class PrimeIntellectClient:
             count = offer.get('gpuCount')
             if not isinstance(count, int) or count != gpu_count:
                 continue
-            if data_center is not None and str(
-                    offer.get('dataCenter') or '') != data_center:
+            if data_center is not None and str(offer.get('dataCenter') or
+                                               '') != data_center:
                 continue
-            if provider is not None and str(
-                    offer.get('provider') or '') != provider:
+            if provider is not None and str(offer.get('provider') or
+                                            '') != provider:
                 continue  # the token named the upstream the quote priced
             if vm_class_only and not is_vm_class_upstream(
                     str(offer.get('provider') or '')):
@@ -803,8 +815,8 @@ class PrimeIntellectClient:
             if stock and stock not in ('available', 'low'):
                 continue  # an unknown/unavailable stock flag is not rentable
             prices = offer.get('prices') or {}
-            raw_price = prices.get('onDemand') if isinstance(
-                prices, dict) else None
+            raw_price = prices.get('onDemand') if isinstance(prices,
+                                                             dict) else None
             if not isinstance(raw_price, (int, float)):
                 continue  # unpriceable: skip rather than quote as free
             whole_box = float(raw_price)
@@ -857,9 +869,10 @@ class PrimeIntellectClient:
             if any_match:
                 cheapest = any_match[0]
                 prices = cheapest.get('prices') or {}
-                raw = prices.get('onDemand') if isinstance(prices, dict) else None
-                cheapest_whole_box = (float(raw)
-                                      if isinstance(raw, (int, float)) else None)
+                raw = prices.get('onDemand') if isinstance(prices,
+                                                           dict) else None
+                cheapest_whole_box = (float(raw) if isinstance(
+                    raw, (int, float)) else None)
                 raise PrimeintellectOfferPriceExceedsCeilingError(
                     f'every live {provider}:{gpu_type}x{gpu_count} offer in '
                     f'{data_center} exceeds the claim\'s proven ceiling '

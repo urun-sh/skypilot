@@ -33,12 +33,11 @@ CARRIED = ["Spheron", "Shadeform"]
 
 def _auth_dispatch_clouds() -> set:
     """Names appearing in _add_auth_to_cluster_config's isinstance chain."""
-    src = pathlib.Path(clouds.__file__).parent.parent / "backends" / "backend_utils.py"
+    src = pathlib.Path(
+        clouds.__file__).parent.parent / "backends" / "backend_utils.py"
     tree = ast.parse(src.read_text())
-    fn = next(
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "_add_auth_to_cluster_config"
-    )
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and
+              n.name == "_add_auth_to_cluster_config")
     found = set()
     for node in ast.walk(fn):
         # clouds.X  ->  "X"
@@ -58,8 +57,7 @@ def test_carried_cloud_has_an_auth_branch(cloud_name):
         f"configure_ssh_info tuple (if the provisioner registers the key "
         f"itself) or give it a setup_<cloud>_authentication that ends with "
         f"`return configure_ssh_info(config)`. Currently dispatched: "
-        f"{sorted(dispatched)}"
-    )
+        f"{sorted(dispatched)}")
 
 
 @pytest.mark.parametrize("cloud_name", CARRIED)

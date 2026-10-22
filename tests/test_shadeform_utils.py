@@ -75,14 +75,15 @@ def test_success_and_bodyless_error_paths_are_unchanged(monkeypatch):
     ok = _FakeResponse(text='{"id": "abc"}')
     ok._json = {'id': 'abc'}
     _patch(monkeypatch, ok)
-    assert shadeform_utils.make_request('POST',
-                                        '/instances/create') == {'id': 'abc'}
+    assert shadeform_utils.make_request('POST', '/instances/create') == {
+        'id': 'abc'
+    }
 
     # A bodyless 5xx must still raise the unmodified status-line error.
     empty_error = _FakeResponse(status_code=500,
                                 reason='Internal Server Error',
                                 url='https://api.shadeform.ai/v1/instances/'
-                                    'create')
+                                'create')
     _patch(monkeypatch, empty_error)
     with pytest.raises(requests.HTTPError) as exc_info:
         shadeform_utils.make_request('POST', '/instances/create')

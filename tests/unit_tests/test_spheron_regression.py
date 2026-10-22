@@ -5,6 +5,7 @@ from unittest import mock
 
 
 class TestRegionsWithOfferingAcceptsResources(unittest.TestCase):
+
     def test_accepts_resources_kwarg(self):
         from sky.clouds import spheron
         sig = inspect.signature(spheron.Spheron.regions_with_offering)
@@ -12,18 +13,23 @@ class TestRegionsWithOfferingAcceptsResources(unittest.TestCase):
 
 
 class TestZonesProvisionLoopHonorsNoOffering(unittest.TestCase):
+
     def test_no_offering_yields_nothing(self):
         from sky.clouds import spheron
-        with mock.patch.object(spheron.Spheron, 'regions_with_offering',
-                                return_value=[]):
-            result = list(spheron.Spheron.zones_provision_loop(
-                region='region', num_nodes=1,
-                instance_type='instance', accelerators=None,
-                use_spot=False))
+        with mock.patch.object(spheron.Spheron,
+                               'regions_with_offering',
+                               return_value=[]):
+            result = list(
+                spheron.Spheron.zones_provision_loop(region='region',
+                                                     num_nodes=1,
+                                                     instance_type='instance',
+                                                     accelerators=None,
+                                                     use_spot=False))
         self.assertEqual(result, [])
 
 
 class TestQueryInstancesKeepsStopped(unittest.TestCase):
+
     def test_stopped_deployment_is_returned_even_when_non_terminated_only(self):
         """BEHAVIOURAL, not a source-text grep.
 
@@ -39,17 +45,28 @@ class TestQueryInstancesKeepsStopped(unittest.TestCase):
         from sky.utils import status_lib
 
         deployments = [
-            {'id': 'dep-stopped', 'status': 'stopped'},
-            {'id': 'dep-running', 'status': 'running'},
-            {'id': 'dep-failed', 'status': 'failed'},
+            {
+                'id': 'dep-stopped',
+                'status': 'stopped'
+            },
+            {
+                'id': 'dep-running',
+                'status': 'running'
+            },
+            {
+                'id': 'dep-failed',
+                'status': 'failed'
+            },
         ]
         with mock.patch.object(instance, '_client', return_value=mock.MagicMock()), \
              mock.patch.object(instance, '_deployments_for_cluster',
                                return_value=deployments):
-            got = instance.query_instances('c', 'c-on-cloud',
+            got = instance.query_instances('c',
+                                           'c-on-cloud',
                                            non_terminated_only=True)
 
-        self.assertEqual(got['dep-stopped'][0], status_lib.ClusterStatus.STOPPED)
+        self.assertEqual(got['dep-stopped'][0],
+                         status_lib.ClusterStatus.STOPPED)
         self.assertEqual(got['dep-running'][0], status_lib.ClusterStatus.UP)
         # A genuinely GONE deployment is still excluded, by the `is None`
         # branch -- so this never returns a terminated instance regardless.
@@ -88,7 +105,8 @@ class TestPickOsFallsBackInsteadOfRaising(unittest.TestCase):
             price_per_hour_usd=2.39,
             regions=["us-central-9"],
             os_options=list(os_options),
-            instance_type="massed-compute_gpu_1x_pro_6000_blackwell_us-central-9",
+            instance_type=
+            "massed-compute_gpu_1x_pro_6000_blackwell_us-central-9",
             supports_cloud_init=True,
             maintenance=False,
             minimum_runtime_minutes=None,
@@ -117,11 +135,13 @@ class TestPickOsFallsBackInsteadOfRaising(unittest.TestCase):
         gates a driverless image before any paid boot."""
         from sky.adaptors import spheron
         o = self._offer(["Ubuntu Server 22.04"])
-        self.assertEqual(o.pick_os(["cuda"], required=False), "Ubuntu Server 22.04")
+        self.assertEqual(o.pick_os(["cuda"], required=False),
+                         "Ubuntu Server 22.04")
 
     def test_required_false_still_prefers_cuda_when_offered(self):
         from sky.adaptors import spheron
-        o = self._offer(["AlmaLinux 9 Plain", "Ubuntu Server 22.04 LTS R570 CUDA 12.8"])
+        o = self._offer(
+            ["AlmaLinux 9 Plain", "Ubuntu Server 22.04 LTS R570 CUDA 12.8"])
         self.assertIn("CUDA", o.pick_os(["cuda"], required=False))
 
     def test_still_fails_hard_when_the_offer_lists_no_os_at_all(self):
@@ -148,7 +168,8 @@ class TestEnsureKeyHasNoSilentFallback(unittest.TestCase):
         from sky.provision.spheron import instance
         client = mock.Mock()
         client.ensure_ssh_key.return_value = 'key-id'
-        result = instance._ensure_key(client, self._config('ssh-rsa AAAAB3Nza real'))
+        result = instance._ensure_key(client,
+                                      self._config('ssh-rsa AAAAB3Nza real'))
         self.assertEqual(result, 'key-id')
         client.ensure_ssh_key.assert_called_once_with('skypilot',
                                                       'ssh-rsa AAAAB3Nza real')

@@ -17,8 +17,11 @@ from sky.provision import common as provision_common
 from sky.provision.latitude import instance as provision
 
 
-def _plan(slug="g4-rtx6kpro-large", gpu="NVIDIA RTX PRO 6000", count=1,
-          regions=None, features=("ssh", "user_data")):
+def _plan(slug="g4-rtx6kpro-large",
+          gpu="NVIDIA RTX PRO 6000",
+          count=1,
+          regions=None,
+          features=("ssh", "user_data")):
     return {
         "id": f"plan_{slug}",
         "type": "plans",
@@ -26,16 +29,35 @@ def _plan(slug="g4-rtx6kpro-large", gpu="NVIDIA RTX PRO 6000", count=1,
             "slug": slug,
             "features": list(features),
             "specs": {
-                "cpu": {"type": "EPYC", "clock": 2.4, "cores": 32, "count": 2},
-                "memory": {"total": 256},
-                "gpu": {"count": count, "type": gpu, "vram_per_gpu": 96},
+                "cpu": {
+                    "type": "EPYC",
+                    "clock": 2.4,
+                    "cores": 32,
+                    "count": 2
+                },
+                "memory": {
+                    "total": 256
+                },
+                "gpu": {
+                    "count": count,
+                    "type": gpu,
+                    "vram_per_gpu": 96
+                },
             },
             "regions": regions if regions is not None else [
                 {
                     "name": "North America",
-                    "locations": {"available": ["ASH"], "in_stock": ["ASH"]},
+                    "locations": {
+                        "available": ["ASH"],
+                        "in_stock": ["ASH"]
+                    },
                     "stock_level": "high",
-                    "pricing": {"USD": {"hour": 3.41, "month": 100}},
+                    "pricing": {
+                        "USD": {
+                            "hour": 3.41,
+                            "month": 100
+                        }
+                    },
                 },
             ],
         },
@@ -43,6 +65,7 @@ def _plan(slug="g4-rtx6kpro-large", gpu="NVIDIA RTX PRO 6000", count=1,
 
 
 class TestFetcherRows(unittest.TestCase):
+
     def test_in_stock_priced_site_emits_row_with_site_slug_region(self):
         rows = list(fetch_latitude.iter_rows([_plan()]))
         self.assertEqual(len(rows), 1)
@@ -61,16 +84,30 @@ class TestFetcherRows(unittest.TestCase):
         # now — the catalog shows only what the lane can rent.
         plan = _plan(regions=[{
             "name": "Europe",
-            "locations": {"available": ["FRA", "ASH"], "in_stock": []},
-            "pricing": {"USD": {"hour": 3.2}},
+            "locations": {
+                "available": ["FRA", "ASH"],
+                "in_stock": []
+            },
+            "pricing": {
+                "USD": {
+                    "hour": 3.2
+                }
+            },
         }])
         self.assertEqual(list(fetch_latitude.iter_rows([plan])), [])
 
     def test_unpriced_in_stock_site_is_skipped_not_free(self):
         plan = _plan(regions=[{
             "name": "Somewhere",
-            "locations": {"available": ["NRT"], "in_stock": ["NRT"]},
-            "pricing": {"USD": {"month": 100}},  # no hourly price
+            "locations": {
+                "available": ["NRT"],
+                "in_stock": ["NRT"]
+            },
+            "pricing": {
+                "USD": {
+                    "month": 100
+                }
+            },  # no hourly price
         }])
         self.assertEqual(list(fetch_latitude.iter_rows([plan])), [])
 
@@ -83,34 +120,51 @@ class TestFetcherRows(unittest.TestCase):
                     "NVIDIA RTX 6000D"):
             rows = list(fetch_latitude.iter_rows([_plan(gpu=gpu)]))
             self.assertEqual(
-                dict(zip(fetch_latitude.CSV_COLUMNS, rows[0]))[
-                    "AcceleratorName"],
+                dict(zip(fetch_latitude.CSV_COLUMNS,
+                         rows[0]))["AcceleratorName"],
                 "RTXPRO6000",
                 msg=f"{gpu} must fold into the RTXPRO6000 family",
             )
 
     def test_multi_gpu_plan_prices_whole_box(self):
-        plan = _plan(count=4, regions=[{
-            "name": "NA",
-            "locations": {"available": ["ASH"], "in_stock": ["ASH"]},
-            "pricing": {"USD": {"hour": 10.0}},
-        }])
-        row = dict(zip(fetch_latitude.CSV_COLUMNS,
-                       list(fetch_latitude.iter_rows([plan]))[0]))
+        plan = _plan(count=4,
+                     regions=[{
+                         "name": "NA",
+                         "locations": {
+                             "available": ["ASH"],
+                             "in_stock": ["ASH"]
+                         },
+                         "pricing": {
+                             "USD": {
+                                 "hour": 10.0
+                             }
+                         },
+                     }])
+        row = dict(
+            zip(fetch_latitude.CSV_COLUMNS,
+                list(fetch_latitude.iter_rows([plan]))[0]))
         self.assertEqual(row["AcceleratorCount"], 4)
         # The hourly price is for the whole 4-GPU box, not per GPU.
         self.assertEqual(row["Price"], 10.0)
 
     def test_from_fixture_writes_csv(self):
-        plans = [_plan(), _plan(slug="g3-h100-small", gpu="NVIDIA H100",
-                                regions=[{
-                                    "name": "US",
-                                    "locations": {
-                                        "available": ["CHI"],
-                                        "in_stock": ["CHI"],
-                                    },
-                                    "pricing": {"USD": {"hour": 7.0}},
-                                }])]
+        plans = [
+            _plan(),
+            _plan(slug="g3-h100-small",
+                  gpu="NVIDIA H100",
+                  regions=[{
+                      "name": "US",
+                      "locations": {
+                          "available": ["CHI"],
+                          "in_stock": ["CHI"],
+                      },
+                      "pricing": {
+                          "USD": {
+                              "hour": 7.0
+                          }
+                      },
+                  }])
+        ]
         with tempfile.TemporaryDirectory() as tmp:
             fixture = os.path.join(tmp, "fixture.json")
             out = os.path.join(tmp, "latitude", "vms.csv")
@@ -146,8 +200,10 @@ class _StubClient:
 
     def list_servers(self, hostname=None):
         # JSON:API shape: the hostname lives under attributes.
-        return [s for s in self.servers
-                if (s.get("attributes") or {}).get("hostname") == hostname]
+        return [
+            s for s in self.servers
+            if (s.get("attributes") or {}).get("hostname") == hostname
+        ]
 
     def ensure_project(self, slug):
         return f"proj_{slug}"
@@ -189,17 +245,22 @@ def _config(node_config=None):
 def _server_row(server_id, hostname, status):
     return {
         "id": server_id,
-        "attributes": {"hostname": hostname, "status": status,
-                       "primary_ipv4": "198.51.100.5"},
+        "attributes": {
+            "hostname": hostname,
+            "status": status,
+            "primary_ipv4": "198.51.100.5"
+        },
     }
 
 
 class TestProvisioner(unittest.TestCase):
+
     def _run(self, stub, config=None, region="ASH"):
-        with mock.patch.object(provision.utils, "client_from_env",
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
                                return_value=stub):
-            return provision.run_instances(
-                region, "ignored", "sky-lat-abc", config or _config())
+            return provision.run_instances(region, "ignored", "sky-lat-abc",
+                                           config or _config())
 
     def test_create_attaches_key_hourly_and_waits(self):
         stub = _StubClient()
@@ -236,18 +297,15 @@ class TestProvisioner(unittest.TestCase):
         self.assertEqual(stub.created_servers, [])
 
     def test_adopts_existing_on_server(self):
-        stub = _StubClient(servers=[
-            _server_row("srv_9", "sky-lat-abc", "on")
-        ])
+        stub = _StubClient(servers=[_server_row("srv_9", "sky-lat-abc", "on")])
         record = self._run(stub, _config({"InstanceType": "x"}))
         self.assertEqual(record.head_instance_id, "srv_9")
         self.assertEqual(record.created_instance_ids, [])
         self.assertEqual(stub.created_servers, [])
 
     def test_failed_deployment_adoption_refused(self):
-        stub = _StubClient(servers=[
-            _server_row("srv_9", "sky-lat-abc", "failed_deployment")
-        ])
+        stub = _StubClient(
+            servers=[_server_row("srv_9", "sky-lat-abc", "failed_deployment")])
         with self.assertRaises(provision.utils.LatitudeError) as ctx:
             self._run(stub, _config({"InstanceType": "x"}))
         self.assertIn("failed_deployment", str(ctx.exception))
@@ -265,18 +323,22 @@ class TestProvisioner(unittest.TestCase):
         stub = _StubClient(servers=[
             _server_row("srv_a", "sky-lat-abc", "on"),
         ])
-        with mock.patch.object(provision.utils, "client_from_env",
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
                                return_value=stub):
             provision.terminate_instances("sky-lat-abc")
         self.assertEqual(stub.deleted, ["srv_a"])
 
     def test_terminate_swallows_only_already_gone(self):
+
         class _Gone(_StubClient):
+
             def delete_server(self, server_id):
                 raise provision.utils.LatitudeNotFoundError("gone")
 
         stub = _Gone(servers=[_server_row("srv_a", "sky-lat-abc", "on")])
-        with mock.patch.object(provision.utils, "client_from_env",
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
                                return_value=stub):
             provision.terminate_instances("sky-lat-abc")  # idempotent
 
@@ -285,7 +347,8 @@ class TestProvisioner(unittest.TestCase):
             _server_row("srv_on", "sky-lat-abc", "on"),
             _server_row("srv_new", "sky-lat-abc", "starting_deploy"),
         ])
-        with mock.patch.object(provision.utils, "client_from_env",
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
                                return_value=stub):
             statuses = provision.query_instances("c", "sky-lat-abc")
         # `on` maps UP; an unmapped provisioning slug stays visible as
@@ -298,7 +361,8 @@ class TestProvisioner(unittest.TestCase):
         stub = _StubClient(servers=[
             _server_row("srv_a", "sky-lat-abc", "on"),
         ])
-        with mock.patch.object(provision.utils, "client_from_env",
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
                                return_value=stub):
             info = provision.get_cluster_info("ASH", "sky-lat-abc")
         self.assertEqual(info.head_instance_id, "srv_a")
@@ -306,7 +370,6 @@ class TestProvisioner(unittest.TestCase):
         self.assertEqual(inst.external_ip, "198.51.100.5")
         self.assertEqual(inst.ssh_port, 22)
         self.assertEqual(info.ssh_user, "ubuntu")
-
 
     def test_stop_instances_is_refused_not_terminate(self):
         """STOP is declared unsupported (power_off keeps billing hourly):
@@ -323,10 +386,9 @@ class TestProvisioner(unittest.TestCase):
                 msg=f"{fn.__name__} must bind the dispatch contract",
             )
 
-        stub = _StubClient(servers=[
-            _server_row("srv_a", "sky-lat-abc", "on")
-        ])
-        with mock.patch.object(provision.utils, "client_from_env",
+        stub = _StubClient(servers=[_server_row("srv_a", "sky-lat-abc", "on")])
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
                                return_value=stub):
             with self.assertRaises(NotImplementedError):
                 provision.stop_instances("sky-lat-abc")
@@ -336,10 +398,9 @@ class TestProvisioner(unittest.TestCase):
         """An empty identity filters NOTHING: list_servers would return the
         whole team's fleet and the loop would delete it (CodeRabbit on the
         PR). Refuse loudly; delete nothing."""
-        stub = _StubClient(servers=[
-            _server_row("srv_a", "sky-lat-abc", "on")
-        ])
-        with mock.patch.object(provision.utils, "client_from_env",
+        stub = _StubClient(servers=[_server_row("srv_a", "sky-lat-abc", "on")])
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
                                return_value=stub):
             with self.assertRaises(provision.utils.LatitudeError) as ctx:
                 provision.terminate_instances("   ")
@@ -352,10 +413,10 @@ class TestProvisioner(unittest.TestCase):
         fast instead of blocking the full poll timeout (CodeRabbit on the
         PR). Transitional slugs keep waiting."""
         for status in ("off", "rescue_mode"):
-            stub = _StubClient(servers=[
-                _server_row("srv_9", "sky-lat-abc", status)
-            ])
-            with mock.patch.object(provision.utils, "client_from_env",
+            stub = _StubClient(
+                servers=[_server_row("srv_9", "sky-lat-abc", status)])
+            with mock.patch.object(provision.utils,
+                                   "client_from_env",
                                    return_value=stub):
                 with self.assertRaises(provision.utils.LatitudeError) as ctx:
                     provision.run_instances(
@@ -367,10 +428,10 @@ class TestProvisioner(unittest.TestCase):
     def test_adoption_still_waits_on_transitional_statuses(self):
         """A mapped transitional adoption (`deploying`) still waits for `on`
         rather than failing fast — only steady dead states refuse."""
-        stub = _StubClient(servers=[
-            _server_row("srv_9", "sky-lat-abc", "deploying")
-        ])
-        with mock.patch.object(provision.utils, "client_from_env",
+        stub = _StubClient(
+            servers=[_server_row("srv_9", "sky-lat-abc", "deploying")])
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
                                return_value=stub):
             record = provision.run_instances(
                 "ASH", "ignored", "sky-lat-abc",
@@ -408,8 +469,7 @@ class TestCloudWiring(unittest.TestCase):
         import inspect
 
         from sky.backends import backend_utils
-        source = inspect.getsource(
-            backend_utils._add_auth_to_cluster_config)
+        source = inspect.getsource(backend_utils._add_auth_to_cluster_config)
         tree = ast.parse(source)
         names = {
             node.attr
@@ -423,13 +483,18 @@ class TestCloudWiring(unittest.TestCase):
         from sky import clouds as clouds_lib
         from sky.clouds import Latitude
         with mock.patch.object(
-            Latitude, "regions_with_offering",
-            classmethod(lambda cls, *a, **k: [
-                clouds_lib.Region("ASH"), clouds_lib.Region("CHI"),
-            ]),
+                Latitude,
+                "regions_with_offering",
+                classmethod(lambda cls, *a, **k: [
+                    clouds_lib.Region("ASH"),
+                    clouds_lib.Region("CHI"),
+                ]),
         ):
-            yields = list(Latitude.zones_provision_loop(
-                region="ASH", num_nodes=1, instance_type="g4-rtx6kpro-large"))
+            yields = list(
+                Latitude.zones_provision_loop(
+                    region="ASH",
+                    num_nodes=1,
+                    instance_type="g4-rtx6kpro-large"))
         # One yield PER region with an offering — a single yield for "any"
         # turned a first-region failure into the end of provisioning on the
         # Spheron lane.
@@ -438,8 +503,8 @@ class TestCloudWiring(unittest.TestCase):
     def test_ssh_key_file_mount_is_latitude_scoped(self):
         from sky.clouds import Latitude
         mounts = Latitude().get_credential_file_mounts()
-        self.assertEqual(mounts, {"~/.latitude/credentials":
-                                   "~/.latitude/credentials"})
+        self.assertEqual(mounts,
+                         {"~/.latitude/credentials": "~/.latitude/credentials"})
 
 
 if __name__ == "__main__":

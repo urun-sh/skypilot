@@ -46,6 +46,7 @@ class TestV1InstancesEndpointShim(unittest.TestCase):
         """Double patching must not double-wrap apiurl."""
         vast.vast()
         from vastai import vast as vast_cli
+
         from sky.adaptors.vast import _patch_sdk_instances_endpoint
         first = vast_cli.apiurl
         _patch_sdk_instances_endpoint()
@@ -59,8 +60,7 @@ class TestV1InstancesEndpointShim(unittest.TestCase):
         url = vast_cli.apiurl(_args(), '/instances', {'owner': 'me'})
         # Live 2026-09-16: GET /api/v1/instances/?owner=me&api_key=... → 200
         self.assertEqual(
-            url,
-            'https://console.vast.ai/api/v1/instances/?owner=me'
+            url, 'https://console.vast.ai/api/v1/instances/?owner=me'
             '&api_key=test-key')
 
     def test_patch_fails_loudly_on_sdk_drift(self):

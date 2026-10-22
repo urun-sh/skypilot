@@ -31,7 +31,9 @@ def _offer(gpu_name, cpu_cores=96, cpu_ram=96690, price=1.74):
         'cpu_cores': cpu_cores,
         'cpu_ram': cpu_ram,
         'gpu_total_ram': 97887,
-        'search': {'totalHour': price},
+        'search': {
+            'totalHour': price
+        },
         'min_bid': price,
         'geolocation': 'Czechia, CZ, EU',
         'hosting_type': 1,
@@ -157,9 +159,8 @@ class TestSearchDropsTheSdkVerifiedDefault(unittest.TestCase):
                 os.chdir(tmpdir)
                 try:
                     with contextlib.redirect_stdout(io.StringIO()):
-                        runpy.run_module(
-                            'sky.catalog.data_fetchers.fetch_vast',
-                            run_name='__main__')
+                        runpy.run_module('sky.catalog.data_fetchers.fetch_vast',
+                                         run_name='__main__')
                 finally:
                     os.chdir(old_cwd)
             call = mock_vast.return_value.search_offers.call_args

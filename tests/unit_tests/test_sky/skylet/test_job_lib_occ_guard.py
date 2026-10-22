@@ -116,8 +116,8 @@ def test_update_job_status_keeps_occ_row(isolated_jobs_db):
     assert job_lib.get_status(job_id) == job_lib.JobStatus.PENDING
 
 
-def test_update_job_status_still_demotes_stale_real_jobs(isolated_jobs_db,
-                                                         monkeypatch):
+def test_update_job_status_still_demotes_stale_real_jobs(
+        isolated_jobs_db, monkeypatch):
     """Narrow guard: a stale non-occ INIT row is still demoted on the
     tail_logs path."""
     job_id, _ = job_lib.add_job("real-job", "realhash", "rt-not-occ", "{}")

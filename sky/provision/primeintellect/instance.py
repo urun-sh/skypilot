@@ -62,6 +62,7 @@ SSH_USER = 'root'
 # in run_instances for why the literal itself must be refused).
 _SSH_PUBLIC_KEY_PLACEHOLDER = 'skypilot:ssh_public_key_content'
 
+
 # The pod names this module owns (single-node lane: the head IS the
 # cluster; MULTI_NODE is declared unsupported at the cloud layer).
 def _head_name(cluster_name_on_cloud: str) -> str:
@@ -69,8 +70,10 @@ def _head_name(cluster_name_on_cloud: str) -> str:
 
 
 def _owned_names(cluster_name_on_cloud: str) -> List[str]:
-    return [_head_name(cluster_name_on_cloud),
-            f'{cluster_name_on_cloud}-worker']
+    return [
+        _head_name(cluster_name_on_cloud), f'{cluster_name_on_cloud}-worker'
+    ]
+
 
 # Pod status -> SkyPilot cluster status. Mapped steady states only;
 # anything else maps to None = transitional (SkyPilot keeps waiting) and
@@ -82,9 +85,9 @@ _STATUS_MAP: Dict[str, Optional[status_lib.ClusterStatus]] = {
     'ACTIVE': status_lib.ClusterStatus.UP,
     'ERROR': status_lib.ClusterStatus.STOPPED,
     'STOPPED': status_lib.ClusterStatus.STOPPED,
-    'DELETING': None,   # being deleted — excluded once it settles
+    'DELETING': None,  # being deleted — excluded once it settles
     'TERMINATED': None,  # already terminated — excluded
-    'UNKNOWN': None,    # provider gave up classifying — excluded
+    'UNKNOWN': None,  # provider gave up classifying — excluded
     'PROVISIONING': None,
     'PENDING': None,
 }
@@ -101,20 +104,22 @@ def _sky_status(pod: Dict[str, Any]):
         return _STATUS_MAP[raw]
     # Open-set tolerance: an unknown slug is logged verbatim and treated
     # as in-flight (a new slug must not crash the reconcile loop).
-    logger.info('primeintellect pod %s in unmapped status %r (treated as '
-                'in-flight)', pod.get('id'), raw)
+    logger.info(
+        'primeintellect pod %s in unmapped status %r (treated as '
+        'in-flight)', pod.get('id'), raw)
     return None
 
 
 def _is_live(pod: Dict[str, Any]) -> bool:
     """A pod that still exists on the account in a non-final state."""
-    return utils.pod_status(pod) not in (
-        utils.STATUS_TERMINATED, utils.STATUS_DELETING)
+    return utils.pod_status(pod) not in (utils.STATUS_TERMINATED,
+                                         utils.STATUS_DELETING)
 
 
-def _named_pods(client: 'utils.PrimeIntellectClient',
-                cluster_name_on_cloud: str,
-                statuses: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+def _named_pods(
+        client: 'utils.PrimeIntellectClient',
+        cluster_name_on_cloud: str,
+        statuses: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
     """The cluster's pods by exact name (with optional status filter)."""
     names = set(_owned_names(cluster_name_on_cloud))
     found: Dict[str, Dict[str, Any]] = {}
@@ -138,6 +143,7 @@ def _conn_str(pod: Dict[str, Any]) -> Optional[str]:
             if isinstance(entry, str) and entry.strip():
                 return entry
     return None
+
 
 # -- provisioning ----------------------------------------------------------
 
@@ -165,8 +171,7 @@ def run_instances(
     # Adoption considers LIVE pods only: a TERMINATED/DELETING pod with
     # our name is history, not an endpoint — adopting it would wait on a
     # box that is already gone.
-    live_owned = {pod_id: pod for pod_id, pod in owned.items()
-                  if _is_live(pod)}
+    live_owned = {pod_id: pod for pod_id, pod in owned.items() if _is_live(pod)}
 
     # Adoption: a live pod with our exact name. ERROR is a steady state
     # that can never reach ready — fail fast rather than wait on it (the
@@ -251,8 +256,8 @@ def run_instances(
         ceiling_raw = ((config.provider_config or {}).get(
             'create_instance_kwargs', {}) or {}).get('max_hourly_cost_usd')
         try:
-            ceiling = (None if ceiling_raw in (None, '')
-                       else float(ceiling_raw))
+            ceiling = (None if ceiling_raw in (None,
+                                               '') else float(ceiling_raw))
         except (TypeError, ValueError) as exc:
             raise utils.PrimeintellectError(
                 f'max_hourly_cost_usd {ceiling_raw!r} is not a number; the '
@@ -276,13 +281,14 @@ def run_instances(
             with ux_utils.print_exception_no_traceback():
                 raise exceptions.ResourcesUnavailableError(str(exc)) from exc
         try:
-        # The WALLET TARGET (2026-10-07 ruling): a pod WITHOUT a team
-        # block bills the user's PERSONAL wallet; the funded money sits
-        # on the TEAM wallet. PRIME_INTELLECT_TEAM_ID (a plain pod env
-        # var, set at arming like the key) selects the team whose wallet
-        # this pod bills — None keeps the no-team default (personal
-        # wallet billing, the pre-team behavior).
-            pod = client.create_pod(name=head_name, offer=offer,
+            # The WALLET TARGET (2026-10-07 ruling): a pod WITHOUT a team
+            # block bills the user's PERSONAL wallet; the funded money sits
+            # on the TEAM wallet. PRIME_INTELLECT_TEAM_ID (a plain pod env
+            # var, set at arming like the key) selects the team whose wallet
+            # this pod bills — None keeps the no-team default (personal
+            # wallet billing, the pre-team behavior).
+            pod = client.create_pod(name=head_name,
+                                    offer=offer,
                                     team_id=utils.team_id_from_env())
         except utils.PrimeintellectResourcesUnavailableError as exc:
             with ux_utils.print_exception_no_traceback():
@@ -291,9 +297,10 @@ def run_instances(
                     f'x{gpu_count} in {region!r}: {exc}') from exc
         head_instance_id = str(pod['id'])
         created = [head_instance_id]
-        logger.info('Launched primeintellect pod %s (name %r, offer '
-                    'cloudId %s, provider %s).', head_instance_id,
-                    head_name, offer.get('cloudId'), offer.get('provider'))
+        logger.info(
+            'Launched primeintellect pod %s (name %r, offer '
+            'cloudId %s, provider %s).', head_instance_id, head_name,
+            offer.get('cloudId'), offer.get('provider'))
     else:
         head_instance_id = next(iter(live_owned))
         logger.info('Adopting existing primeintellect pod %s (name %r).',
@@ -372,14 +379,16 @@ def terminate_instances(
         # Nothing with our name anywhere: already torn down (a pod list
         # with zero matches must NOT fall through to a fleet-wide delete —
         # and this path cannot: every delete below is keyed by name).
-        logger.info('No live primeintellect pods for cluster %r — '
-                    'already terminated.', cluster_name_on_cloud)
+        logger.info(
+            'No live primeintellect pods for cluster %r — '
+            'already terminated.', cluster_name_on_cloud)
         return
 
     for pod_id, pod in live.items():
         client.delete_pod(pod_id)
         logger.info('Terminated primeintellect pod %s (name %r).', pod_id,
                     pod.get('name'))
+
 
 def get_cluster_info(
     region: str,

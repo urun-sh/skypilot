@@ -175,17 +175,15 @@ def _offer_row(offer: Dict[str, Any]) -> Optional[List[Any]]:
     # GCP/Azure's malformed fields) — observed live 2026-10-07: the first
     # armed claim's quote died with "price quote failed: 'Gpus'".
     gpu_info = json.dumps({
-        'Gpus': [
-            {
-                'Name': accelerator,
-                'Count': int(gpu_count),
-                'MemoryInfo': {
-                    'SizeInMiB': int(vram_per_gpu * 1024) if vram_per_gpu else 0
-                },
-            }
-        ],
-        'TotalGpuMemoryInMiB': (
-            int(vram_per_gpu * 1024) * int(gpu_count)) if vram_per_gpu else 0,
+        'Gpus': [{
+            'Name': accelerator,
+            'Count': int(gpu_count),
+            'MemoryInfo': {
+                'SizeInMiB': int(vram_per_gpu * 1024) if vram_per_gpu else 0
+            },
+        }],
+        'TotalGpuMemoryInMiB':
+            (int(vram_per_gpu * 1024) * int(gpu_count)) if vram_per_gpu else 0,
     }).replace('"', "'")
     return [
         instance_type_token(provider, gpu_type, int(gpu_count)),
@@ -198,6 +196,7 @@ def _offer_row(offer: Dict[str, Any]) -> Optional[List[Any]]:
         gpu_info,
         '',  # the lane rents on-demand only (no spot tier)
     ]
+
 
 def iter_rows(offers: Iterable[Dict[str, Any]]) -> Iterator[List[Any]]:
     """Yield one CSV row per in-stock lane-rentable offer triple.
@@ -241,6 +240,7 @@ def _entry_priced(entry: Any) -> bool:
             if isinstance(price, (int, float)) and price > 0:
                 return True
     return False
+
 
 def _summary_priced(summary: Dict[str, Any]) -> List[str]:
     """Families the gpu-summary endpoint prices (any count, any region).

@@ -253,10 +253,8 @@ def test_primeintellect_ceiling_override_passes_strict_validation(monkeypatch):
         }
     }
     resources = next(
-        iter(
-            Resources.from_yaml_config({
-                '_cluster_config_overrides': override
-            })))
+        iter(Resources.from_yaml_config({'_cluster_config_overrides': override
+                                        })))
     assert resources.cluster_config_overrides == override
     copied = resources.copy()
     assert copied.cluster_config_overrides == override

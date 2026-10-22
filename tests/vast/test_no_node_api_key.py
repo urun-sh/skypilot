@@ -83,7 +83,8 @@ class TestVastOnstartNeverWritesApiKey(unittest.TestCase):
         onstart = captured_launch_params.get('onstart_cmd', '')
         self.assertNotIn(sentinel, onstart)
         self.assertNotIn('vast_api_key', onstart)
-        self.assertIn('no_auto_tmux', onstart, 'sanity: the legitimate onstart prefix survived')
+        self.assertIn('no_auto_tmux', onstart,
+                      'sanity: the legitimate onstart prefix survived')
 
     def test_utils_source_contains_no_key_write(self):
         """Static guard: the literal ~/.vast_api_key write is gone from source.
@@ -93,4 +94,3 @@ class TestVastOnstartNeverWritesApiKey(unittest.TestCase):
         """
         source = inspect.getsource(utils)
         self.assertNotIn('.vast_api_key', source)
-
