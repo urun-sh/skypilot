@@ -294,6 +294,9 @@ cloud_dependencies: Dict[str, List[str]] = {
     # Packet.ai talks to dash.packet.ai over urllib from
     # sky/adaptors/packet.py.
     'packet': [],
+    # MassedCompute talks to vm.massedcompute.com over urllib from
+    # sky/adaptors/massed.py.
+    'massed': [],
     'slurm': ['python-hostlist'],
     'yotta': [],  # No dependencies needed for Yotta
     'verda': [],  # No dependencies needed for verda

@@ -852,6 +852,7 @@ _EXPECTED_STOCK_MODES = {
     'primeintellect': 'units',
     'ornn': 'units',
     'packet': 'catalog',
+    'massed': 'units',
 }
 
 

@@ -37,6 +37,7 @@ DEFAULT_OFFERINGS_CLOUDS = [
     'primeintellect',
     'ornn',
     'packet',
+    'massed',
 ]
 
 _CLOUDS_CSV_FILENAME = '{cloud}/vms.csv'
@@ -57,12 +58,14 @@ _STOCK_BY_ROW_MULTIPLICITY = frozenset({
     'ornn',
 })
 
-# Vast dedupes sibling offers per (InstanceType, Region, HostingType)
-# stub at fetch time (fetch_vast.py), so its rows carry an AvailableUnits
-# column with the number of machines collapsed into each row:
+# Vast (and now MassedCompute) dedupe sibling offers per
+# (InstanceType, Region, HostingType) stub at fetch time (fetch_vast.py;
+# fetch_massed.py emits one row per product-region with the product's
+# capacity_available), so their rows carry an AvailableUnits column with
+# the number of machines collapsed into each row:
 # units = sum(AvailableUnits x AcceleratorCount), listings =
 # sum(AvailableUnits).
-_STOCK_BY_AVAILABLE_UNITS = frozenset({'vast'})
+_STOCK_BY_AVAILABLE_UNITS = frozenset({'vast', 'massed'})
 
 # stock_mode published per provider so the dashboard can label the stock
 # honestly (legend/tooltip wording differs per tier):
@@ -84,6 +87,7 @@ _STOCK_MODES: Dict[str, str] = {
     'primeintellect': STOCK_MODE_UNITS,
     'quantacloud': STOCK_MODE_UNITS,
     'ornn': STOCK_MODE_UNITS,
+    'massed': STOCK_MODE_UNITS,
     'latitude': STOCK_MODE_IN_STOCK,
     'lambda': STOCK_MODE_IN_STOCK,
     'shadeform': STOCK_MODE_IN_STOCK,
