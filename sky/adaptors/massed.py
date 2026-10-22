@@ -452,8 +452,18 @@ class MassedClient:
             raise MassedError(
                 f'GET /instance/{instance_uuid}: expected an object, got '
                 f'{type(payload).__name__}')
+        if 'runningInstance' not in payload:
+            # The field ABSENT is a malformed response (an empty body or a
+            # schema drift), not the materialization window: fail loud
+            # rather than poll the deadline on garbage (CodeRabbit round).
+            raise MassedError(
+                f'GET /instance/{instance_uuid}: the payload has no '
+                f'runningInstance field; refusing to guess what the vendor '
+                f'meant by {sorted(payload)[:5]}')
         instance = payload.get('runningInstance')
         if instance is None:
+            # Present but null: the materialization window (measured live
+            # 2026-10-22, claim-05) — not visible YET, never a failure.
             return None
         if not isinstance(instance, dict):
             raise MassedError(
