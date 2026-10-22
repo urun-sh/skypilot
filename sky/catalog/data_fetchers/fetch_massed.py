@@ -269,7 +269,7 @@ def iter_rows(inventory: Dict[str, Dict[str, Any]]) -> Iterator[List[Any]]:
     (accelerator, count, region): the BASE product (no variant suffix)
     wins; a group with no base falls to the cheapest variant.
     """
-    rows = []
+    rows: List[List[Any]] = []
     for product_name, product in (inventory or {}).items():
         if not isinstance(product, dict):
             continue
