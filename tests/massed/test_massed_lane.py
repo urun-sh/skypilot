@@ -114,6 +114,33 @@ class TestFetcherRows(unittest.TestCase):
         self.assertNotIn('gpu_8x_pro_6000_blackwell', product_names)
         self.assertEqual(product_names, {'gpu_1x_pro_6000_blackwell'})
 
+    def test_variant_products_collapse_to_one_row_per_family_region(self):
+        # The exactly-one-SKU contract (measured live 2026-10-22): the
+        # vendor's _low_storage variant is the SAME 96GB Blackwell with
+        # less disk; two rows for (RTXPRO6000, 1, region) made the
+        # runner's SKU pin refuse the whole lane. The BASE product wins;
+        # a region only the variant serves still yields ONE row.
+        inventory = _inventory(
+            **{
+                'gpu_1x_pro_6000_blackwell_low_storage': _product(
+                    name='gpu_1x_pro_6000_blackwell_low_storage',
+                    regions=('us-east-1',)),
+                'gpu_1x_pro_6000_blackwell_high_ram': _product(
+                    name='gpu_1x_pro_6000_blackwell_high_ram',
+                    regions=('us-central-9',)),
+            })
+        rows = list(fetch_massed.iter_rows(inventory))
+        # The base serves BOTH regions, so the base wins EVERYWHERE:
+        # exactly one row per region, the variants never surface, and
+        # no region is dropped by the dedupe.
+        per_region = {r[6]: r[0] for r in rows}
+        self.assertEqual(per_region.get('us-east-1'),
+                         'gpu_1x_pro_6000_blackwell')
+        self.assertEqual(per_region.get('us-central-9'),
+                         'gpu_1x_pro_6000_blackwell')
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({r[0] for r in rows}, {'gpu_1x_pro_6000_blackwell'})
+
 
 class TestZeroStockCrossCheck(unittest.TestCase):
     """verify_zero_stock: the honest-empty vs contradiction ruling."""

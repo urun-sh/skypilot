@@ -255,11 +255,37 @@ def _product_rows(product_name: str, product: Dict[str,
 
 
 def iter_rows(inventory: Dict[str, Dict[str, Any]]) -> Iterator[List[Any]]:
-    """Yield one CSV row per in-capacity (product, region) we will rent."""
+    """Yield one CSV row per in-capacity (family, count, region) we rent.
+
+    VARIANT DEDUPE (the exactly-one-SKU contract, live 2026-10-22): the
+    vendor's inventory carries product VARIANTS — same card, different
+    RAM/storage/billing (``gpu_1x_pro_6000_blackwell_low_storage`` is the
+    same 96GB Blackwell with less disk) — and the variant-stripping above
+    maps every variant to the SAME family accelerator. Emitting one row
+    per product made (RTXPRO6000, 1) resolve to TWO instance types, and
+    the runner's SKU pin refuses anything but exactly one ("a claim must
+    launch against exactly one SKU at one price" — measured live, the
+    first massed E2E claims died at the budget quote). One row per
+    (accelerator, count, region): the BASE product (no variant suffix)
+    wins; a group with no base falls to the cheapest variant.
+    """
+    rows = []
     for product_name, product in (inventory or {}).items():
         if not isinstance(product, dict):
             continue
-        yield from _product_rows(str(product_name), product)
+        rows.extend(_product_rows(str(product_name), product))
+    groups: Dict[Tuple[Any, Any, str], List[List[Any]]] = {}
+    for row in rows:
+        groups.setdefault((row[1], row[2], row[6]), []).append(row)
+    for group in groups.values():
+        if len(group) == 1:
+            yield group[0]
+            continue
+        base = next(
+            (r for r in group
+             if not any(str(r[0]).endswith(s) for s in _VARIANT_SUFFIXES)),
+            None)
+        yield base or min(group, key=lambda r: float(r[5]))
 
 
 def verify_zero_stock(inventory: Dict[str, Dict[str, Any]],
