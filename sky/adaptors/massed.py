@@ -435,14 +435,26 @@ class MassedClient:
                 f'{type(rows).__name__}')
         return [row for row in rows if isinstance(row, dict)]
 
-    def get_instance(self, instance_uuid: str) -> Dict[str, Any]:
-        """GET /instance/{uuid} — one instance, or 404 (MassedNotFoundError)."""
+    def get_instance(self, instance_uuid: str) -> Optional[Dict[str, Any]]:
+        """GET /instance/{uuid} — the instance, None while it materializes.
+
+        Measured live 2026-10-22 (the massed claim-05): the vendor answers
+        the FIRST status read after the launch's 202 with HTTP 200 and
+        ``runningInstance: null`` — NOT a 404 — so the read-after-write
+        window has TWO shapes (200-with-null and 404) and the null must
+        read as "not visible yet", never a parse failure: the first live
+        launch's wait died on exactly this and the cleanly-launched box
+        had to be torn down. The wait loop tolerates the None until the
+        deadline, exactly like the 404.
+        """
         payload = self._call('GET', f'/instance/{instance_uuid}') or {}
         if not isinstance(payload, dict):
             raise MassedError(
                 f'GET /instance/{instance_uuid}: expected an object, got '
                 f'{type(payload).__name__}')
         instance = payload.get('runningInstance')
+        if instance is None:
+            return None
         if not isinstance(instance, dict):
             raise MassedError(
                 f'GET /instance/{instance_uuid}: expected an object at '
@@ -589,6 +601,11 @@ class MassedClient:
             try:
                 instance = self.get_instance(instance_uuid)
             except MassedNotFoundError:
+                instance = None
+            if instance is None:
+                # The read-after-write window has TWO shapes (the 200 with
+                # runningInstance: null AND the 404) — both mean "not
+                # visible yet"; tolerate either until the deadline.
                 if now() >= deadline:
                     raise MassedError(
                         f'instance {instance_uuid} not found after '
