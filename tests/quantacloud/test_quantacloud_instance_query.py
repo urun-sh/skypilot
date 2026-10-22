@@ -15,9 +15,8 @@ times before succeeding, and the mapping helpers are patched, so each test
 pins exactly the retry/forget boundary.
 """
 
-import tempfile
 from pathlib import Path
-
+import tempfile
 import unittest
 from unittest import mock
 

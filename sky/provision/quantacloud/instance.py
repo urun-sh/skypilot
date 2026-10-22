@@ -38,8 +38,9 @@ import os
 import tempfile
 import time
 import typing
-from filelock import FileLock
 from typing import Any, Dict, List, Optional, Tuple
+
+from filelock import FileLock
 
 from sky import sky_logging
 from sky.provision import common
