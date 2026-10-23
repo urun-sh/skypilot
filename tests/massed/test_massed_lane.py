@@ -231,5 +231,40 @@ class TestProvisionerLaunch(unittest.TestCase):
         client.launch_instance.assert_not_called()
 
 
+class TestGetInstancePayloadShapes(unittest.TestCase):
+    """The single-instance GET's THREE payload shapes (measured live)."""
+
+    def _client(self):
+        from sky.adaptors import massed
+        return massed.MassedClient('test-key')
+
+    def test_list_shaped_payload_accepted(self):
+        # claim-20 (2026-10-23): seconds after a clean launch the vendor
+        # answered the SINGLE-instance GET with the LIST key. The entry
+        # matching the uuid (or the sole entry) must read as the instance.
+        c = self._client()
+        row = {'uuid': 'u-1', 'os_booted': 1, 'ip': '1.2.3.4'}
+        with mock.patch.object(c,
+                               '_call',
+                               return_value={'runningInstances': [row]}):
+            self.assertEqual(c.get_instance('u-1'), row)
+
+    def test_null_is_not_visible_yet(self):
+        # claim-05 (2026-10-22): the materialization window answers
+        # 200 with runningInstance: null — None, never a failure.
+        c = self._client()
+        with mock.patch.object(c,
+                               '_call',
+                               return_value={'runningInstance': None}):
+            self.assertIsNone(c.get_instance('u-1'))
+
+    def test_absent_field_raises_loud(self):
+        # A payload with NEITHER key is garbage: fail loud, never poll.
+        c = self._client()
+        with mock.patch.object(c, '_call', return_value={'other': 1}):
+            with self.assertRaises(Exception):
+                c.get_instance('u-1')
+
+
 if __name__ == '__main__':
     unittest.main()
