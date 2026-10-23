@@ -467,7 +467,17 @@ class MassedClient:
                             row.get('uuid') == instance_uuid):
                         return row
                 if len(listed) == 1 and isinstance(listed[0], dict):
-                    return listed[0]
+                    row = listed[0]
+                    if row.get('uuid') != instance_uuid:
+                        # A sole row naming a DIFFERENT instance is the
+                        # vendor answering about the wrong object — loud,
+                        # never a silent adoption of a foreign box
+                        # (CodeRabbit round).
+                        raise MassedError(
+                            f'GET /instance/{instance_uuid}: the list-form '
+                            f'payload names a different instance '
+                            f'({row.get("uuid")!r}); refusing to adopt it')
+                    return row
                 return None
             raise MassedError(
                 f'GET /instance/{instance_uuid}: the payload has no '

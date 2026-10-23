@@ -261,8 +261,9 @@ class TestGetInstancePayloadShapes(unittest.TestCase):
     def test_absent_field_raises_loud(self):
         # A payload with NEITHER key is garbage: fail loud, never poll.
         c = self._client()
+        from sky.adaptors import massed as massed_mod
         with mock.patch.object(c, '_call', return_value={'other': 1}):
-            with self.assertRaises(Exception):
+            with self.assertRaises(massed_mod.MassedError):
                 c.get_instance('u-1')
 
 
