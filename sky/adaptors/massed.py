@@ -453,9 +453,32 @@ class MassedClient:
                 f'GET /instance/{instance_uuid}: expected an object, got '
                 f'{type(payload).__name__}')
         if 'runningInstance' not in payload:
-            # The field ABSENT is a malformed response (an empty body or a
-            # schema drift), not the materialization window: fail loud
-            # rather than poll the deadline on garbage (CodeRabbit round).
+            # The vendor's single-instance GET sometimes answers with the
+            # LIST key instead (measured live 2026-10-23, claim-20: the
+            # payload arrived as {"runningInstances": [...]} seconds after
+            # a clean launch) — a THIRD read-after-write shape. Accept the
+            # list form: the entry matching the requested uuid, else the
+            # sole entry; an empty or non-matching list is "not visible
+            # yet" (None), same as the null.
+            listed = payload.get('runningInstances')
+            if isinstance(listed, list):
+                for row in listed:
+                    if (isinstance(row, dict) and
+                            row.get('uuid') == instance_uuid):
+                        return row
+                if len(listed) == 1 and isinstance(listed[0], dict):
+                    row = listed[0]
+                    if row.get('uuid') != instance_uuid:
+                        # A sole row naming a DIFFERENT instance is the
+                        # vendor answering about the wrong object — loud,
+                        # never a silent adoption of a foreign box
+                        # (CodeRabbit round).
+                        raise MassedError(
+                            f'GET /instance/{instance_uuid}: the list-form '
+                            f'payload names a different instance '
+                            f'({row.get("uuid")!r}); refusing to adopt it')
+                    return row
+                return None
             raise MassedError(
                 f'GET /instance/{instance_uuid}: the payload has no '
                 f'runningInstance field; refusing to guess what the vendor '
