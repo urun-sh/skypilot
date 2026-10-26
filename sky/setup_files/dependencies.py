@@ -63,7 +63,12 @@ install_requires = [
     # - uvicorn 0.36.0 removes setup_event_loop thus breaks SkyPilot's custom
     #   behavior.
     'uvicorn[standard] >=0.33.0, <0.36.0',
-    'fastapi',
+    # fastapi 0.148.0 removed FastAPI's **extra passthrough, rejecting
+    # the prefix= kwarg sky/server/server.py passes; >=0.142 installs
+    # crash the API server at import (prod-usw2 outage 2026-10-19, skc
+    # #640 pins the image side). Drop the bound when server.py stops
+    # using prefix= or fastapi restores a supported prefix mechanism.
+    'fastapi <0.142',
     # Some pydantic versions are not compatible with ray. Adopted from ray's
     # setup.py:
     # https://github.com/ray-project/ray/blob/ray-2.9.3/python/setup.py#L254

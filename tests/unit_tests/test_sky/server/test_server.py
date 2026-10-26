@@ -820,6 +820,55 @@ async def test_serve_dashboard_client_route_falls_back_to_index(tmp_path):
     assert response.status_code == 200
 
 
+@pytest.mark.asyncio
+async def test_serve_dashboard_html_is_no_cache(tmp_path):
+    """HTML revalidates every load so a post-roll client never replays a
+    stale page (with its retired chunk list)."""
+    d = _build_dashboard_tree(tmp_path)
+    request = mock.MagicMock(spec=fastapi.Request)
+
+    with mock.patch.object(server_constants, 'DASHBOARD_DIR', str(d)):
+        response = await server.serve_dashboard(
+            request, full_path='index.html')
+
+    assert response.status_code == 200
+    assert response.headers.get('Cache-Control') == 'no-cache'
+
+
+@pytest.mark.asyncio
+async def test_serve_dashboard_next_static_is_immutable(tmp_path):
+    """Content-hashed build assets cache immutably."""
+    d = _build_dashboard_tree(tmp_path)
+    chunk = d / '_next' / 'static' / 'chunks' / 'main-abc123.js'
+    chunk.parent.mkdir(parents=True)
+    chunk.write_text('')
+    request = mock.MagicMock(spec=fastapi.Request)
+
+    with mock.patch.object(server_constants, 'DASHBOARD_DIR', str(d)):
+        response = await server.serve_dashboard(
+            request, full_path='_next/static/chunks/main-abc123.js')
+
+    assert response.status_code == 200
+    assert response.headers.get('Cache-Control') == ('public, '
+                                                      'max-age=31536000, '
+                                                      'immutable')
+
+
+@pytest.mark.asyncio
+async def test_serve_dashboard_other_static_is_no_cache(tmp_path):
+    """Non-hashed assets (favicon, svg) revalidate like the HTML."""
+    d = _build_dashboard_tree(tmp_path)
+    (d / 'favicon.ico').write_text('')
+    request = mock.MagicMock(spec=fastapi.Request)
+
+    with mock.patch.object(server_constants, 'DASHBOARD_DIR', str(d)):
+        response = await server.serve_dashboard(request,
+                                                full_path='favicon.ico')
+
+    assert response.status_code == 200
+    assert response.headers.get('Cache-Control') == 'no-cache'
+
+
 def _api_get_dummy_entrypoint():
     """Module-level entrypoint so Request.encode() can pickle it."""
     pass
