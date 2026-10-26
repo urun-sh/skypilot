@@ -901,6 +901,30 @@ describe('ProvidersSection', () => {
     ).toBe('us-east-1');
   });
 
+  it('shows zero units when a units provider publishes zero stock', () => {
+    renderProviders({
+      providers: {
+        vast: {
+          present: true,
+          updated_at: threeHoursAgo,
+          stock_mode: 'units',
+          gpus: [
+            {
+              name: 'H100',
+              counts: [1],
+              price: 2.4,
+              regions: ['US'],
+              region_details: [{ region: 'US', units: 0 }],
+            },
+          ],
+        },
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Vast' }));
+    // Published zero is stock information — never fall back to config counts.
+    expect(screen.getByText('0 units')).toBeInTheDocument();
+  });
+
   it('renders the absent provider muted with no expand chevron', () => {
     const { container } = renderProviders();
     const ornnRow = rowByName(container, 'Ornn');

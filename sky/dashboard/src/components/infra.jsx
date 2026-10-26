@@ -460,6 +460,14 @@ export function ProvidersSection({
       0
     );
 
+  // Whether any region publishes a numeric unit count. Zero counts as
+  // published stock: a units provider reporting 0 must display "0 units",
+  // not fall back to the config counts (CodeRabbit round 1).
+  const hasUnits = (gpu) =>
+    Object.values(gpu.regionDetails).some(
+      (detail) => typeof detail?.units === 'number'
+    );
+
   // Region list; hover carries the per-region stock, one region per line
   // (whitespace-pre-line renders the newlines), busiest region first.
   // Counts stay in the tooltip only — the summary columns stay compact.
@@ -741,7 +749,7 @@ export function ProvidersSection({
                                     </td>
                                     <td className="p-2 text-gray-600">
                                       {provider.mode === 'units' &&
-                                      totalUnitsOf(gpu) > 0
+                                      hasUnits(gpu)
                                         ? `${totalUnitsOf(gpu)} units`
                                         : gpu.counts.length > 0
                                           ? gpu.counts.join(', ')
