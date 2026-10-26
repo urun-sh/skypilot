@@ -979,4 +979,21 @@ describe('ProvidersSection', () => {
     expect(summaryRows(container).length).toBeGreaterThan(0);
     expect(screen.getByText('AWS')).toBeInTheDocument();
   });
+
+  it('toggles between table and map views', () => {
+    const { container } = renderProviders();
+    // Table view owns the provider rows by default.
+    expect(screen.getByText('Spheron')).toBeInTheDocument();
+    expect(summaryRows(container).length).toBeGreaterThan(0);
+    // Switch to the map: provider rows are replaced by map markers.
+    fireEvent.click(screen.getByRole('button', { name: 'Map' }));
+    expect(container.querySelectorAll('circle').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Spheron')).not.toBeInTheDocument();
+    // Unmapped region names (no coordinates in REGION_COORDS) are
+    // listed below the map, never silently dropped.
+    expect(screen.getByText('us, na', { exact: false })).toBeInTheDocument();
+    // Back to the table.
+    fireEvent.click(screen.getByRole('button', { name: 'Table' }));
+    expect(screen.getByText('Spheron')).toBeInTheDocument();
+  });
 });

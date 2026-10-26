@@ -5,6 +5,15 @@ import { canonicalizeGpuName } from './gpuUtils';
  */
 
 /**
+ * Strips a Spheron-style short hash prefix (`90e8fe74:newyork-usa-1`)
+ * from a raw region id, for display and catalog lookups.
+ * @param {string} region - Raw region id.
+ * @returns {string} Display region name.
+ */
+export function regionDisplayName(region) {
+  return String(region ?? '').replace(/^[0-9a-f]{6,}:/, '');
+}
+/**
  * Builds a context stats key for use in contextStats mapping.
  * This key is used consistently across the application to identify
  * infrastructure contexts (Kubernetes, SSH Node Pools, Slurm clusters).
