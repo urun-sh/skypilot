@@ -837,42 +837,38 @@ describe('ProvidersSection', () => {
     expect(rows).toHaveLength(2);
     expect(normalize(rows[0])).toContain('A100');
     expect(normalize(rows[1])).toContain('H100');
-    expect(normalize(rows[0])).toContain('1, 2');
     expect(normalize(rows[0])).toContain('$0.93');
     expect(normalize(rows[0])).toContain('$0.18');
-    // Regions collapse to a count; the full raw list is the tooltip
-    // (mirrored on aria-label so it stays queryable).
-    expect(screen.getByRole('button', { name: 'US, NA' })).toBeInTheDocument();
+    // Counts carries the GPU's total stock: A100 10 units, H100 6+2.
+    expect(normalize(rows[0])).toContain('10 units');
+    expect(normalize(rows[1])).toContain('8 units');
+    // Regions collapse to a count; hover carries per-region stock, one
+    // region per line (aria-label mirrors the tooltip so it stays
+    // queryable).
+    const h100Regions = screen.getByRole('button', { name: /US, NA ×6/ });
+    expect(h100Regions.getAttribute('aria-label')).toBe('US, NA ×6\nEU ×2');
     expect(
-      screen.getByRole('button', { name: 'EU, US, NA' })
-    ).toBeInTheDocument();
-    // Live stock chips: region name × units, no +N collapse at 2 regions.
-    expect(normalize(rows[1])).toContain('US, NA ×6');
-    expect(normalize(rows[1])).toContain('EU ×2');
-    expect(screen.queryByText(/^\+2$/)).not.toBeInTheDocument();
+      screen
+        .getByRole('button', { name: 'US, NA ×10' })
+        .getAttribute('aria-label')
+    ).toBe('US, NA ×10');
     // Collapsing removes the detail rows again.
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Vast' }));
     expect(detailRows(container)).toHaveLength(0);
   });
 
-  it('shows every stocked region with its count, busiest first', () => {
+  it('carries per-region stock on the region hover, busiest first', () => {
     const { container } = renderProviders();
     fireEvent.click(screen.getByRole('button', { name: 'Expand Spheron' }));
     const rows = detailRows(container);
     expect(rows).toHaveLength(1);
-    // All five regions render as chips — none collapse behind a tooltip.
-    expect(normalize(rows[0])).toContain('newyork-usa-1 ×27');
-    expect(normalize(rows[0])).toContain('us-1 ×18');
-    expect(normalize(rows[0])).toContain('eu-1 ×9');
-    expect(normalize(rows[0])).toContain('la-1 ×5');
-    expect(normalize(rows[0])).toContain('ap-1 ×3');
-    expect(screen.queryByText(/^\+2$/)).not.toBeInTheDocument();
-    // The regions count button keeps the full raw list.
-    expect(
-      screen.getByRole('button', {
-        name: '90e8fe74:ap-1, 90e8fe74:eu-1, 90e8fe74:la-1, 90e8fe74:newyork-usa-1, 90e8fe74:us-1',
-      })
-    ).toBeInTheDocument();
+    // Counts carries the GPU total: 27+18+9+5+3.
+    expect(normalize(rows[0])).toContain('62 units');
+    // Hover carries every region's count, busiest first, one per line.
+    const regions = screen.getByRole('button', { name: /newyork-usa-1 ×27/ });
+    expect(regions.getAttribute('aria-label')).toBe(
+      'newyork-usa-1 ×27\nus-1 ×18\neu-1 ×9\nla-1 ×5\nap-1 ×3'
+    );
   });
 
   it('links each provider row to its verified console', () => {
@@ -890,12 +886,43 @@ describe('ProvidersSection', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('words the in_stock tier honestly in the detail rows', () => {
+  it('lists regions without counts when the provider publishes none', () => {
     const { container } = renderProviders();
     fireEvent.click(screen.getByRole('button', { name: 'Expand Lambda' }));
     const rows = detailRows(container);
     expect(rows).toHaveLength(1);
-    expect(normalize(rows[0])).toContain('in stock');
+    // No unit data: Counts falls back to the offering's config counts.
+    expect(normalize(rows[0])).toContain('1, 2');
+    // The region hover lists regions, one per line, without counts.
+    expect(
+      screen
+        .getByRole('button', { name: 'us-east-1' })
+        .getAttribute('aria-label')
+    ).toBe('us-east-1');
+  });
+
+  it('shows zero units when a units provider publishes zero stock', () => {
+    renderProviders({
+      providers: {
+        vast: {
+          present: true,
+          updated_at: threeHoursAgo,
+          stock_mode: 'units',
+          gpus: [
+            {
+              name: 'H100',
+              counts: [1],
+              price: 2.4,
+              regions: ['US'],
+              region_details: [{ region: 'US', units: 0 }],
+            },
+          ],
+        },
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Vast' }));
+    // Published zero is stock information — never fall back to config counts.
+    expect(screen.getByText('0 units')).toBeInTheDocument();
   });
 
   it('renders the absent provider muted with no expand chevron', () => {

@@ -452,15 +452,47 @@ export function ProvidersSection({
   const regionsCount = (count) =>
     `${count} ${count === 1 ? 'region' : 'regions'}`;
 
-  // `N regions` with the full raw list one hover away — never inline.
+  // Total live units for a GPU across every stocked region (units tier).
+  const totalUnitsOf = (gpu) =>
+    Object.values(gpu.regionDetails).reduce(
+      (total, detail) =>
+        total + (typeof detail?.units === 'number' ? detail.units : 0),
+      0
+    );
+
+  // Whether any region publishes a numeric unit count. Zero counts as
+  // published stock: a units provider reporting 0 must display "0 units",
+  // not fall back to the config counts (CodeRabbit round 1).
+  const hasUnits = (gpu) =>
+    Object.values(gpu.regionDetails).some(
+      (detail) => typeof detail?.units === 'number'
+    );
+
+  // Region list; hover carries the per-region stock, one region per line
+  // (whitespace-pre-line renders the newlines), busiest region first.
+  // Counts stay in the tooltip only — the summary columns stay compact.
   const renderRegionsCell = (gpu) => {
     const regions = Array.from(
       new Set([...gpu.regions, ...Object.keys(gpu.regionDetails)])
-    ).sort();
+    );
     if (regions.length === 0) {
       return <span className="text-gray-400 text-xs font-medium">—</span>;
     }
-    const text = regions.join(', ');
+    const unitsByRegion = (region) => gpu.regionDetails[region]?.units;
+    const ordered = [...regions].sort((a, b) => {
+      const unitsA =
+        typeof unitsByRegion(a) === 'number' ? unitsByRegion(a) : -1;
+      const unitsB =
+        typeof unitsByRegion(b) === 'number' ? unitsByRegion(b) : -1;
+      return unitsB - unitsA || a.localeCompare(b);
+    });
+    const text = ordered
+      .map((region) =>
+        typeof unitsByRegion(region) === 'number'
+          ? `${regionDisplayName(region)} ×${unitsByRegion(region)}`
+          : regionDisplayName(region)
+      )
+      .join('\n');
     return (
       <NonCapitalizedTooltip content={text}>
         <button
@@ -471,38 +503,6 @@ export function ProvidersSection({
           {regionsCount(regions.length)}
         </button>
       </NonCapitalizedTooltip>
-    );
-  };
-
-  // Live per-region stock: every stocked region with its unit count,
-  // busiest first — chips wrap, so nothing hides behind a tooltip.
-  const renderLiveStockCell = (gpu, mode) => {
-    if (mode === 'in_stock') {
-      return (
-        <span className="text-xs text-gray-400 font-medium">in stock</span>
-      );
-    }
-    if (mode !== 'units') {
-      return <span className="text-gray-400 text-xs font-medium">—</span>;
-    }
-    const stocked = Object.entries(gpu.regionDetails)
-      .filter(([, detail]) => typeof detail?.units === 'number')
-      .sort((a, b) => b[1].units - a[1].units || a[0].localeCompare(b[0]));
-    if (stocked.length === 0) {
-      return <span className="text-gray-400 text-xs font-medium">—</span>;
-    }
-    return (
-      <div className="flex flex-wrap items-center gap-1 text-xs text-gray-500">
-        {stocked.map(([region, detail], index) => (
-          <span key={region} className="whitespace-nowrap">
-            {index > 0 && <span className="text-gray-300 mr-1">·</span>}
-            <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 rounded font-medium">
-              {regionDisplayName(region)}
-            </span>{' '}
-            ×{detail.units}
-          </span>
-        ))}
-      </div>
     );
   };
 
@@ -517,8 +517,8 @@ export function ProvidersSection({
         </div>
         <p className="text-xs text-gray-500 mb-3">
           Each provider’s live fleet and current catalog: expand a row for
-          per-GPU offerings and live per-region stock. Catalogs refresh from
-          provider APIs every few hours.
+          per-GPU offerings and total stock; hover a region count for per-region
+          stock. Catalogs refresh from provider APIs every few hours.
         </p>
         <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
           <span className="font-medium text-gray-500">Stock tiers:</span>
@@ -726,7 +726,6 @@ export function ProvidersSection({
                                     '$/hr',
                                     'Spot',
                                     'Regions',
-                                    'Live stock',
                                   ].map((column) => (
                                     <th
                                       key={column}
@@ -749,9 +748,12 @@ export function ProvidersSection({
                                       </span>
                                     </td>
                                     <td className="p-2 text-gray-600">
-                                      {gpu.counts.length > 0
-                                        ? gpu.counts.join(', ')
-                                        : '—'}
+                                      {provider.mode === 'units' &&
+                                      hasUnits(gpu)
+                                        ? `${totalUnitsOf(gpu)} units`
+                                        : gpu.counts.length > 0
+                                          ? gpu.counts.join(', ')
+                                          : '—'}
                                     </td>
                                     <td className="p-2 text-gray-600">
                                       {formatOfferingPrice(gpu.price)}
@@ -761,9 +763,6 @@ export function ProvidersSection({
                                     </td>
                                     <td className="p-2">
                                       {renderRegionsCell(gpu)}
-                                    </td>
-                                    <td className="p-2">
-                                      {renderLiveStockCell(gpu, provider.mode)}
                                     </td>
                                   </tr>
                                 ))}
