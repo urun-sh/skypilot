@@ -32,11 +32,13 @@ import {
   countByCloud,
   gpuCapacityByCloud,
   recordsInWorkspace,
+  regionDisplayName,
   visibleCloudRows,
 } from '@/utils/infraUtils';
 import { canonicalizeGpuName } from '@/utils/gpuUtils';
 import { getPersistedPageSize, persistPageSize } from '@/lib/utils';
 import { PaginationControls } from '@/components/elements/PaginationControls';
+import { ProvidersMap } from '@/components/providersMap';
 import {
   getWorkspaceInfrastructure,
   getWorkspaceContexts,
@@ -182,10 +184,6 @@ export function CloudGpuCapacityCell({ entries, loading }) {
 const formatOfferingPrice = (price) =>
   typeof price === 'number' && !isNaN(price) ? `$${price.toFixed(2)}` : '—';
 
-// Spheron-style raw region ids carry a short hash prefix
-// (`90e8fe74:newyork-usa-1`); chips show the readable tail only.
-const regionDisplayName = (region) => region.replace(/^[0-9a-f]{6,}:/, '');
-
 // The provider's `stock_mode`, derived for older servers that do not send
 // the field: any region_details entry carrying a numeric units value means
 // the provider publishes live counts; anything else degrades to catalog.
@@ -301,6 +299,7 @@ export function ProvidersSection({
 }) {
   const [expandedClouds, setExpandedClouds] = React.useState(() => new Set());
 
+  const [viewMode, setViewMode] = React.useState('table');
   const toggleExpanded = (cloud) => {
     setExpandedClouds((previous) => {
       const next = new Set(previous);
@@ -538,244 +537,304 @@ export function ProvidersSection({
           </span>
         </div>
         {catalogErrorNotice}
-        <div className="overflow-x-auto rounded-md border shadow-sm bg-card">
-          <table className="min-w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                {PROVIDERS_COLUMNS.map((column, index) => (
-                  <th
-                    key={index}
-                    className="p-3 text-left font-medium text-gray-600"
-                  >
-                    {column}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="bg-card divide-y divide-gray-200">
-              {perProvider.map((provider) => {
-                const expanded = expandedClouds.has(provider.cloud);
-                const expandable = provider.present && provider.gpus.length > 0;
-                const badge = provider.present
-                  ? PROVIDER_MODE_BADGES[provider.mode]
-                  : PROVIDER_NO_CATALOG_BADGE;
-                const clusterCount = provider.cloudRow
-                  ? (provider.cloudRow.clusters ?? 0)
-                  : 0;
-                const jobCount = provider.cloudRow
-                  ? (provider.cloudRow.jobs ?? 0)
-                  : 0;
-                const storageOnly = provider.cloudRow?.storageOnly === true;
-
-                let stockLabel = '—';
-                if (provider.mode === 'units') {
-                  stockLabel = provider.anyUnits
-                    ? `${provider.totalUnits} chips · ${regionsCount(
-                        provider.detailRegionCount
-                      )}`
-                    : regionsCount(provider.offeredRegionCount);
-                } else if (provider.mode === 'in_stock') {
-                  stockLabel = regionsCount(provider.offeredRegionCount);
-                } else if (provider.mode === 'catalog') {
-                  stockLabel = `${provider.gpus.length} ${
-                    provider.gpus.length === 1 ? 'GPU' : 'GPUs'
-                  }`;
-                }
-
-                const summaryRow = (
-                  <tr className="hover:bg-muted/50">
-                    <td className="p-3">
-                      <div className="flex items-center gap-1.5">
-                        <PluginSlot
-                          name="infra.row.namePrefix"
-                          context={{
-                            id: provider.cloud,
-                            kind: 'cloud',
-                            status: statusByKey?.get(`cloud:${provider.cloud}`),
-                          }}
-                        />
-                        <span
-                          className={
-                            provider.present
-                              ? 'font-medium text-gray-700'
-                              : 'font-medium text-gray-400'
-                          }
-                        >
-                          {provider.name}
-                        </span>
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-xs font-medium ${badge.className}`}
-                        >
-                          {badge.label}
-                        </span>
-                        {PROVIDER_LINKS[provider.cloud] && (
-                          <a
-                            href={PROVIDER_LINKS[provider.cloud]}
-                            target="_blank"
-                            rel="noreferrer"
-                            aria-label={`Open ${provider.name} console`}
-                            title={`Open ${provider.name} console`}
-                            className="text-gray-300 hover:text-gray-500"
-                          >
-                            <ExternalLinkIcon className="w-3.5 h-3.5" />
-                          </a>
-                        )}
-                      </div>
-                    </td>
-                    <td className="p-3 text-gray-600">{stockLabel}</td>
-                    <td className="p-3">
-                      {storageOnly ? (
-                        <NonCapitalizedTooltip content="Storage-only infrastructure does not run clusters">
-                          <span className="px-1.5 py-0.5 text-gray-400 text-xs font-medium cursor-help">
-                            —
-                          </span>
-                        </NonCapitalizedTooltip>
-                      ) : cloudCountsLoading ? (
-                        <SkeletonBadge />
-                      ) : (
-                        <span className="px-2 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
-                          {clusterCount}
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-3">
-                      {storageOnly ? (
-                        <NonCapitalizedTooltip content="Storage-only infrastructure does not run managed jobs">
-                          <span className="px-1.5 py-0.5 text-gray-400 text-xs font-medium cursor-help">
-                            —
-                          </span>
-                        </NonCapitalizedTooltip>
-                      ) : cloudCountsLoading ? (
-                        <SkeletonBadge />
-                      ) : (
-                        <span className="px-2 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
-                          {jobCount}
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-3">
-                      {storageOnly ? (
-                        <NonCapitalizedTooltip content="Storage-only infrastructure does not run GPU clusters">
-                          <span className="px-1.5 py-0.5 text-gray-400 text-xs font-medium cursor-help">
-                            —
-                          </span>
-                        </NonCapitalizedTooltip>
-                      ) : (
-                        <CloudGpuCapacityCell
-                          entries={gpuCapacity[provider.cloud] || []}
-                          loading={gpuCapacityLoading}
-                        />
-                      )}
-                    </td>
-                    <td className="p-3 text-gray-600">
-                      {provider.minPrice !== null
-                        ? `from ${formatOfferingPrice(provider.minPrice)}`
-                        : '—'}
-                    </td>
-                    <td className="p-3 text-gray-600">
-                      {provider.updatedAt
-                        ? relativeTime(provider.updatedAt)
-                        : '—'}
-                    </td>
-                    <td className="p-3 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <PluginSlot
-                          name="infra.row.actions"
-                          context={{ id: provider.cloud, kind: 'cloud' }}
-                        />
-                        {expandable && (
-                          <button
-                            type="button"
-                            aria-label={
-                              expanded
-                                ? `Collapse ${provider.name}`
-                                : `Expand ${provider.name}`
-                            }
-                            onClick={() => toggleExpanded(provider.cloud)}
-                            className="p-1 text-gray-400 hover:text-gray-600"
-                          >
-                            {expanded ? (
-                              <ChevronDownIcon className="w-4 h-4" />
-                            ) : (
-                              <ChevronRightIcon className="w-4 h-4" />
-                            )}
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-
-                return (
-                  <PluginWrapperSlot
-                    key={provider.cloud}
-                    name="infra.cloudRow.link"
-                    context={{ id: provider.cloud }}
-                  >
-                    {summaryRow}
-                    {expanded && expandable && (
-                      <tr>
-                        <td colSpan={PROVIDERS_COLUMNS.length} className="p-0">
-                          <div className="px-3 py-2 border-t border-gray-100">
-                            <table className="min-w-full text-sm">
-                              <thead className="bg-gray-50">
-                                <tr>
-                                  {[
-                                    'GPU',
-                                    'Counts',
-                                    '$/hr',
-                                    'Spot',
-                                    'Regions',
-                                  ].map((column) => (
-                                    <th
-                                      key={column}
-                                      className="p-2 text-left font-medium text-gray-600"
-                                    >
-                                      {column}
-                                    </th>
-                                  ))}
-                                </tr>
-                              </thead>
-                              <tbody className="bg-card divide-y divide-gray-200">
-                                {provider.gpus.map((gpu) => (
-                                  <tr
-                                    key={gpu.name}
-                                    className="hover:bg-muted/50"
-                                  >
-                                    <td className="p-2">
-                                      <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
-                                        {gpu.name}
-                                      </span>
-                                    </td>
-                                    <td className="p-2 text-gray-600">
-                                      {provider.mode === 'units' &&
-                                      hasUnits(gpu)
-                                        ? `${totalUnitsOf(gpu)} units`
-                                        : '—'}
-                                    </td>
-                                    <td className="p-2 text-gray-600">
-                                      {formatOfferingPrice(gpu.price)}
-                                    </td>
-                                    <td className="p-2 text-gray-600">
-                                      {formatOfferingPrice(gpu.spot_price)}
-                                    </td>
-                                    <td className="p-2">
-                                      {renderRegionsCell(gpu)}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </PluginWrapperSlot>
-                );
-              })}
-            </tbody>
-          </table>
+        <div className="mb-3 flex items-center gap-2">
+          <div
+            role="group"
+            aria-label="Providers view"
+            className="inline-flex rounded-md border border-gray-200 overflow-hidden"
+          >
+            <button
+              type="button"
+              aria-pressed={viewMode === 'table'}
+              onClick={() => setViewMode('table')}
+              className={`px-3 py-1 text-xs font-medium ${
+                viewMode === 'table'
+                  ? 'bg-gray-800 text-white'
+                  : 'bg-card text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Table
+            </button>
+            <button
+              type="button"
+              aria-pressed={viewMode === 'map'}
+              onClick={() => setViewMode('map')}
+              className={`px-3 py-1 text-xs font-medium ${
+                viewMode === 'map'
+                  ? 'bg-gray-800 text-white'
+                  : 'bg-card text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Map
+            </button>
+          </div>
         </div>
+        {viewMode === 'map' ? (
+          <ProvidersMap
+            providers={perProvider.reduce((acc, p) => {
+              acc[p.cloud] = {
+                present: p.present,
+                stock_mode: p.mode,
+                gpus: p.gpus.map((gpu) => ({
+                  name: gpu.name,
+                  regions: gpu.regions,
+                  region_details: Object.entries(gpu.regionDetails).map(
+                    ([region, detail]) => ({
+                      region,
+                      units: detail?.units ?? null,
+                    })
+                  ),
+                })),
+              };
+              return acc;
+            }, {})}
+          />
+        ) : (
+          <div className="overflow-x-auto rounded-md border shadow-sm bg-card">
+            <table className="min-w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  {PROVIDERS_COLUMNS.map((column, index) => (
+                    <th
+                      key={index}
+                      className="p-3 text-left font-medium text-gray-600"
+                    >
+                      {column}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="bg-card divide-y divide-gray-200">
+                {perProvider.map((provider) => {
+                  const expanded = expandedClouds.has(provider.cloud);
+                  const expandable =
+                    provider.present && provider.gpus.length > 0;
+                  const badge = provider.present
+                    ? PROVIDER_MODE_BADGES[provider.mode]
+                    : PROVIDER_NO_CATALOG_BADGE;
+                  const clusterCount = provider.cloudRow
+                    ? (provider.cloudRow.clusters ?? 0)
+                    : 0;
+                  const jobCount = provider.cloudRow
+                    ? (provider.cloudRow.jobs ?? 0)
+                    : 0;
+                  const storageOnly = provider.cloudRow?.storageOnly === true;
+
+                  let stockLabel = '—';
+                  if (provider.mode === 'units') {
+                    stockLabel = provider.anyUnits
+                      ? `${provider.totalUnits} chips · ${regionsCount(
+                          provider.detailRegionCount
+                        )}`
+                      : regionsCount(provider.offeredRegionCount);
+                  } else if (provider.mode === 'in_stock') {
+                    stockLabel = regionsCount(provider.offeredRegionCount);
+                  } else if (provider.mode === 'catalog') {
+                    stockLabel = `${provider.gpus.length} ${
+                      provider.gpus.length === 1 ? 'GPU' : 'GPUs'
+                    }`;
+                  }
+
+                  const summaryRow = (
+                    <tr className="hover:bg-muted/50">
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5">
+                          <PluginSlot
+                            name="infra.row.namePrefix"
+                            context={{
+                              id: provider.cloud,
+                              kind: 'cloud',
+                              status: statusByKey?.get(
+                                `cloud:${provider.cloud}`
+                              ),
+                            }}
+                          />
+                          <span
+                            className={
+                              provider.present
+                                ? 'font-medium text-gray-700'
+                                : 'font-medium text-gray-400'
+                            }
+                          >
+                            {provider.name}
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-xs font-medium ${badge.className}`}
+                          >
+                            {badge.label}
+                          </span>
+                          {PROVIDER_LINKS[provider.cloud] && (
+                            <a
+                              href={PROVIDER_LINKS[provider.cloud]}
+                              target="_blank"
+                              rel="noreferrer"
+                              aria-label={`Open ${provider.name} console`}
+                              title={`Open ${provider.name} console`}
+                              className="text-gray-300 hover:text-gray-500"
+                            >
+                              <ExternalLinkIcon className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-3 text-gray-600">{stockLabel}</td>
+                      <td className="p-3">
+                        {storageOnly ? (
+                          <NonCapitalizedTooltip content="Storage-only infrastructure does not run clusters">
+                            <span className="px-1.5 py-0.5 text-gray-400 text-xs font-medium cursor-help">
+                              —
+                            </span>
+                          </NonCapitalizedTooltip>
+                        ) : cloudCountsLoading ? (
+                          <SkeletonBadge />
+                        ) : (
+                          <span className="px-2 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
+                            {clusterCount}
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        {storageOnly ? (
+                          <NonCapitalizedTooltip content="Storage-only infrastructure does not run managed jobs">
+                            <span className="px-1.5 py-0.5 text-gray-400 text-xs font-medium cursor-help">
+                              —
+                            </span>
+                          </NonCapitalizedTooltip>
+                        ) : cloudCountsLoading ? (
+                          <SkeletonBadge />
+                        ) : (
+                          <span className="px-2 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
+                            {jobCount}
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        {storageOnly ? (
+                          <NonCapitalizedTooltip content="Storage-only infrastructure does not run GPU clusters">
+                            <span className="px-1.5 py-0.5 text-gray-400 text-xs font-medium cursor-help">
+                              —
+                            </span>
+                          </NonCapitalizedTooltip>
+                        ) : (
+                          <CloudGpuCapacityCell
+                            entries={gpuCapacity[provider.cloud] || []}
+                            loading={gpuCapacityLoading}
+                          />
+                        )}
+                      </td>
+                      <td className="p-3 text-gray-600">
+                        {provider.minPrice !== null
+                          ? `from ${formatOfferingPrice(provider.minPrice)}`
+                          : '—'}
+                      </td>
+                      <td className="p-3 text-gray-600">
+                        {provider.updatedAt
+                          ? relativeTime(provider.updatedAt)
+                          : '—'}
+                      </td>
+                      <td className="p-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <PluginSlot
+                            name="infra.row.actions"
+                            context={{ id: provider.cloud, kind: 'cloud' }}
+                          />
+                          {expandable && (
+                            <button
+                              type="button"
+                              aria-label={
+                                expanded
+                                  ? `Collapse ${provider.name}`
+                                  : `Expand ${provider.name}`
+                              }
+                              onClick={() => toggleExpanded(provider.cloud)}
+                              className="p-1 text-gray-400 hover:text-gray-600"
+                            >
+                              {expanded ? (
+                                <ChevronDownIcon className="w-4 h-4" />
+                              ) : (
+                                <ChevronRightIcon className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+
+                  return (
+                    <PluginWrapperSlot
+                      key={provider.cloud}
+                      name="infra.cloudRow.link"
+                      context={{ id: provider.cloud }}
+                    >
+                      {summaryRow}
+                      {expanded && expandable && (
+                        <tr>
+                          <td
+                            colSpan={PROVIDERS_COLUMNS.length}
+                            className="p-0"
+                          >
+                            <div className="px-3 py-2 border-t border-gray-100">
+                              <table className="min-w-full text-sm">
+                                <thead className="bg-gray-50">
+                                  <tr>
+                                    {[
+                                      'GPU',
+                                      'Counts',
+                                      '$/hr',
+                                      'Spot',
+                                      'Regions',
+                                    ].map((column) => (
+                                      <th
+                                        key={column}
+                                        className="p-2 text-left font-medium text-gray-600"
+                                      >
+                                        {column}
+                                      </th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody className="bg-card divide-y divide-gray-200">
+                                  {provider.gpus.map((gpu) => (
+                                    <tr
+                                      key={gpu.name}
+                                      className="hover:bg-muted/50"
+                                    >
+                                      <td className="p-2">
+                                        <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs font-medium">
+                                          {gpu.name}
+                                        </span>
+                                      </td>
+                                      <td className="p-2 text-gray-600">
+                                        {provider.mode === 'units' &&
+                                        hasUnits(gpu)
+                                          ? `${totalUnitsOf(gpu)} units`
+                                          : '—'}
+                                      </td>
+                                      <td className="p-2 text-gray-600">
+                                        {formatOfferingPrice(gpu.price)}
+                                      </td>
+                                      <td className="p-2 text-gray-600">
+                                        {formatOfferingPrice(gpu.spot_price)}
+                                      </td>
+                                      <td className="p-2">
+                                        {renderRegionsCell(gpu)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </PluginWrapperSlot>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

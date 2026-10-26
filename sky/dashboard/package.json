@@ -45,12 +45,14 @@
     "react-dom": "^18",
     "react-icons": "^5.2.1",
     "react-router-dom": "^7.18.0",
+    "react-simple-maps": "^3.0.0",
     "react-syntax-highlighter": "^15.6.1",
     "react-tooltip": "^5.27.1",
     "seedrandom": "^3.0.5",
     "shepherd.js": "^14.5.0",
     "tailwind-merge": "^2.4.0",
-    "tailwindcss-animate": "^1.0.7"
+    "tailwindcss-animate": "^1.0.7",
+    "world-atlas": "^2.0.2"
   },
   "devDependencies": {
     "@babel/core": "^7.26.10",
