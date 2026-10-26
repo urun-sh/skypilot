@@ -3869,7 +3869,15 @@ def _serve_html_with_nonce(
         content = f.read()
 
     content = csp_utils.inject_nonce_into_html(content, nonce)
-    return fastapi.responses.HTMLResponse(content=content)
+    # HTML must revalidate on every load: it references the content-hashed
+    # chunks of the CURRENT build. Without `no-cache`, a browser replays a
+    # stale page — with its old chunk list — after an image roll, and keeps
+    # serving the retired UI until the heuristic cache expires (observed
+    # repeatedly on prod-usw2 dashboards).
+    return fastapi.responses.HTMLResponse(content=content,
+                                         headers={
+                                             'Cache-Control': 'no-cache'
+                                         })
 
 
 @app.get('/dashboard/{full_path:path}')
@@ -3899,7 +3907,14 @@ async def serve_dashboard(request: fastapi.Request, full_path: str):
     if os.path.isfile(file_path):
         if file_path.endswith('.html'):
             return _serve_html_with_nonce(request, file_path)
-        return fastapi.responses.FileResponse(file_path)
+        # Content-hashed build assets are immutable — cache them hard.
+        # Everything else (favicon, svg) revalidates like the HTML, so a
+        # post-roll load can never pin an outdated icon either.
+        cache_control = ('public, max-age=31536000, immutable'
+                         if safe_full_path.startswith('_next/static/')
+                         else 'no-cache')
+        return fastapi.responses.FileResponse(
+            file_path, headers={'Cache-Control': cache_control})
 
     # Build assets under _next/ are content-hashed static files; a missing
     # one must 404 instead of falling through to the index.html SPA shell
