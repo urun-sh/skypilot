@@ -5,11 +5,13 @@
 // - World outlines come from the vendored `world-atlas` topojson (Natural
 //   Earth public domain), imported so the bundle carries it — prod CSP is
 //   `default-src 'self'`, so no runtime geography fetch would work.
-// - Region → coordinates is a curated table: the region names providers
-//   actually publish (cloud-region ids and city names). Unknown names are
-//   NOT dropped — they render in an explicit "unmapped" row below the map.
-// - We ship no third-party logo assets; each provider gets a colored
-//   initial badge (consistent with the table's badge styling).
+// - Region → coordinates is a curated table keyed by provider when a name
+//   is provider-specific (Spheron buckets like `EU West 1`, Vast continent
+//   buckets): a bare name table would collide with cloud-region ids
+//   (AWS `eu-west-1` is Ireland, Spheron's is Belgium — CodeRabbit round 1).
+// - Unknown names are NOT dropped: they render in the "unmapped" row below
+//   the map, and the mapped-region list is real DOM (keyboard reachable),
+//   so the availability data never hides behind a hover-only affordance.
 
 import React, { useMemo, useState } from 'react';
 import {
@@ -22,25 +24,26 @@ import {
 import worldData from 'world-atlas/countries-110m.json';
 import { regionDisplayName } from '@/utils/infraUtils';
 
-// Approximate coordinates for every region name the provider catalogs
-// publish (AWS/GCP/Lambda cloud-region ids; Shadeform/Spheron city ids;
-// Spheron's freeform buckets; Vast's continent buckets). Keys match the
-// display name (hash prefix stripped). Unlisted names fall back to the
-// unmapped row — never silently dropped.
+// Region coordinates by display name (hash prefix stripped, lowercased).
+// Only names that mean the same place on every provider (cloud-region ids
+// and city names) live here.
 export const REGION_COORDS = {
-  // AWS
+  // AWS region ids
   'af-south-1': [-33.9, 18.4],
   'ap-east-1': [22.3, 114.2],
   'ap-northeast-1': [35.7, 139.7],
   'ap-northeast-2': [37.6, 127.0],
   'ap-northeast-3': [34.7, 135.5],
   'ap-south-1': [19.1, 72.9],
+  'ap-south-2': [17.4, 78.5],
   'ap-southeast-1': [1.35, 103.8],
   'ap-southeast-2': [-33.9, 151.2],
   'ap-southeast-3': [-6.2, 106.8],
   'ap-southeast-4': [-36.8, 174.8],
   'ca-central-1': [45.5, -73.6],
+  'ca-west-1': [49.3, -123.1],
   'eu-central-1': [50.1, 8.7],
+  'eu-central-2': [47.4, 8.5],
   'eu-north-1': [59.3, 18.1],
   'eu-south-1': [45.5, 9.2],
   'eu-south-2': [40.4, -3.7],
@@ -48,11 +51,12 @@ export const REGION_COORDS = {
   'eu-west-2': [51.5, -0.1],
   'eu-west-3': [48.9, 2.4],
   'me-central-1': [25.2, 55.3],
+  'me-south-1': [26.4, 50.1],
   'us-east-1': [38.9, -77.0],
   'us-east-2': [39.9, -83.0],
   'us-west-1': [37.4, -121.9],
   'us-west-2': [45.6, -122.6],
-  // GCP (subset that appears in the catalog; ids GCP-style, lowercase)
+  // GCP region ids (no dash before the region number)
   'asia-east1': [24.0, 121.0],
   'asia-east2': [22.3, 114.2],
   'asia-northeast1': [35.7, 139.7],
@@ -81,22 +85,27 @@ export const REGION_COORDS = {
   'southamerica-west1': [-33.4, -70.6],
   'us-central1': [41.3, -95.9],
   'us-central2': [35.5, -97.5],
+  'us-east1': [33.2, -80.0],
   'us-east4': [38.9, -77.0],
   'us-east5': [39.9, -83.0],
   'us-south1': [32.8, -96.8],
+  'us-west1': [45.6, -121.2],
+  'us-west2': [34.0, -118.2],
   'us-west3': [40.8, -111.9],
   'us-west4': [36.2, -115.1],
-  // Lambda / QuantaCloud style
+  // Lambda / QuantaCloud style ids
   'us-south-2': [29.4, -98.5],
   'us-southeast-1': [33.7, -84.4],
   'us-midwest-1': [41.9, -87.6],
   'us-midwest-2': [39.8, -89.6],
   'us-midwest-3': [44.9, -93.3],
-  // City names (Shadeform / Spheron)
+  // City names (Shadeform / Spheron — same city, same place)
   'atlanta-usa-3': [33.7, -84.4],
   'beltsville-usa-1': [39.0, -76.9],
   'calgary-canada-1': [51.0, -114.1],
   'casper-usa-2': [42.9, -106.3],
+  'chennai-india': [13.1, 80.3],
+  'culpeper-usa-1': [38.5, -77.9],
   'dallas-usa-3': [32.8, -96.8],
   'desmoines-usa-1': [41.6, -93.6],
   'dulles-usa-1': [39.0, -77.4],
@@ -109,8 +118,10 @@ export const REGION_COORDS = {
   'london-uk-1': [51.5, -0.1],
   'london-uk-2': [51.5, -0.1],
   'losangeles-usa-1': [34.1, -118.2],
+  'mumbai-india-1': [19.1, 72.9],
   'newark-usa-1': [40.7, -74.2],
   'newyork-usa-1': [40.7, -74.0],
+  'noida-india': [28.6, 77.4],
   'omaha-usa-2': [41.3, -95.9],
   'paris-france-1': [48.9, 2.4],
   'paris-france-5': [48.9, 2.4],
@@ -123,46 +134,52 @@ export const REGION_COORDS = {
   'warsaw-poland-1': [52.2, 21.0],
   'wichita-usa-1': [37.7, -97.3],
   'woodbury-usa-1': [44.9, -92.9],
-  // Spheron freeform buckets
-  'canada-1': [51.0, -114.1],
-  'eu-north-1': [60.2, 24.9],
-  'eu-south-1': [38.1, 13.4],
-  'eu-west-1': [50.9, 4.6],
-  'eu-west-2': [48.9, 2.4],
-  'finland-1': [60.2, 24.9],
-  'finland-3': [61.5, 23.8],
-  'me-west-1': [32.1, 34.8],
-  'uk-south-1': [51.5, -0.1],
-  'uk-south-2': [53.4, -1.1],
-  'us-central-1': [39.1, -94.6],
-  'us-north-1': [47.6, -122.3],
-  'us-1': [38.9, -77.0],
-  'chennai-india': [13.1, 80.3],
-  'noida-india': [28.6, 77.4],
-  // Space-separated Spheron bucket names (lowercased display form)
-  'eu north 1': [60.2, 24.9],
-  'eu south 1': [41.1, 16.9],
-  'eu west 1': [50.9, 4.6],
-  'eu west 2': [48.9, 2.4],
-  'finland 1': [60.2, 24.9],
-  'finland 3': [61.5, 23.8],
-  'me west 1': [32.1, 34.8],
-  'uk south 1': [51.5, -0.1],
-  'uk south 2': [53.4, -1.1],
-  'us central 1': [39.1, -94.6],
-  'us north 1': [47.6, -122.3],
-  // Region ids without the dash before the region number (GCP style)
-  'us-east1': [33.2, -80.0],
-  'us-west1': [45.6, -121.2],
-  'us-west2': [34.0, -118.2],
-  // Spheron city variants
-  'mumbai-india-1': [19.1, 72.9],
-  'culpeper-usa-1': [38.5, -77.9],
-  // Vast continent buckets
-  us: [39.8, -98.6],
-  eu: [50.5, 15.0],
-  na: [39.8, -98.6],
 };
+
+// Provider-scoped names: Spheron's freeform buckets (`EU West 1`,
+// `us-1`, …) and Vast's continent buckets (`US`, `EU`, `NA`). These keys
+// collide with other providers' region ids (`eu-west-1` is AWS Ireland
+// but Spheron Belgium), so they resolve per provider first.
+export const PROVIDER_REGION_COORDS = {
+  spheron: {
+    'canada-1': [51.0, -114.1],
+    'eu-north-1': [60.2, 24.9],
+    'eu-south-1': [41.1, 16.9],
+    'eu-west-1': [50.9, 4.6],
+    'eu-west-2': [48.9, 2.4],
+    'finland-1': [60.2, 24.9],
+    'finland-3': [61.5, 23.8],
+    'me-west-1': [32.1, 34.8],
+    'uk-south-1': [51.5, -0.1],
+    'uk-south-2': [53.4, -1.1],
+    'us-central-1': [39.1, -94.6],
+    'us-north-1': [47.6, -122.3],
+    'us-1': [38.9, -77.0],
+    'eu-1': [41.1, 16.9],
+    // Space-separated display names
+    'eu north 1': [60.2, 24.9],
+    'eu south 1': [41.1, 16.9],
+    'eu west 1': [50.9, 4.6],
+    'eu west 2': [48.9, 2.4],
+    'finland 1': [60.2, 24.9],
+    'finland 3': [61.5, 23.8],
+    'me west 1': [32.1, 34.8],
+    'uk south 1': [51.5, -0.1],
+    'uk south 2': [53.4, -1.1],
+    'us central 1': [39.1, -94.6],
+    'us north 1': [47.6, -122.3],
+  },
+  vast: {
+    us: [39.8, -98.6],
+    eu: [50.5, 15.0],
+    na: [39.8, -98.6],
+  },
+};
+
+// Coordinates for a provider's region display name: provider-scoped names
+// win over the generic table.
+const coordsFor = (cloud, name) =>
+  (PROVIDER_REGION_COORDS[cloud] || {})[name] ?? REGION_COORDS[name];
 
 // Marker fill by whether the region reports live units.
 const MARKER_STYLES = {
@@ -173,35 +190,55 @@ const MARKER_STYLES = {
 export function ProvidersMap({ providers = {} }) {
   const [hovered, setHovered] = React.useState(null);
 
+  // Aggregate the offerings payload per provider + region: which providers
+  // are present and each one's total live units (units tier) or catalog
+  // presence. Raw region ids normalize (hash-prefix strip) to display
+  // names; per-region units SUM across the raw ids that normalize to the
+  // same name — a `find()` per raw id would return only the first detail
+  // and double-count it (CodeRabbit round 1).
   const { mapped, unmapped } = useMemo(() => {
-    // name -> { cloud: { units, hasUnits, mode } }
+    // `${cloud}/${name}` -> { cloud, name, coords, units, hasUnits, mode }
     const byRegion = new Map();
-    const unmappedRegions = new Map();
+    const unmappedRegions = new Set();
     Object.entries(providers).forEach(([cloud, entry]) => {
       if (entry?.present !== true) {
         return;
       }
       const mode = entry.stock_mode;
       (entry.gpus || []).forEach((gpu) => {
+        // Sum units per normalized region name for this GPU first.
+        const unitsByName = new Map();
+        (gpu.region_details || []).forEach((d) => {
+          const name = regionDisplayName(d.region).toLowerCase();
+          if (typeof d.units === 'number') {
+            unitsByName.set(name, (unitsByName.get(name) || 0) + d.units);
+          }
+        });
+        // Every raw id (and any name `regions` lists without details)
+        // contributes presence; units come only from the pre-summed map.
         const names = new Set([
-          ...(gpu.regions || []),
-          ...(gpu.region_details || []).map((d) => d.region),
+          ...(gpu.regions || []).map((r) => regionDisplayName(r).toLowerCase()),
+          ...unitsByName.keys(),
         ]);
-        names.forEach((rawName) => {
-          const name = regionDisplayName(rawName).toLowerCase();
-          const units = (gpu.region_details || []).find(
-            (d) => regionDisplayName(d.region).toLowerCase() === name
-          )?.units;
-          const bucket =
-            REGION_COORDS[name] !== undefined ? byRegion : unmappedRegions;
-          if (!bucket.has(name)) {
-            bucket.set(name, {});
+        names.forEach((name) => {
+          const coords = coordsFor(cloud, name);
+          const key = `${cloud}/${name}`;
+          if (coords === undefined) {
+            unmappedRegions.add(name);
+            return;
           }
-          const perCloud = bucket.get(name);
-          if (!perCloud[cloud]) {
-            perCloud[cloud] = { units: 0, hasUnits: false, mode };
+          if (!byRegion.has(key)) {
+            byRegion.set(key, {
+              cloud,
+              name,
+              coords,
+              units: 0,
+              hasUnits: false,
+              mode,
+            });
           }
-          const agg = perCloud[cloud];
+          const agg = byRegion.get(key);
+          const units = unitsByName.get(name);
           if (typeof units === 'number') {
             agg.units += units;
             agg.hasUnits = true;
@@ -209,23 +246,8 @@ export function ProvidersMap({ providers = {} }) {
         });
       });
     });
-    const mapped = [...byRegion.entries()].map(([name, perCloud]) => {
-      const providersList = Object.entries(perCloud).map(([cloud, agg]) => ({
-        cloud,
-        units: agg.units,
-        hasUnits: agg.hasUnits,
-        mode: agg.mode,
-      }));
-      const totalUnits = providersList.reduce((total, p) => total + p.units, 0);
-      return {
-        name,
-        coords: REGION_COORDS[name],
-        providers: providersList,
-        totalUnits,
-        hasUnits: providersList.some((p) => p.hasUnits),
-      };
-    });
-    const unmapped = [...unmappedRegions.keys()].sort();
+    const mapped = [...byRegion.values()];
+    const unmapped = [...unmappedRegions].sort();
     return { mapped, unmapped };
   }, [providers]);
 
@@ -234,6 +256,7 @@ export function ProvidersMap({ providers = {} }) {
       <div className="relative p-3">
         <ComposableMap
           projection="geoNaturalEarth1"
+          className="w-full h-auto"
           style={{ background: 'transparent' }}
         >
           <ZoomableGroup zoom={1}>
@@ -254,7 +277,7 @@ export function ProvidersMap({ providers = {} }) {
             </Geographies>
             {mapped.map((region) => (
               <Marker
-                key={region.name}
+                key={`${region.cloud}/${region.name}`}
                 coordinates={[region.coords[1], region.coords[0]]}
                 onMouseEnter={() => setHovered(region)}
                 onMouseLeave={() =>
@@ -265,7 +288,7 @@ export function ProvidersMap({ providers = {} }) {
                 <circle
                   r={
                     region.hasUnits
-                      ? Math.min(10, 4 + Math.sqrt(region.totalUnits) * 1.2)
+                      ? Math.min(10, 4 + Math.sqrt(region.units) * 1.2)
                       : 3
                   }
                   fill={
@@ -291,18 +314,43 @@ export function ProvidersMap({ providers = {} }) {
             }}
           >
             <div className="font-medium mb-0.5">
-              {regionDisplayName(hovered.name)}
+              {regionDisplayName(hovered.name)} · {hovered.cloud}
             </div>
-            {hovered.providers.map((p) => (
-              <div key={p.cloud}>
-                {p.cloud}:{' '}
-                {p.hasUnits
-                  ? `${p.units} units`
-                  : p.mode === 'in_stock'
-                    ? 'in stock'
-                    : 'catalog'}
-              </div>
-            ))}
+            <div>
+              {hovered.hasUnits
+                ? `${hovered.units} units`
+                : hovered.mode === 'in_stock'
+                  ? 'in stock'
+                  : 'catalog'}
+            </div>
+          </div>
+        )}
+        {/* Keyboard-reachable region availability list (CodeRabbit round
+            1): the data must not live behind a hover-only marker. Each
+            entry focuses/taps into the same hover detail box. */}
+        {mapped.length > 0 && (
+          <div className="mt-3">
+            <p className="text-xs text-gray-400 mb-1.5">
+              Regions by provider ({mapped.length})
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {mapped.map((region) => (
+                <button
+                  key={`${region.cloud}/${region.name}`}
+                  type="button"
+                  onMouseEnter={() => setHovered(region)}
+                  onFocus={() => setHovered(region)}
+                  onMouseLeave={() =>
+                    setHovered((h) => (h === region ? null : h))
+                  }
+                  onBlur={() => setHovered((h) => (h === region ? null : h))}
+                  className="px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded text-xs font-medium hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                >
+                  {regionDisplayName(region.name)} · {region.cloud}
+                  {region.hasUnits ? `: ${region.units} units` : ''}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         {unmapped.length > 0 && (

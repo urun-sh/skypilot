@@ -538,9 +538,14 @@ export function ProvidersSection({
         </div>
         {catalogErrorNotice}
         <div className="mb-3 flex items-center gap-2">
-          <div className="inline-flex rounded-md border border-gray-200 overflow-hidden">
+          <div
+            role="group"
+            aria-label="Providers view"
+            className="inline-flex rounded-md border border-gray-200 overflow-hidden"
+          >
             <button
               type="button"
+              aria-pressed={viewMode === 'table'}
               onClick={() => setViewMode('table')}
               className={`px-3 py-1 text-xs font-medium ${
                 viewMode === 'table'
@@ -552,6 +557,7 @@ export function ProvidersSection({
             </button>
             <button
               type="button"
+              aria-pressed={viewMode === 'map'}
               onClick={() => setViewMode('map')}
               className={`px-3 py-1 text-xs font-medium ${
                 viewMode === 'map'
