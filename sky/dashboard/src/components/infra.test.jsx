@@ -891,8 +891,8 @@ describe('ProvidersSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Expand Lambda' }));
     const rows = detailRows(container);
     expect(rows).toHaveLength(1);
-    // No unit data: Counts falls back to the offering's config counts.
-    expect(normalize(rows[0])).toContain('1, 2');
+    // No unit data: Counts renders the honest dash, not config counts.
+    expect(normalize(rows[0])).not.toContain('1, 2');
     // The region hover lists regions, one per line, without counts.
     expect(
       screen

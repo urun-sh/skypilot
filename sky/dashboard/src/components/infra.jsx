@@ -751,9 +751,7 @@ export function ProvidersSection({
                                       {provider.mode === 'units' &&
                                       hasUnits(gpu)
                                         ? `${totalUnitsOf(gpu)} units`
-                                        : gpu.counts.length > 0
-                                          ? gpu.counts.join(', ')
-                                          : '—'}
+                                        : '—'}
                                     </td>
                                     <td className="p-2 text-gray-600">
                                       {formatOfferingPrice(gpu.price)}
