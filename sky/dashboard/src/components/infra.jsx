@@ -809,7 +809,16 @@ export function ProvidersSection({
                                         {provider.mode === 'units' &&
                                         hasUnits(gpu)
                                           ? `${totalUnitsOf(gpu)} units`
-                                          : '—'}
+                                          : // No live stock published: the
+                                            // catalog's requestable counts
+                                            // (distinct accelerator counts
+                                            // offered) are the honest
+                                            // next-best number — mo's ask
+                                            // 2026-10-27: AWS/GCP rows
+                                            // stopped showing bare dashes.
+                                            gpu.counts.length > 0
+                                            ? gpu.counts.join(', ')
+                                            : '—'}
                                       </td>
                                       <td className="p-2 text-gray-600">
                                         {formatOfferingPrice(gpu.price)}

@@ -891,14 +891,51 @@ describe('ProvidersSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Expand Lambda' }));
     const rows = detailRows(container);
     expect(rows).toHaveLength(1);
-    // No unit data: Counts renders the honest dash, not config counts.
-    expect(normalize(rows[0])).not.toContain('1, 2');
+    // No live units published: Counts shows the catalog's requestable
+    // counts (mo's ask 2026-10-27) instead of the bare dash.
+    expect(cellTexts(rows[0])[1]).toBe('1, 2');
     // The region hover lists regions, one per line, without counts.
     expect(
       screen
         .getByRole('button', { name: 'us-east-1' })
         .getAttribute('aria-label')
     ).toBe('us-east-1');
+  });
+
+  it('shows the requestable catalog counts for providers without live stock', () => {
+    const { container } = renderProviders();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand AWS' }));
+    const rows = detailRows(container);
+    expect(rows).toHaveLength(1);
+    // AWS is catalog tier: no live units, so Counts carries the P5's
+    // requestable counts (the distinct accelerator counts the catalog
+    // offers) — not a dash, and not a stock claim.
+    expect(cellTexts(rows[0])[1]).toBe('8');
+  });
+
+  it('renders the honest dash when neither live stock nor counts exist', () => {
+    const { container } = renderProviders({
+      providers: {
+        gcp: {
+          present: true,
+          updated_at: threeHoursAgo,
+          stock_mode: 'catalog',
+          gpus: [
+            {
+              name: 'TPU v5',
+              counts: [],
+              price: 4.2,
+              spot_price: null,
+              regions: ['us-central1'],
+            },
+          ],
+        },
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Expand GCP' }));
+    const rows = detailRows(container);
+    expect(rows).toHaveLength(1);
+    expect(cellTexts(rows[0])[1]).toBe('—');
   });
 
   it('shows zero units when a units provider publishes zero stock', () => {
