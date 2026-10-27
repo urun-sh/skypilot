@@ -27,4 +27,23 @@ const customJestConfig = {
 };
 
 // createJestConfig is exported this way to ensure that next/jest can load the Next.js config which is async
-module.exports = createJestConfig(customJestConfig);
+const createNextJestConfig = createJestConfig(customJestConfig);
+module.exports = async (...args) => {
+  const config = await createNextJestConfig(...args);
+  // next/jest appends its own transformIgnorePatterns defaults, and jest
+  // ignores a file when ANY pattern matches, so its blanket node_modules
+  // ignore would keep d3-color untransformed even with an allowlist
+  // appended to customJestConfig. Replace the merged list instead:
+  // d3-color >= 3 is ESM-only ("main": "src/index.js"), so the jsdom
+  // suites need it compiled to CJS, the same treatment next/jest gives
+  // its own allowlisted packages. This repo has a flat npm node_modules
+  // (no .pnpm store) and geist is not a dependency, so next's pnpm/geist
+  // patterns have nothing left to cover here.
+  return {
+    ...config,
+    transformIgnorePatterns: [
+      '/node_modules/(?!d3-color/)',
+      '^.+\\.module\\.(css|sass|scss)$',
+    ],
+  };
+};
