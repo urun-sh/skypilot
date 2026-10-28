@@ -868,6 +868,17 @@ class GCPComputeInstance(GCPInstance):
     @classmethod
     def _use_bulk_insert(cls, config) -> bool:
         """Decide whether to use bulkInsert or not based on config."""
+        # bulkInsert requires the per-family aggregate quota
+        # GPUS_PER_GPU_FAMILY, which many projects have at 0.0 even while the
+        # legacy per-GPU-type quotas carry real stock - the result is a 403
+        # 'Quota "GPUS_PER_GPU_FAMILY" exceeded. Limit: 0.0' on every GPU
+        # launch that plain instances.insert would have served (live:
+        # urun-dev-504623 2026-10-28 - bulkInsert 403s in every region while
+        # 11 g4-standard-48 VMs are RUNNING from plain insert). GPUs
+        # therefore always ride instances.insert; the CPU-only bulk path
+        # keeps its capacity benefit.
+        if config.get('guestAccelerators'):
+            return False
         # bulkInsert does not support overriding parameter sourceMachineImage
         # with disks (without a sourceImage), causing the following error:
         #   'Invalid value for field \'resource.instanceProperties.disks[0]\':
