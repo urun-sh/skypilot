@@ -63,6 +63,27 @@ def test_gcp_rtxpro6000_instance_type_mapping():
         }
 
 
+def test_gcp_attachable_check_skips_the_host_price_join(monkeypatch):
+    # The attachability check only asks whether GCP offers the accelerator.
+    # With require_price=True, list_accelerators looks up a host VM per
+    # catalog row (a full-catalog filter each, ~2s per call). The optimizer
+    # runs this check once per candidate per optimize pass, so a 38-zone
+    # ordered launch spent 20+ min in "Optimizing" on a 2-vCPU API server
+    # (urun-sh/skypilot-controller#777).
+    calls = []
+
+    def fake_list_accelerators(*args, **kwargs):
+        calls.append(kwargs)
+        return {'RTXPRO6000': [MagicMock()]}
+
+    monkeypatch.setattr(gcp_catalog, 'list_accelerators',
+                        fake_list_accelerators)
+    gcp_catalog.check_accelerator_attachable_to_host('g4-standard-48',
+                                                     {'RTXPRO6000': 1})
+    assert calls
+    assert all(call.get('require_price') is False for call in calls)
+
+
 @pytest.mark.parametrize('instance_type', [
     'g4-standard-6', 'g4-standard-12', 'g4-standard-24', 'g4-standard-48',
     'g4-standard-96', 'g4-standard-192', 'g4-standard-384'
