@@ -634,8 +634,11 @@ def check_accelerator_attachable_to_host(instance_type: str,
     assert len(acc) == 1, acc
     acc_name, acc_count = acc[0]
 
-    # Check if the accelerator is supported by GCP.
-    if not list_accelerators(gpus_only=False, name_filter=acc_name):
+    # Check if the accelerator is supported by GCP. Existence only: the host
+    # price join (require_price=True) does a full-catalog lookup per row and
+    # the optimizer runs this check once per candidate per pass.
+    if not list_accelerators(
+            gpus_only=False, name_filter=acc_name, require_price=False):
         with ux_utils.print_exception_no_traceback():
             raise exceptions.ResourcesMismatchError(
                 f'{acc_name} is not available in GCP. '
