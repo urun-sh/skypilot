@@ -159,8 +159,9 @@ def _hardware_row(hardware: Dict[str, Any], in_stock: bool) -> Optional[List[Any
     """
     if not in_stock:
         return None  # the price probe failed: sold out / not offered
+    price_raw = hardware.get('price')
     try:
-        price = float(hardware.get('price'))
+        price = float(price_raw) if price_raw is not None else 0.0
     except (TypeError, ValueError):
         return None  # unpriceable: skip rather than quote as free
     if price <= 0:
@@ -179,8 +180,9 @@ def _hardware_row(hardware: Dict[str, Any], in_stock: bool) -> Optional[List[Any
         return None  # no stable identity / no rentable location token
     vcpus = float(hardware.get('vcpu') or 0)
     mem_gib = float(hardware.get('memory') or 0)
+    vram_raw = hardware.get('vram_per_card')
     try:
-        vram = float(hardware.get('vram_per_card'))
+        vram = float(vram_raw) if vram_raw is not None else None
     except (TypeError, ValueError):
         vram = None
     # The GpuInfo column carries the legacy 'Gpus'-WRAPPED shape that
@@ -340,8 +342,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     # = sold out) and paced between calls; iter_rows stays the PURE
     # row-emission core (the same function the tests exercise with a
     # mocked probe).
+    # An empty key constructs the client but fails loud at the first
+    # authenticated call (the "not configured" layer, not a silent None).
     client = ionet_api.IonetClient(
-        os.environ.get(args.api_key_env, '').strip() or None)
+        os.environ.get(args.api_key_env, '').strip())
     probe = make_stock_probe(client)
     rows = list(iter_rows(hardware, probe))
     verify_nonempty(hardware, rows)

@@ -639,9 +639,9 @@ class IonetClient:
                 host = str(service.get('public_ip') or '').strip()
                 if not host:
                     continue
-                port = service.get('public_port')
+                port_raw = service.get('public_port')
                 try:
-                    port = int(port) if port is not None else 22
+                    port = int(port_raw) if port_raw is not None else 22
                 except (TypeError, ValueError):
                     port = 22
                 # The service map carries no user; the general image's
