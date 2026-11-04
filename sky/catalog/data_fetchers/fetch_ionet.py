@@ -150,6 +150,18 @@ def normalise_accelerator(name: Optional[str]) -> str:
     return _ACCELERATOR_MAP.get(compacted, compacted)
 
 
+def _usable_gpu_count(hardware: Dict[str, Any]) -> bool:
+    """num_cards is a probe-safe positive count (CodeRabbit round 1 on
+    the error-propagation flip): the live probe int()s it, so a
+    non-numeric, boolean, or sub-1 value must skip the row BEFORE the
+    probe — a malformed row must not kill the whole refresh.
+    """
+    count = hardware.get('num_cards')
+    if isinstance(count, bool) or not isinstance(count, (int, float)):
+        return False
+    return int(count) >= 1
+
+
 def _hardware_row(hardware: Dict[str, Any], in_stock: bool) -> Optional[List[Any]]:
     """One hardware config -> one CSV row when in stock, else None.
 
@@ -166,11 +178,9 @@ def _hardware_row(hardware: Dict[str, Any], in_stock: bool) -> Optional[List[Any
         return None  # unpriceable: skip rather than quote as free
     if price <= 0:
         return None
-    gpu_count = hardware.get('num_cards')
-    if isinstance(gpu_count, bool) or not isinstance(gpu_count, (int, float)) \
-            or int(gpu_count) < 1:
+    if not _usable_gpu_count(hardware):
         return None
-    gpu_count = int(gpu_count)
+    gpu_count = int(hardware['num_cards'])
     accelerator = normalise_accelerator(hardware.get('name'))
     if not accelerator:
         return None
@@ -220,16 +230,24 @@ def iter_rows(
     ``price_check`` — a None/absent quote means sold out / not offered,
     and such rows are EXCLUDED: a row the deploy must refuse would let
     the QUOTE admit candidates the LAUNCH cannot serve).
+
+    A probe that RAISES propagates (CodeRabbit on skc #790): swallowing
+    it here turned a transient timeout into "sold out" data — a valid
+    catalog would be replaced for the whole max-age window with one
+    that hides configurations that were merely unreachable. An error is
+    NOT a stock fact; the refresh's own stale-beats-none path is the
+    layer that decides what an error means.
     """
     for row in hardware or []:
         if not isinstance(row, dict):
             continue
-        try:
-            in_stock = bool(stock_probe(row))
-        except Exception:  # pylint: disable=broad-except
-            # A probe that blows up is treated as NOT in stock: fail
-            # closed, never emit a row on the strength of an error.
-            in_stock = False
+        if not _usable_gpu_count(row):
+            # Malformed counts skip BEFORE the probe (CodeRabbit round 1):
+            # the live probe int()s num_cards, so probing this row would
+            # RAISE and — post-flip — kill the whole refresh. A bad row
+            # is not a bad market.
+            continue
+        in_stock = bool(stock_probe(row))
         emitted = _hardware_row(row, in_stock)
         if emitted is not None:
             yield emitted

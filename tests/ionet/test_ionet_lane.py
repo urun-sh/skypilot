@@ -133,13 +133,17 @@ class TestFetcherRows(unittest.TestCase):
                            lambda row: row['name'] != 'RTX6000Ada')
         self.assertEqual(list(rows), [('8H100.80S.176V', 'fi')])
 
-    def test_probe_exception_fails_closed(self):
-        # A probe that blows up is NOT stock: never emit a row on the
-        # strength of an error.
+    def test_probe_exception_propagates(self):
+        # A probe that blows up is NOT a stock fact: swallowing it here
+        # turned a transient timeout into "sold out" data — a valid
+        # catalog could be replaced for the whole max-age window with
+        # one hiding configurations that were merely unreachable
+        # (CodeRabbit on skc #790). The error propagates; the refresh's
+        # stale-beats-none path decides what it means.
         def exploding_probe(row):
             raise RuntimeError('boom')
-        rows = list(fetch_ionet.iter_rows([_row()], exploding_probe))
-        self.assertEqual(rows, [])
+        with self.assertRaises(RuntimeError):
+            list(fetch_ionet.iter_rows([_row()], exploding_probe))
 
     def test_unpriceable_config_never_quotes_free(self):
         rows = self._rows([_row(price=None)], lambda row: True)
