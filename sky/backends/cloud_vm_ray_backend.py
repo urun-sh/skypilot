@@ -360,6 +360,7 @@ def _get_cluster_config_template(cloud):
         clouds.Mithril: 'mithril-ray.yml.j2',
         clouds.Verda: 'verda-ray.yml.j2',
         clouds.Massed: 'massed-ray.yml.j2',
+        clouds.IoNet: 'ionet-ray.yml.j2',
     }
     return cloud_to_template[type(cloud)]
 

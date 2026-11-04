@@ -38,6 +38,7 @@ DEFAULT_OFFERINGS_CLOUDS = [
     'ornn',
     'packet',
     'massed',
+    'ionet',
 ]
 
 _CLOUDS_CSV_FILENAME = '{cloud}/vms.csv'
@@ -91,6 +92,7 @@ _STOCK_MODES: Dict[str, str] = {
     'latitude': STOCK_MODE_IN_STOCK,
     'lambda': STOCK_MODE_IN_STOCK,
     'shadeform': STOCK_MODE_IN_STOCK,
+    'ionet': STOCK_MODE_IN_STOCK,
 }
 
 

@@ -302,6 +302,10 @@ cloud_dependencies: Dict[str, List[str]] = {
     # MassedCompute talks to vm.massedcompute.com over urllib from
     # sky/adaptors/massed.py.
     'massed': [],
+    # io.net talks to api.io.solutions over urllib (x-api-key header,
+    # custom User-Agent -- their Cloudflare bans python-urllib's
+    # default UA) from sky/adaptors/ionet.py.
+    'ionet': [],
     'slurm': ['python-hostlist'],
     'yotta': [],  # No dependencies needed for Yotta
     'verda': [],  # No dependencies needed for verda

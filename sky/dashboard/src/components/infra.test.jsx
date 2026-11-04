@@ -746,14 +746,14 @@ describe('ProvidersSection', () => {
 
   it('renders exactly one row per provider in the union, with the header badge', () => {
     const { container } = renderProviders();
-    // 11 defaults + the Fluidstack cloud row extra.
+    // 12 defaults + the Fluidstack cloud row extra.
     expect(summaryRows(container)).toHaveLength(
       PROVIDER_OFFERINGS_CLOUDS.length + 1
     );
     ['AWS', 'Spheron', 'Lambda', 'Vast', 'Fluidstack', 'Ornn'].forEach((name) =>
       expect(screen.getByText(name)).toBeInTheDocument()
     );
-    expect(screen.getByText('4 of 12 with catalog')).toBeInTheDocument();
+    expect(screen.getByText('4 of 13 with catalog')).toBeInTheDocument();
     expect(screen.getByText('Providers')).toBeInTheDocument();
   });
 
@@ -778,9 +778,9 @@ describe('ProvidersSection', () => {
     expect(screen.getAllByText('live units')).toHaveLength(3); // vast, spheron, legend
     expect(screen.getAllByText('in stock')).toHaveLength(2); // lambda, legend
     expect(screen.getAllByText('catalog')).toHaveLength(2); // aws, legend
-    // Every absent provider (7 defaults + Fluidstack) keeps the outline
+    // Every absent provider (8 defaults + Fluidstack) keeps the outline
     // no-catalog badge, plus the legend's own.
-    expect(screen.getAllByText('no catalog')).toHaveLength(9);
+    expect(screen.getAllByText('no catalog')).toHaveLength(10);
   });
 
   it('glosses the stock tiers in a compact legend line', () => {

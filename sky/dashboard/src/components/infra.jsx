@@ -275,6 +275,7 @@ const PROVIDER_LINKS = {
   primeintellect: 'https://www.primeintellect.ai',
   ornn: 'https://compute.ornn.com',
   packet: 'https://dash.packet.ai',
+  ionet: 'https://ai.io.net/virtual-machines',
 };
 
 // The unified "Providers" section: ONE compact row per provider merging the

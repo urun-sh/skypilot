@@ -91,6 +91,7 @@ export const CLOUDS_LIST = [
   'GCP',
   'Hyperbolic',
   'IBM',
+  'IoNet',
   'Kubernetes',
   'Lambda',
   'Latitude',
@@ -132,6 +133,7 @@ export const PROVIDER_OFFERINGS_CLOUDS = [
   'primeintellect',
   'ornn',
   'packet',
+  'ionet',
 ];
 
 export const CLOUD_CANONICALIZATIONS = Object.fromEntries([

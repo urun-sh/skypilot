@@ -174,6 +174,19 @@ export const PROVIDER_REGION_COORDS = {
     eu: [50.5, 15.0],
     na: [39.8, -98.6],
   },
+  ionet: {
+    us: [39.8, -98.6],
+    fi: [61.9, 25.7],
+    fr: [46.6, 2.4],
+    in: [22.9, 78.8],
+    pl: [52.2, 21.0],
+    au: [-33.9, 151.2],
+    ca: [56.1, -106.3],
+    se: [59.3, 18.1],
+    gb: [51.5, -0.1],
+    de: [51.1, 10.4],
+    sg: [1.35, 103.8],
+  },
 };
 
 // Coordinates for a provider's region display name: provider-scoped names
