@@ -1483,6 +1483,12 @@ def _add_auth_to_cluster_config(cloud: clouds.Cloud, tmp_yaml_path: str):
             # takes the same generic configure_ssh_info path as
             # Spheron/Latitude/Quantacloud.
             clouds.Massed,
+            # io.net registers its SSH key per-deploy too (the deploy
+            # body's ssh_keys map takes {key name: public key}, see
+            # sky/provision/ionet/instance.py), so it takes the same
+            # generic configure_ssh_info path as Spheron/Latitude/
+            # Quantacloud.
+            clouds.IoNet,
         )):
         config = auth.configure_ssh_info(config)
     elif isinstance(cloud, clouds.GCP):

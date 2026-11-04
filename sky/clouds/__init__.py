@@ -21,6 +21,7 @@ from sky.clouds.fluidstack import Fluidstack
 from sky.clouds.gcp import GCP
 from sky.clouds.hyperbolic import Hyperbolic
 from sky.clouds.ibm import IBM
+from sky.clouds.ionet import IoNet
 from sky.clouds.kubernetes import Kubernetes
 from sky.clouds.lambda_cloud import Lambda
 from sky.clouds.latitude import Latitude
@@ -68,6 +69,7 @@ __all__ = [
     'Ornn',
     'Packet',
     'Massed',
+    'IoNet',
     'OCI',
     'Verda',
     'Vsphere',

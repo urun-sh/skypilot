@@ -853,6 +853,7 @@ _EXPECTED_STOCK_MODES = {
     'ornn': 'units',
     'packet': 'catalog',
     'massed': 'units',
+    'ionet': 'in_stock',
 }
 
 
