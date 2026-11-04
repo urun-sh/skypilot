@@ -327,26 +327,38 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.from_fixture:
+        # OFFLINE REPLAY (CodeRabbit round 1): --from-fixture used to
+        # load the hardware list from the fixture but still build the
+        # live price probe, so the flag's "instead of the network" help
+        # text was a lie — fixture mode needed the key AND the network.
+        # The fixture path now carries its own probe: every fixture row
+        # is emitted as OFFERED (the recorded snapshot has no stock
+        # oracle; in-stock claims it cannot make), and NO client is
+        # constructed at all.
         with open(args.from_fixture, encoding='utf-8') as handle:
             fixture = json.load(handle)
         hardware = (fixture.get('data') or {}).get('hardware') \
             or fixture.get('hardware') or []
+
+        def fixture_probe(_row: Dict[str, Any]) -> bool:
+            return True
+
+        probe = fixture_probe
     else:
         # The hardware endpoint is AUTHENTICATED: an unset key raises
         # IonetAuthError from the client (fail loud), it never yields
         # an empty list that would read as "no capacity".
-        api_key = os.environ.get(args.api_key_env, '').strip() or None
-        hardware = fetch_hardware(api_key)
+        hardware = fetch_hardware()
+        # The live probe is BUILT on the adaptor's price_check (None
+        # quote = sold out) and paced between calls; iter_rows stays
+        # the PURE row-emission core (the same function the tests
+        # exercise with a mocked probe). An empty key constructs the
+        # client but fails loud at the first authenticated call (the
+        # "not configured" layer, not a silent None).
+        probe = make_stock_probe(
+            ionet_api.IonetClient(
+                os.environ.get(args.api_key_env, '').strip()))
 
-    # The live probe is BUILT on the adaptor's price_check (None quote
-    # = sold out) and paced between calls; iter_rows stays the PURE
-    # row-emission core (the same function the tests exercise with a
-    # mocked probe).
-    # An empty key constructs the client but fails loud at the first
-    # authenticated call (the "not configured" layer, not a silent None).
-    client = ionet_api.IonetClient(
-        os.environ.get(args.api_key_env, '').strip())
-    probe = make_stock_probe(client)
     rows = list(iter_rows(hardware, probe))
     verify_nonempty(hardware, rows)
     count = write_csv(rows, args.output)

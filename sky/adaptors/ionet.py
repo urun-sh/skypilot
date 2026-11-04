@@ -84,6 +84,12 @@ MAX_RETRY_AFTER_S = 60.0
 # enumeration live 2026-11-03); 'datascience' is the alternative.
 DEFAULT_IMAGE_TYPE = 'general'
 
+# list_deployments walks this many pages maximum (default page_size: 20 x
+# 10 = 200 deployments) before refusing — the bound exists so a
+# pathological or hostile account cannot loop the identity walk forever;
+# the account would have to be decades past exhausted for the cap to lie.
+MAX_DEPLOYMENT_PAGES = 20
+
 # Observed deployment status values (docs + live GET /deploy 2026-11-03):
 # 'running' while the boxes are up and serving; the steady-state signal
 # this client trusts for readiness is status == 'running' plus SSH-bearing
@@ -450,29 +456,57 @@ class IonetClient:
         status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """GET /deploy — every deployment on the account
-        (``data.deployments``).
+        (``data.deployments``), PAGINATED.
 
         This is the server-side cluster identity source: deployments
         carry their ``name`` (the deploy body's ``resource_private_name``),
-        so the provisioner finds the cluster's deployment by name.
+        so the provisioner finds the cluster's deployment by name —
+        which is why a single page cannot be the answer (CodeRabbit round
+        1): a deployment past page 1 would read as ABSENT, so teardown
+        would re-deploy a live cluster and a stale name lookup would
+        duplicate it. Pages are followed until one returns fewer than
+        ``page_size`` rows, deduplicated by ``id`` (the API documents no
+        cross-page ordering guarantee), capped at MAX_DEPLOYMENT_PAGES
+        so a pathological account cannot loop the caller forever.
         """
-        query: Dict[str, Any] = {'page': int(page), 'page_size': int(page_size)}
-        if status:
-            query['status'] = str(status)
-        payload = self._call('GET', '/deploy', query=query) or {}
-        if not isinstance(payload, dict):
-            raise IonetError('GET /deploy: expected an object, got '
-                             f'{type(payload).__name__}')
-        data = payload.get('data')
-        if not isinstance(data, dict):
-            raise IonetError('GET /deploy: expected an object at .data, got '
-                             f'{type(data).__name__}')
-        rows = data.get('deployments')
-        if not isinstance(rows, list):
-            raise IonetError(
-                'GET /deploy: expected a list at .data.deployments, got '
-                f'{type(rows).__name__}')
-        return [row for row in rows if isinstance(row, dict)]
+        collected: Dict[str, Dict[str, Any]] = {}
+        current = int(page)
+        while True:
+            query: Dict[str, Any] = {
+                'page': current,
+                'page_size': int(page_size),
+            }
+            if status:
+                query['status'] = str(status)
+            payload = self._call('GET', '/deploy', query=query) or {}
+            if not isinstance(payload, dict):
+                raise IonetError(
+                    'GET /deploy: expected an object, got '
+                    f'{type(payload).__name__}')
+            data = payload.get('data')
+            if not isinstance(data, dict):
+                raise IonetError(
+                    'GET /deploy: expected an object at .data, got '
+                    f'{type(data).__name__}')
+            rows = data.get('deployments')
+            if not isinstance(rows, list):
+                raise IonetError(
+                    'GET /deploy: expected a list at .data.deployments, '
+                    f'got {type(rows).__name__}')
+            valid = [row for row in rows if isinstance(row, dict)]
+            for row in valid:
+                row_id = str(row.get('id') or '')
+                if row_id and row_id not in collected:
+                    collected[row_id] = row
+            if len(valid) < int(page_size):
+                break  # short page: the account is exhausted
+            current += 1
+            if current - int(page) >= MAX_DEPLOYMENT_PAGES:
+                raise IonetError(
+                    f'GET /deploy: exceeded {MAX_DEPLOYMENT_PAGES} pages '
+                    f'({int(page_size)} rows each) — refusing an unbounded '
+                    'walk; raise the cap if the account is really this big')
+        return list(collected.values())
 
     def get_deployment(self, deployment_id: str) -> Dict[str, Any]:
         """GET /deployment/{id} — the deployment detail object."""

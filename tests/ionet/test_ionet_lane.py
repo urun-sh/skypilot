@@ -13,8 +13,11 @@ inspection — so a regression fails with a behavior mismatch. NO live
 network calls anywhere: the client is transport-injected throughout.
 """
 
+import csv
 import json
 import os
+import shutil
+import tempfile
 import unittest
 from unittest import mock
 
@@ -28,8 +31,11 @@ from sky.provision.ionet import utils
 
 # The REAL live snapshot of GET /hardware taken 2026-11-03 (48-config
 # market, 47 rows in the file): the fetcher's entire input, recorded
-# once so the row-emission tests pin the real payload shape.
-_FIXTURE_PATH = '/tmp/ionet-hw-fixture.json'
+# once so the row-emission tests pin the real payload shape. CHECKED IN
+# (tests/ionet/hw_fixture.json) so CI exercises the fixture paths
+# deterministically — an absolute /tmp path would silently skip them.
+_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             'hw_fixture.json')
 
 _HAVE_FIXTURE = os.path.exists(_FIXTURE_PATH)
 
@@ -289,6 +295,79 @@ class TestClientWireContract(unittest.TestCase):
         vms = client.get_deployment_vms('dep-1')
         self.assertEqual(ionet_api.IonetClient.worker_address(vms[0]),
                          ('ubuntu', 'box.example', 2222))
+
+
+class TestDeploymentListPagination(unittest.TestCase):
+    """CodeRabbit round 1: the identity source walks EVERY page.
+
+    list_deployments is the provisioner's cluster identity source — a
+    deployment past page 1 must not read as absent (duplicate deploys,
+    skipped teardown), so the client follows pages until a short page
+    and dedupes by id.
+    """
+
+    @staticmethod
+    def _page(*ids):
+        return (200, {'data': {'deployments': [
+            {'id': i, 'name': f'c-{i}', 'status': 'running'} for i in ids
+        ]}})
+
+    def test_pages_are_followed_until_a_short_page(self):
+        page_size = 10
+        page1 = [f'dep-{i}' for i in range(page_size)]
+        # Page 2 OVERLAPS page 1 (the API documents no cross-page
+        # ordering guarantee) and ends one row short.
+        page2 = page1[5:] + [f'dep-{i}' for i in range(page_size,
+                                                      page_size + 4)]
+        transport = _Transport(self._page(*page1), self._page(*page2))
+        client = ionet_api.IonetClient('k', transport=transport)
+        rows = client.list_deployments(page_size=page_size)
+        ids = [r['id'] for r in rows]
+        self.assertEqual(sorted(ids), sorted(set(page1 + page2)))
+        self.assertEqual(len(ids), len(set(ids)))  # dedupe held
+        self.assertEqual(len(transport.calls), 2)  # stopped at short page
+
+    def test_unbounded_account_stops_at_the_cap(self):
+        page_size = 2
+        full = self._page('dep-1', 'dep-2')
+        transport = _Transport(*([full] * ionet_api.MAX_DEPLOYMENT_PAGES))
+        client = ionet_api.IonetClient('k', transport=transport)
+        with self.assertRaises(ionet_api.IonetError):
+            client.list_deployments(page_size=page_size)
+        self.assertEqual(len(transport.calls),
+                         ionet_api.MAX_DEPLOYMENT_PAGES)
+
+
+class TestFixtureModeOffline(unittest.TestCase):
+    """--from-fixture is OFFLINE (CodeRabbit round 1): no client is
+    constructed, so no key and no network can be required."""
+
+    @unittest.skipUnless(_HAVE_FIXTURE, 'the fixture is checked in')
+    def test_from_fixture_needs_neither_key_nor_network(self):
+        # Any client construction would raise at the first call with no
+        # key (the auth layer) — success therefore proves the offline path.
+        env = {k: v for k, v in os.environ.items()
+               if k != ionet_api.API_KEY_ENV}
+        out_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out_dir, True)
+        out_path = os.path.join(out_dir, 'vms.csv')
+        try:
+            saved = os.environ.copy()
+            os.environ.clear()
+            os.environ.update(env)
+            rc = fetch_ionet.main(['--from-fixture', _FIXTURE_PATH,
+                                   '--output', out_path])
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        self.assertEqual(rc, 0)
+        with open(out_path, encoding='utf-8') as handle:
+            rows = list(csv.DictReader(handle))
+        # Every fixture config is emitted as offered (the replay has no
+        # stock oracle — in-stock claims it cannot make, offered it can).
+        self.assertEqual(len(rows),
+                         len(_fixture_hardware()))
+        self.assertTrue(all(r['SpotPrice'] == '' for r in rows))
 
 
 class TestDeployBody(unittest.TestCase):
