@@ -220,16 +220,18 @@ def iter_rows(
     ``price_check`` — a None/absent quote means sold out / not offered,
     and such rows are EXCLUDED: a row the deploy must refuse would let
     the QUOTE admit candidates the LAUNCH cannot serve).
+
+    A probe that RAISES propagates (CodeRabbit on skc #790): swallowing
+    it here turned a transient timeout into "sold out" data — a valid
+    catalog would be replaced for the whole max-age window with one
+    that hides configurations that were merely unreachable. An error is
+    NOT a stock fact; the refresh's own stale-beats-none path is the
+    layer that decides what an error means.
     """
     for row in hardware or []:
         if not isinstance(row, dict):
             continue
-        try:
-            in_stock = bool(stock_probe(row))
-        except Exception:  # pylint: disable=broad-except
-            # A probe that blows up is treated as NOT in stock: fail
-            # closed, never emit a row on the strength of an error.
-            in_stock = False
+        in_stock = bool(stock_probe(row))
         emitted = _hardware_row(row, in_stock)
         if emitted is not None:
             yield emitted
