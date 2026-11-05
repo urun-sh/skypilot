@@ -248,20 +248,37 @@ def verify_zero_stock(rows: Sequence[List[Any]], books: Sequence[Dict[str,
         # An explicit integer zero is valid capacity data.
         gpus_per_node = listing["gpusPerNode"]
         capacity_node_count = listing["capacityNodeCount"]
+        # STRICT non-negative integers (CodeRabbit rounds 2+3 on #88):
+        # int(0.5) truncates to 0, and a negative count is nonsense —
+        # either would let a false zero-stock catalog pass. The v2
+        # schema types these fields integer; anything else — float,
+        # negative, numeric string, bool — is a provider data fault,
+        # refused. An explicit integer zero is valid capacity data.
         if (isinstance(gpus_per_node, bool) or
                 not isinstance(gpus_per_node, int) or
                 isinstance(capacity_node_count, bool) or
-                not isinstance(capacity_node_count, int)):
+                not isinstance(capacity_node_count, int) or
+                gpus_per_node < 0 or capacity_node_count < 0):
             raise OrnnCatalogError(
                 "refusing to cross-check a zero-row Ornn catalog: a "
-                f"listing ({slug or 'no-slug'}) carries non-integer v2 "
+                f"listing ({slug or 'no-slug'}) carries invalid v2 "
                 "capacity fields (gpusPerNode="
                 f"{gpus_per_node!r}, capacityNodeCount="
                 f"{capacity_node_count!r}) — the listing surface cannot "
                 "be reasoned about, never an honest zero-stock "
                 "(report, do not write)")
         count = gpus_per_node * capacity_node_count
-        if slug and count > 0:
+        if count > 0:
+            if not slug:
+                # Positive capacity that cannot be attributed to a GPU
+                # is a provider data fault (CodeRabbit round 3): the
+                # contradiction might be exactly what must block the
+                # write, so never skip it silently.
+                raise OrnnCatalogError(
+                    "refusing to cross-check a zero-row Ornn catalog: a "
+                    f"listing offers {count} GPUs without a gpuSlug — "
+                    "the contradiction cannot be attributed, never an "
+                    "honest zero-stock (report, do not write)")
             offered[slug] = max(offered.get(slug, 0), count)
     # ANY offered listing contradicts the zero-row write — including a
     # slug whose book is MISSING from the books payload entirely

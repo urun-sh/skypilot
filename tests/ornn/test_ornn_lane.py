@@ -525,6 +525,17 @@ class TestFetcherRows(unittest.TestCase):
                 [], self.BOOKS,
                 [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": True,
                   "capacityNodeCount": 8}])
+        # Round 3: negative capacity is a data fault, not zero; positive
+        # capacity with no gpuSlug cannot be attributed — both refuse.
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": -1,
+                  "capacityNodeCount": 8}])
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpusPerNode": 4, "capacityNodeCount": 2}])
 
     def test_unmapped_slug_compacts_and_stays_visible(self):
         rows = list(
