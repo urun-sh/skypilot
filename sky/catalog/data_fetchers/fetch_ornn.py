@@ -227,11 +227,31 @@ def verify_zero_stock(rows: Sequence[List[Any]], books: Sequence[Dict[str,
         if not isinstance(listing, dict):
             continue
         slug = str(listing.get("gpuSlug") or "").strip()
+        # A listing WITHOUT capacity fields cannot be cross-checked — a
+        # malformed listing read as zero-capacity would let a false
+        # zero-stock catalog pass the check, so refuse instead
+        # (CodeRabbit on skypilot #88 round 1). An explicit zero is
+        # valid capacity data and counts as zero.
+        if ("gpusPerNode" not in listing or
+                "capacityNodeCount" not in listing):
+            raise OrnnCatalogError(
+                "refusing to cross-check a zero-row Ornn catalog: a "
+                f"listing ({slug or 'no-slug'}) is missing its v2 "
+                "capacity fields (gpusPerNode/capacityNodeCount) — the "
+                "listing surface cannot be reasoned about, never an "
+                "honest zero-stock (report, do not write)")
         try:
-            count = int(listing.get("gpusPerNode") or 0) * int(
-                listing.get("capacityNodeCount") or 0)
+            count = int(listing["gpusPerNode"]) * int(
+                listing["capacityNodeCount"])
         except (TypeError, ValueError):
-            count = 0
+            raise OrnnCatalogError(
+                "refusing to cross-check a zero-row Ornn catalog: a "
+                f"listing ({slug or 'no-slug'}) carries non-integer v2 "
+                "capacity fields (gpusPerNode="
+                f"{listing['gpusPerNode']!r}, capacityNodeCount="
+                f"{listing['capacityNodeCount']!r}) — the listing "
+                "surface cannot be reasoned about, never an honest "
+                "zero-stock (report, do not write)") from None
         if slug and count > 0:
             offered[slug] = max(offered.get(slug, 0), count)
     # ANY offered listing contradicts the zero-row write — including a

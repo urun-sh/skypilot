@@ -774,7 +774,9 @@ class OrnnClient:
         """
         rows: List[Dict[str, Any]] = []
         cursor: Optional[str] = None
-        for _ in range(_LISTINGS_MAX_PAGES):
+        seen_cursors: set = set()
+        pages = 0
+        while True:
             arguments: Dict[str, Any] = {"state": state, "limit": page_limit}
             if listing_kind is not None:
                 arguments["kind"] = listing_kind
@@ -791,12 +793,26 @@ class OrnnClient:
                     "tools/call listings_list: expected a listings list, "
                     f"got {str(payload)[:200]!r}")
             rows.extend(r for r in page if isinstance(r, dict))
+            pages += 1
+            # An EMPTY page with a cursor is mid-scan, not the end: keep
+            # draining (CodeRabbit on skypilot #88 round 1).
             cursor = None
             if isinstance(payload, dict):
                 nxt = payload.get("nextCursor") or payload.get("cursor")
                 cursor = str(nxt) if nxt else None
-            if not cursor or not page:
+            if not cursor:
                 break
+            if cursor in seen_cursors:
+                raise OrnnMcpProtocolError(
+                    "tools/call listings_list: cursor "
+                    f"{cursor[:32]!r} repeats — a server pagination loop, "
+                    "never a listing set")
+            if pages >= _LISTINGS_MAX_PAGES:
+                raise OrnnMcpProtocolError(
+                    f"tools/call listings_list: drained {_LISTINGS_MAX_PAGES} "
+                    "pages with a cursor remaining — refusing to reason from "
+                    "a truncated listing set")
+            seen_cursors.add(cursor)
         if gpu_slug is not None:
             rows = [r for r in rows
                     if str(r.get("gpuSlug") or "") == gpu_slug]

@@ -501,6 +501,19 @@ class TestFetcherRows(unittest.TestCase):
         }]
         fetch_ornn.verify_zero_stock([], self.BOOKS, schedules)  # no raise
 
+    def test_verify_zero_stock_refuses_listings_without_capacity_fields(self):
+        """A listing missing its v2 capacity fields cannot be
+        cross-checked — reading it as zero-capacity would let a false
+        zero-stock catalog pass the check (CodeRabbit on #88)."""
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock([], self.BOOKS,
+                                         [{"gpuSlug": "nvidia_h100_sxm"}])
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": "lots",
+                  "capacityNodeCount": 2}])
+
     def test_unmapped_slug_compacts_and_stays_visible(self):
         rows = list(
             fetch_ornn.iter_rows([{

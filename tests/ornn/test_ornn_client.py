@@ -262,6 +262,35 @@ class TestToolCalls(unittest.TestCase):
             transport.calls[-1]["payload"])["params"]["arguments"]
         self.assertEqual(second_page_args["cursor"], "p2")
 
+    def test_v2_listings_empty_page_with_cursor_keeps_draining(self):
+        # Mid-scan pages can be empty; the cursor, not the page, decides
+        # whether the scan is over.
+        client, _ = _client(_tool_script(
+            _mcp_result({"listings": [], "nextCursor": "p2"}),
+            _mcp_result({"listings": [{"gpuSlug": "a"}]}),
+        ))
+        rows = client.list_schedules()
+        self.assertEqual([r["gpuSlug"] for r in rows], ["a"])
+
+    def test_v2_listings_repeated_cursor_is_a_protocol_error(self):
+        # A server cursor loop is a provider fault, never a listing set.
+        client, _ = _client(_tool_script(
+            _mcp_result({"listings": [], "nextCursor": "p2"}),
+            _mcp_result({"listings": [], "nextCursor": "p2"}),
+        ))
+        with self.assertRaises(api.OrnnMcpProtocolError):
+            client.list_schedules()
+
+    def test_v2_listings_page_limit_is_a_protocol_error(self):
+        # Draining forever with a cursor still remaining is a truncation:
+        # refuse to reason from it.
+        pages = [_mcp_result({"listings": [{"gpuSlug": "x"}],
+                              "nextCursor": f"p{i}"})
+                 for i in range(api._LISTINGS_MAX_PAGES + 1)]
+        client, _ = _client(_tool_script(*pages))
+        with self.assertRaises(api.OrnnMcpProtocolError):
+            client.list_schedules()
+
     def test_v2_market_books_wrong_shape_is_protocol_error(self):
         # Never a silently empty list that reads as "no capacity".
         client, _ = _client(_tool_script(_mcp_result({"orderBooks": {}})))
