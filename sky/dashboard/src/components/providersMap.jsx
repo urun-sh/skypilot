@@ -23,6 +23,12 @@ import {
 } from 'react-simple-maps';
 import worldData from 'world-atlas/countries-110m.json';
 import { regionDisplayName } from '@/utils/infraUtils';
+import { CLOUD_CANONICALIZATIONS } from '@/data/connectors/constants';
+
+// The cloud label on every chip/tooltip: the canonical display name
+// (mo's ruling 2026-11-05: "io.net" / "Massed", not raw keys), falling
+// back to the raw key for clouds the map does not know.
+const cloudDisplayName = (cloud) => CLOUD_CANONICALIZATIONS[cloud] || cloud;
 
 // Region coordinates by display name (hash prefix stripped, lowercased).
 // Only names that mean the same place on every provider (cloud-region ids
@@ -327,7 +333,8 @@ export function ProvidersMap({ providers = {} }) {
             }}
           >
             <div className="font-medium mb-0.5">
-              {regionDisplayName(hovered.name)} · {hovered.cloud}
+              {regionDisplayName(hovered.name)} ·{' '}
+              {cloudDisplayName(hovered.cloud)}
             </div>
             <div>
               {hovered.hasUnits
@@ -359,7 +366,8 @@ export function ProvidersMap({ providers = {} }) {
                   onBlur={() => setHovered((h) => (h === region ? null : h))}
                   className="px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded text-xs font-medium hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300"
                 >
-                  {regionDisplayName(region.name)} · {region.cloud}
+                  {regionDisplayName(region.name)} ·{' '}
+                  {cloudDisplayName(region.cloud)}
                   {region.hasUnits ? `: ${region.units} units` : ''}
                 </button>
               ))}

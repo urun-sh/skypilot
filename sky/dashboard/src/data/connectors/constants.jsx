@@ -91,10 +91,11 @@ export const CLOUDS_LIST = [
   'GCP',
   'Hyperbolic',
   'IBM',
-  'IoNet',
+  'io.net',
   'Kubernetes',
   'Lambda',
   'Latitude',
+  'Massed',
   'Mithril',
   'Nebius',
   'OCI',
@@ -140,6 +141,10 @@ export const CLOUD_CANONICALIZATIONS = Object.fromEntries([
   ...CLOUDS_LIST.map((cloud) => [cloud.toLowerCase(), cloud]),
   ['kubernetes', 'Kubernetes'],
   ['ssh', 'SSH Node Pool'],
+  // The provider key is 'ionet' but the product's name is the domain:
+  // io.net (mo's ruling 2026-11-05 — the row should say "io.net", not
+  // "IoNet"). Extras override the CLOUDS_LIST-derived pairs.
+  ['ionet', 'io.net'],
 ]);
 
 export const COMMON_GPUS = [
