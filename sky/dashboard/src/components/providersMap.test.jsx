@@ -78,7 +78,7 @@ describe('ProvidersMap', () => {
     // 27 + 5 from the two `newyork-usa-1` raw ids — one list entry,
     // summed once (not 27 twice).
     expect(
-      screen.getByText('newyork-usa-1 · spheron: 32 units')
+      screen.getByText('newyork-usa-1 · Spheron: 32 units')
     ).toBeInTheDocument();
   });
 
@@ -94,7 +94,7 @@ describe('ProvidersMap', () => {
     render(<ProvidersMap providers={fixture} />);
     // The list is real DOM (CodeRabbit round 1): availability is not
     // locked behind a hover-only map marker.
-    const eu = screen.getByRole('button', { name: /eu · vast/ });
+    const eu = screen.getByRole('button', { name: /eu · Vast/ });
     fireEvent.focus(eu);
     expect(screen.getByText('2 units')).toBeInTheDocument();
   });

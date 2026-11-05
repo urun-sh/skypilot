@@ -100,23 +100,27 @@ const WorkspaceConfigDescription = ({
       return;
     }
 
-    const cloudName =
-      CLOUD_CANONICALIZATIONS[cloud.toLowerCase()] || cloud.toUpperCase();
+    // The provider KEY drives every enabled-ness comparison (CodeRabbit
+    // round 1 on #87: matching on the DISPLAY name breaks the moment a
+    // canonicalization maps a key to a name whose lowercase is not the
+    // key — 'ionet' displays as 'io.net', which can never match the
+    // enabled-cloud set). The display name is render-only.
+    const cloudKey = cloud.toLowerCase();
+    const cloudName = CLOUD_CANONICALIZATIONS[cloudKey] || cloud.toUpperCase();
 
     // Check if cloud is enabled - handle both exact matches and expanded cloud names
     // (e.g., 'kubernetes' should match both 'kubernetes' and 'kubernetes/context-name')
-    const cloudLower = cloudName?.toLowerCase();
     const isActuallyEnabled =
-      enabledCloudsSet.has(cloudLower) ||
+      enabledCloudsSet.has(cloudKey) ||
       Array.from(enabledCloudsSet).some((enabledCloud) =>
-        enabledCloud.startsWith(cloudLower + '/')
+        enabledCloud.startsWith(cloudKey + '/')
       );
 
     // For Kubernetes, get the specific contexts that are enabled
     const getEnabledKubernetesContexts = () => {
-      if (cloud.toLowerCase() === 'kubernetes') {
+      if (cloudKey === 'kubernetes') {
         return Array.from(enabledCloudsSet)
-          .filter((enabledCloud) => enabledCloud.startsWith(cloudLower + '/'))
+          .filter((enabledCloud) => enabledCloud.startsWith(cloudKey + '/'))
           .map((k8sCloud) => k8sCloud.split('/')[1]); // Extract context name
       }
       return [];

@@ -50,6 +50,7 @@ import {
   getSlurmInfrastructure,
 } from '@/data/connectors/infra';
 import {
+  CLOUD_CANONICALIZATIONS,
   CLOUDS_LIST,
   MANAGED_JOBS_SUMMARY_ARGS,
   PROVIDER_OFFERINGS_CLOUDS,
@@ -378,12 +379,17 @@ export function ProvidersSection({
       .filter((cloud) => !PROVIDER_OFFERINGS_CLOUDS.includes(cloud))
       .sort(),
   ];
-  // Canonical capitalized name (CLOUDS_LIST style); a provider missing from
-  // that list falls back to the raw key.
-  const displayName = (cloud) =>
-    CLOUDS_LIST.find((c) => c.toLowerCase() === cloud) || cloud;
+  // Canonical display name (mo's ruling 2026-11-05: "io.net", not
+  // "IoNet"; "Massed", not "massed"); a provider missing from the map
+  // falls back to the raw key. The canonicalization map is the same
+  // CLOUDS_LIST-derived table the rest of the dashboard uses, plus
+  // its explicit overrides.
+  const displayName = (cloud) => CLOUD_CANONICALIZATIONS[cloud] || cloud;
   const cloudRowByKey = new Map(
-    cloudRows.map((row) => [(row.name || '').toLowerCase(), row])
+    // Join on the explicit key when the rows carry one (getEnabledCloudsList
+    // rows do) — a display name like 'io.net' cannot lowercase back to the
+    // 'ionet' key (CodeRabbit round 1 on #87).
+    cloudRows.map((row) => [row.key ?? (row.name || '').toLowerCase(), row])
   );
   const presentCount = providerKeys.filter(
     (cloud) => providers?.[cloud]?.present === true

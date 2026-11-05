@@ -150,6 +150,7 @@ describe('Cloud panel provider rows', () => {
     const data = await getEnabledCloudsList();
 
     expect(data.clouds.find((c) => c.name === 'Quantacloud')).toEqual({
+      key: 'quantacloud',
       name: 'Quantacloud',
       enabled: false,
       clusters: 2,
@@ -164,6 +165,7 @@ describe('Cloud panel provider rows', () => {
     const data = await getEnabledCloudsList();
 
     expect(data.clouds.find((c) => c.name === 'Vast')).toEqual({
+      key: 'vast',
       name: 'Vast',
       enabled: false,
       clusters: 1,
@@ -178,6 +180,7 @@ describe('Cloud panel provider rows', () => {
     const data = await getEnabledCloudsList();
 
     expect(data.clouds.find((c) => c.name === 'GCP')).toEqual({
+      key: 'gcp',
       name: 'GCP',
       enabled: false,
       clusters: 6,
@@ -191,13 +194,14 @@ describe('Cloud panel provider rows', () => {
     const data = await getEnabledCloudsList();
 
     expect(data.clouds.find((c) => c.name === 'AWS')).toEqual({
+      key: 'aws',
       name: 'AWS',
       enabled: true,
       clusters: 0,
       jobs: 0,
     });
     expect(data.enabledClouds).toBe(1);
-    expect(data.totalClouds).toBe(31);
+    expect(data.totalClouds).toBe(32);
   });
 
   it('aggregates the same rows in the legacy getCloudInfrastructure path', async () => {

@@ -962,6 +962,45 @@ describe('ProvidersSection', () => {
     expect(screen.getByText('0 units')).toBeInTheDocument();
   });
 
+  it('renders canonical display names: io.net and Massed (2026-11-05)', () => {
+    renderProviders({
+      providers: {
+        ionet: {
+          present: true,
+          updated_at: threeHoursAgo,
+          stock_mode: 'in_stock',
+          gpus: [
+            {
+              name: 'RTXPRO6000',
+              counts: [8],
+              price: 16.72,
+              regions: ['us'],
+            },
+          ],
+        },
+        massed: {
+          present: true,
+          updated_at: threeHoursAgo,
+          stock_mode: 'units',
+          gpus: [
+            {
+              name: 'RTXPRO6000',
+              counts: [1],
+              price: 2.19,
+              regions: ['us-central-3'],
+              region_details: [{ region: 'us-central-3', units: 19 }],
+            },
+          ],
+        },
+      },
+    });
+    // Not "IoNet" and not "massed": the canonical map decides, and the
+    // raw key never leaks into a row label when the map knows the cloud.
+    expect(screen.getByText('io.net')).toBeInTheDocument();
+    expect(screen.getByText('Massed')).toBeInTheDocument();
+    expect(screen.queryByText('Ionet')).not.toBeInTheDocument();
+  });
+
   it('renders the absent provider muted with no expand chevron', () => {
     const { container } = renderProviders();
     const ornnRow = rowByName(container, 'Ornn');

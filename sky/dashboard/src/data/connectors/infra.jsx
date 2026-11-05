@@ -1,4 +1,8 @@
-import { CLOUDS_LIST, COMMON_GPUS } from '@/data/connectors/constants';
+import {
+  CLOUD_CANONICALIZATIONS,
+  CLOUDS_LIST,
+  COMMON_GPUS,
+} from '@/data/connectors/constants';
 
 // Importing from the same directory
 import { apiClient } from '@/data/connectors/client';
@@ -100,22 +104,28 @@ export async function getEnabledCloudsList() {
       ...Object.keys(clusterCounts),
       ...Object.keys(jobCounts),
     ]);
-    const canonicalName = (key) =>
-      CLOUDS_LIST.find((c) => c.toLowerCase() === key) || key;
-    const names = new Set(CLOUDS_LIST);
-    observedKeys.forEach((key) => names.add(canonicalName(key)));
-    enabledCloudsSet.forEach((key) => names.add(canonicalName(key)));
+    // Rows are KEYED by the provider key (joins + enabled checks must
+    // match the server's keys — a canonical DISPLAY name like 'io.net'
+    // can never lowercase-match its 'ionet' key) and NAME the display
+    // form (CLOUD_CANONICALIZATIONS overrides, e.g. 'ionet' ->
+    // 'io.net'; mo's ruling 2026-11-05).
+    const identifierByKey = new Map(
+      CLOUDS_LIST.map((c) => [c.toLowerCase(), c])
+    );
+    const displayName = (key) =>
+      CLOUD_CANONICALIZATIONS[key] || identifierByKey.get(key) || key;
+    const keys = new Set(identifierByKey.keys());
+    observedKeys.forEach((key) => keys.add(key));
+    enabledCloudsSet.forEach((key) => keys.add(key));
 
-    const clouds = Array.from(names)
-      .map((name) => {
-        const key = name.toLowerCase();
-        return {
-          name,
-          enabled: enabledCloudsSet.has(key),
-          clusters: clusterCounts[key] || 0,
-          jobs: jobCounts[key] || 0,
-        };
-      })
+    const clouds = Array.from(keys)
+      .map((key) => ({
+        key,
+        name: displayName(key),
+        enabled: enabledCloudsSet.has(key),
+        clusters: clusterCounts[key] || 0,
+        jobs: jobCounts[key] || 0,
+      }))
       .filter((cloud) => cloud.enabled || cloud.clusters > 0 || cloud.jobs > 0)
       .sort((a, b) => a.name.localeCompare(b.name));
 
