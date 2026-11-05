@@ -38,6 +38,17 @@ Wire receipts (2026-10-08, ENG-541):
   ``sshKeyIds``); telemetry tools are the snake_case exception
   (``node_id``).
 
+API v2 (2026-11-05): the tool surface was renamed mid-migration —
+``ornn_spot_books`` → ``market_books``, ``ornn_spot_book`` → ``market_book``,
+``ornn_spot_trades`` → ``market_trades``, ``ornn_schedules_list`` →
+``listings_list`` (state/kind/limit/cursor; result key ``listings``). The
+catalog path (this port) reads only those four. The LAUNCH path's v1 names
+(``place_spot_bid`` → ``market_bid``, reservations_*/access/ssh_keys_*/clusters_*)
+is a name+argument-shape change (``market_bid`` takes ``nodes``/``diskId``;
+``reservations_purchase`` takes ``listingTermId``/``pricePerGpuHourMicroUsd``)
+that is UNMEASURED against a live reservation — ported with the e2e lane,
+never blind.
+
 Every call carries an explicit timeout (a single hung HTTP call once wedged
 a runner 30+ min); token values never appear in error strings.
 """
@@ -69,6 +80,12 @@ DEFAULT_TIMEOUT_S = 60
 # 429 handling: no documented rate limit on the MCP surface, so back off
 # bounded-exponentially; three strikes then raise.
 MAX_RATE_LIMIT_RETRIES = 3
+
+# listings_list pages drained per call (100 rows each = 2,000 listings;
+# the marketplace had ~23 available listings at v2 launch — the bound
+# exists so a server cursor loop can never pin the runner).
+_LISTINGS_MAX_PAGES = 20
+
 MAX_RETRY_AFTER_S = 60.0
 
 # The provider applies Ubuntu security updates (with reboots) BEFORE the SSH
@@ -606,28 +623,45 @@ class OrnnClient:
     # -- spot market -------------------------------------------------------
 
     def list_spot_books(self) -> List[Dict[str, Any]]:
-        """All order books; ``bestAskPricePerGpuHourMicroUsd`` null = no
-        supply RIGHT NOW (single polls are never stock events)."""
-        payload = self._call_tool("ornn_spot_books", {})
+        """All order books (``market_books``); ``bestAskPricePerGpuHourMicroUsd``
+        null = no supply RIGHT NOW (single polls are never stock events)."""
+        payload = self._call_tool("market_books", {})
         books = payload.get("orderBooks") if isinstance(payload, dict) else None
         if not isinstance(books, list):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_spot_books: expected orderBooks list, got "
+                "tools/call market_books: expected orderBooks list, got "
                 f"{str(payload)[:200]!r}")
         return books
 
-    def get_spot_book(self, gpu_slug: str) -> Dict[str, Any]:
-        """One book's depth: asks/bids ``{gpus, orders,
-        pricePerGpuHourMicroUsd}``."""
-        payload = self._call_tool("ornn_spot_book", {"gpuSlug": gpu_slug})
+    def get_spot_book(self, gpu_slug: str, *, region: Optional[str] = None,
+                     sale_type: Optional[str] = None) -> Dict[str, Any]:
+        """One book's depth (``market_book``): asks/bids ``{gpus, orders,
+        pricePerGpuHourMicroUsd}``.
+
+        v2 keys a book by (gpuSlug, region, saleType) — the optional filters
+        select between a slug's multiple books. UNMEASURED against the live
+        endpoint (the catalog path reads market_books, not this).
+        """
+        arguments: Dict[str, Any] = {"gpuSlug": gpu_slug}
+        if region is not None:
+            arguments["region"] = region
+        if sale_type is not None:
+            arguments["saleType"] = sale_type
+        payload = self._call_tool("market_book", arguments)
         if not isinstance(payload, dict):
             raise OrnnMcpProtocolError(
-                f"tools/call ornn_spot_book({gpu_slug}): expected an object, "
+                f"tools/call market_book({gpu_slug}): expected an object, "
                 f"got {str(payload)[:200]!r}")
         return payload
 
-    def list_spot_trades(self, gpu_slug: str) -> List[Dict[str, Any]]:
-        payload = self._call_tool("ornn_spot_trades", {"gpuSlug": gpu_slug})
+    def list_spot_trades(self, gpu_slug: str, *, region: Optional[str] = None,
+                         sale_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        arguments: Dict[str, Any] = {"gpuSlug": gpu_slug}
+        if region is not None:
+            arguments["region"] = region
+        if sale_type is not None:
+            arguments["saleType"] = sale_type
+        payload = self._call_tool("market_trades", arguments)
         trades = payload.get("trades") if isinstance(payload, dict) else None
         return trades if isinstance(trades, list) else []
 
@@ -728,25 +762,60 @@ class OrnnClient:
     def list_schedules(self,
                        *,
                        listing_kind: Optional[str] = None,
-                       gpu_slug: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Reserve/Market listings — heavyweight; used ONLY as the
-        zero-stock cross-check (``spotGpusOffered`` contradicts an empty
-        book) and never to buy capacity."""
-        arguments: Dict[str, Any] = {}
-        if listing_kind is not None:
-            arguments["listingKind"] = listing_kind
+                       gpu_slug: Optional[str] = None,
+                       state: str = "available",
+                       page_limit: int = 100) -> List[Dict[str, Any]]:
+        """Available listings (``listings_list``) — heavyweight; used ONLY as
+        the zero-stock cross-check and never to buy capacity.
+
+        v2 paginates by ``cursor``; pages are drained (bounded) so the
+        cross-check never reasons from a truncated page. ``gpu_slug`` has no
+        server-side filter in v2 — it post-filters rows locally.
+        """
+        rows: List[Dict[str, Any]] = []
+        cursor: Optional[str] = None
+        seen_cursors: set = set()
+        pages = 0
+        while True:
+            arguments: Dict[str, Any] = {"state": state, "limit": page_limit}
+            if listing_kind is not None:
+                arguments["kind"] = listing_kind
+            if cursor:
+                arguments["cursor"] = cursor
+            payload = self._call_tool("listings_list", arguments)
+            page = None
+            if isinstance(payload, dict):
+                page = payload.get("listings")
+            elif isinstance(payload, list):
+                page = payload
+            if not isinstance(page, list):
+                raise OrnnMcpProtocolError(
+                    "tools/call listings_list: expected a listings list, "
+                    f"got {str(payload)[:200]!r}")
+            rows.extend(r for r in page if isinstance(r, dict))
+            pages += 1
+            # An EMPTY page with a cursor is mid-scan, not the end: keep
+            # draining (CodeRabbit on skypilot #88 round 1).
+            cursor = None
+            if isinstance(payload, dict):
+                nxt = payload.get("nextCursor") or payload.get("cursor")
+                cursor = str(nxt) if nxt else None
+            if not cursor:
+                break
+            if cursor in seen_cursors:
+                raise OrnnMcpProtocolError(
+                    "tools/call listings_list: cursor "
+                    f"{cursor[:32]!r} repeats — a server pagination loop, "
+                    "never a listing set")
+            if pages >= _LISTINGS_MAX_PAGES:
+                raise OrnnMcpProtocolError(
+                    f"tools/call listings_list: drained {_LISTINGS_MAX_PAGES} "
+                    "pages with a cursor remaining — refusing to reason from "
+                    "a truncated listing set")
+            seen_cursors.add(cursor)
         if gpu_slug is not None:
-            arguments["gpuSlug"] = gpu_slug
-        payload = self._call_tool("ornn_schedules_list", arguments)
-        rows = None
-        if isinstance(payload, dict):
-            rows = payload.get("listings") or payload.get("schedules")
-        elif isinstance(payload, list):
-            rows = payload
-        if not isinstance(rows, list):
-            raise OrnnMcpProtocolError(
-                "tools/call ornn_schedules_list: expected a listings list, "
-                f"got {str(payload)[:200]!r}")
+            rows = [r for r in rows
+                    if str(r.get("gpuSlug") or "") == gpu_slug]
         return rows
 
     # -- access ------------------------------------------------------------

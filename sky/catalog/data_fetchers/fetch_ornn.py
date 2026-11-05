@@ -17,11 +17,12 @@ pattern); the provisioner re-parses the token and re-resolves the live book
 at launch.
 
 Zero-row semantics (per the receipts, 2026-10-08): an all-null-ask fetch is
-cross-checked against ``ornn_schedules_list`` — the Reserve/Market listing
-surface — before it is written as zero-stock. Any listing with
-``spotGpusOffered > 0`` for a slug with a null-ask book CONTRADICTS the
-empty (a filter bug on our side, not honest zero-stock): refuse and raise.
-Agreement writes the header-only catalog (the honest "no stock" state).
+cross-checked against ``listings_list`` — the available-listing surface
+(API v2; was ``ornn_schedules_list``) — before it is written as zero-stock.
+Any available listing with capacity (``gpusPerNode`` × ``capacityNodeCount``)
+for a slug with a null-ask book CONTRADICTS the empty (a filter bug on our
+side, not honest zero-stock): refuse and raise. Agreement writes the
+header-only catalog (the honest "no stock" state).
 A missing credential refuses to emit an empty catalog at all (an
 unconfigured provider must read as "not configured", never as "no
 capacity").
@@ -211,11 +212,13 @@ def verify_zero_stock(rows: Sequence[List[Any]], books: Sequence[Dict[str,
     """Cross-check a zero-ROW fetch before it is written as zero-stock.
 
     A zero-row fetch is honest zero-stock ONLY if every book's null ask
-    AGREES with the listing surface (no schedule listing offers spot GPUs
-# for a slug whose book shows no ask). A listing with ``spotGpusOffered >
-# 0`` CONTRADICTS the empty book: that is a filter bug on our side (or a
-    provider data fault), never an honest zero — refuse and raise so the
-    controller reads "refused to write a wrong catalog", not "no stock".
+    AGREES with the listing surface (no available listing offers capacity
+    for a slug whose book shows no ask). An available listing with
+    capacity — API v2 lists ``gpusPerNode`` × ``capacityNodeCount`` per
+    listing (the v1 ``spotGpusOffered`` field is gone) — CONTRADICTS the
+    empty book: that is a filter bug on our side (or a provider data
+    fault), never an honest zero — refuse and raise so the controller
+    reads "refused to write a wrong catalog", not "no stock".
     """
     if list(rows):
         return
@@ -223,15 +226,59 @@ def verify_zero_stock(rows: Sequence[List[Any]], books: Sequence[Dict[str,
     for listing in schedules:
         if not isinstance(listing, dict):
             continue
-        slug = str(listing.get("gpuSlug") or listing.get("gpu_slug") or
-                   "").strip()
-        try:
-            count = int(
-                listing.get("spotGpusOffered") or
-                listing.get("spot_gpus_offered") or 0)
-        except (TypeError, ValueError):
-            count = 0
-        if slug and count > 0:
+        slug = str(listing.get("gpuSlug") or "").strip()
+        # A listing WITHOUT capacity fields cannot be cross-checked — a
+        # malformed listing read as zero-capacity would let a false
+        # zero-stock catalog pass the check, so refuse instead
+        # (CodeRabbit on skypilot #88 round 1). An explicit zero is
+        # valid capacity data and counts as zero.
+        if ("gpusPerNode" not in listing or
+                "capacityNodeCount" not in listing):
+            raise OrnnCatalogError(
+                "refusing to cross-check a zero-row Ornn catalog: a "
+                f"listing ({slug or 'no-slug'}) is missing its v2 "
+                "capacity fields (gpusPerNode/capacityNodeCount) — the "
+                "listing surface cannot be reasoned about, never an "
+                "honest zero-stock (report, do not write)")
+        # STRICT integers only (CodeRabbit round 2 on #88): int(0.5)
+        # truncates to 0, so a fractional count would read as zero
+        # capacity and let a false zero-stock catalog pass. The v2
+        # schema types these fields integer; anything else — float,
+        # numeric string, bool — is a provider data fault, refused.
+        # An explicit integer zero is valid capacity data.
+        gpus_per_node = listing["gpusPerNode"]
+        capacity_node_count = listing["capacityNodeCount"]
+        # STRICT non-negative integers (CodeRabbit rounds 2+3 on #88):
+        # int(0.5) truncates to 0, and a negative count is nonsense —
+        # either would let a false zero-stock catalog pass. The v2
+        # schema types these fields integer; anything else — float,
+        # negative, numeric string, bool — is a provider data fault,
+        # refused. An explicit integer zero is valid capacity data.
+        if (isinstance(gpus_per_node, bool) or
+                not isinstance(gpus_per_node, int) or
+                isinstance(capacity_node_count, bool) or
+                not isinstance(capacity_node_count, int) or
+                gpus_per_node < 0 or capacity_node_count < 0):
+            raise OrnnCatalogError(
+                "refusing to cross-check a zero-row Ornn catalog: a "
+                f"listing ({slug or 'no-slug'}) carries invalid v2 "
+                "capacity fields (gpusPerNode="
+                f"{gpus_per_node!r}, capacityNodeCount="
+                f"{capacity_node_count!r}) — the listing surface cannot "
+                "be reasoned about, never an honest zero-stock "
+                "(report, do not write)")
+        count = gpus_per_node * capacity_node_count
+        if count > 0:
+            if not slug:
+                # Positive capacity that cannot be attributed to a GPU
+                # is a provider data fault (CodeRabbit round 3): the
+                # contradiction might be exactly what must block the
+                # write, so never skip it silently.
+                raise OrnnCatalogError(
+                    "refusing to cross-check a zero-row Ornn catalog: a "
+                    f"listing offers {count} GPUs without a gpuSlug — "
+                    "the contradiction cannot be attributed, never an "
+                    "honest zero-stock (report, do not write)")
             offered[slug] = max(offered.get(slug, 0), count)
     # ANY offered listing contradicts the zero-row write — including a
     # slug whose book is MISSING from the books payload entirely
@@ -244,11 +291,10 @@ def verify_zero_stock(rows: Sequence[List[Any]], books: Sequence[Dict[str,
     if contradicted:
         raise OrnnCatalogError(
             f"refusing to write a zero-row Ornn catalog: no catalog rows "
-            f"would be written, but ornn_schedules_list reports spot "
-            f"GPUs offered for {contradicted!r} — a filter bug or "
+            f"would be written, but listings_list reports available "
+            f"capacity for {contradicted!r} — a filter bug or "
             "provider data fault, never honest zero-stock (report, do "
             "not write)")
-
 
 def fetch_books(
         client: Optional[ornn_api.OrnnClient] = None) -> List[Dict[str, Any]]:

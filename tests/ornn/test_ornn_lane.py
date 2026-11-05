@@ -226,7 +226,8 @@ class TestProvisionerLifecycle(unittest.TestCase):
         with self.assertRaises(fetch_ornn.OrnnCatalogError) as ctx:
             fetch_ornn.verify_zero_stock([], [], [{
                 "gpuSlug": "nvidia_rtx_pro_6000",
-                "spotGpusOffered": 8
+                "gpusPerNode": 1,
+                "capacityNodeCount": 8
             }])
         self.assertIn("nvidia_rtx_pro_6000", str(ctx.exception))
 
@@ -483,14 +484,58 @@ class TestFetcherRows(unittest.TestCase):
                 fetch_ornn.parse_instance_type_token(garbage)
 
     def test_verify_zero_stock_refuses_contradiction(self):
-        schedules = [{"gpuSlug": "nvidia_rtx_pro_6000", "spotGpusOffered": 8}]
+        schedules = [{
+            "gpuSlug": "nvidia_rtx_pro_6000",
+            "gpusPerNode": 1,
+            "capacityNodeCount": 8
+        }]
         with self.assertRaises(fetch_ornn.OrnnCatalogError) as ctx:
             fetch_ornn.verify_zero_stock([], self.BOOKS, schedules)
         self.assertIn("nvidia_rtx_pro_6000", str(ctx.exception))
 
     def test_verify_zero_stock_allows_agreement(self):
-        schedules = [{"gpuSlug": "nvidia_h100_sxm", "spotGpusOffered": 0}]
+        schedules = [{
+            "gpuSlug": "nvidia_h100_sxm",
+            "gpusPerNode": 4,
+            "capacityNodeCount": 0
+        }]
         fetch_ornn.verify_zero_stock([], self.BOOKS, schedules)  # no raise
+
+    def test_verify_zero_stock_refuses_listings_without_capacity_fields(self):
+        """A listing missing its v2 capacity fields cannot be
+        cross-checked — reading it as zero-capacity would let a false
+        zero-stock catalog pass the check (CodeRabbit on #88)."""
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock([], self.BOOKS,
+                                         [{"gpuSlug": "nvidia_h100_sxm"}])
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": "lots",
+                  "capacityNodeCount": 2}])
+        # Round 2: int(0.5) truncates to 0 — a fractional count must be
+        # refused, not read as zero capacity (and bools are never counts).
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": 0.5,
+                  "capacityNodeCount": 8}])
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": True,
+                  "capacityNodeCount": 8}])
+        # Round 3: negative capacity is a data fault, not zero; positive
+        # capacity with no gpuSlug cannot be attributed — both refuse.
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": -1,
+                  "capacityNodeCount": 8}])
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpusPerNode": 4, "capacityNodeCount": 2}])
 
     def test_unmapped_slug_compacts_and_stays_visible(self):
         rows = list(
