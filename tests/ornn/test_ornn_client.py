@@ -226,6 +226,48 @@ class TestToolCalls(unittest.TestCase):
         machines = client.show_access("r-1")
         self.assertEqual(machines[0]["port"], 2222)
 
+    def test_v2_catalog_tool_names_and_args(self):
+        """API v2 renamed the catalog surface: market_books and
+        listings_list (state=available by default) — never the v1
+        ornn_spot_books/ornn_schedules_list names the server dropped."""
+        client, transport = _client(
+            _tool_script(_mcp_result({"orderBooks": []}),
+                         _mcp_result({"listings": []})))
+        client.list_spot_books()
+        client.list_schedules()
+        tool_calls = [
+            json.loads(c["payload"])["params"]
+            for c in transport.calls
+            if b"tools/call" in c["payload"]
+        ]
+        self.assertEqual([tc["name"] for tc in tool_calls],
+                         ["market_books", "listings_list"])
+        self.assertEqual(tool_calls[1]["arguments"], {
+            "state": "available",
+            "limit": 100,
+        })
+
+    def test_v2_listings_pages_are_drained(self):
+        """A cursor page is a page, not the listing set: the cross-check
+        reasons over every available listing, never a truncated page."""
+        client, transport = _client(
+            _tool_script(
+                _mcp_result({"listings": [{"gpuSlug": "a"}],
+                             "nextCursor": "p2"}),
+                _mcp_result({"listings": [{"gpuSlug": "b"}]}),
+            ))
+        rows = client.list_schedules()
+        self.assertEqual([r["gpuSlug"] for r in rows], ["a", "b"])
+        second_page_args = json.loads(
+            transport.calls[-1]["payload"])["params"]["arguments"]
+        self.assertEqual(second_page_args["cursor"], "p2")
+
+    def test_v2_market_books_wrong_shape_is_protocol_error(self):
+        # Never a silently empty list that reads as "no capacity".
+        client, _ = _client(_tool_script(_mcp_result({"orderBooks": {}})))
+        with self.assertRaises(api.OrnnMcpProtocolError):
+            client.list_spot_books()
+
     def test_list_shapes_guarded(self):
         # A wrong-shaped payload is a protocol error, never a silently
         # empty list that reads as "no capacity".

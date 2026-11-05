@@ -226,7 +226,8 @@ class TestProvisionerLifecycle(unittest.TestCase):
         with self.assertRaises(fetch_ornn.OrnnCatalogError) as ctx:
             fetch_ornn.verify_zero_stock([], [], [{
                 "gpuSlug": "nvidia_rtx_pro_6000",
-                "spotGpusOffered": 8
+                "gpusPerNode": 1,
+                "capacityNodeCount": 8
             }])
         self.assertIn("nvidia_rtx_pro_6000", str(ctx.exception))
 
@@ -483,13 +484,21 @@ class TestFetcherRows(unittest.TestCase):
                 fetch_ornn.parse_instance_type_token(garbage)
 
     def test_verify_zero_stock_refuses_contradiction(self):
-        schedules = [{"gpuSlug": "nvidia_rtx_pro_6000", "spotGpusOffered": 8}]
+        schedules = [{
+            "gpuSlug": "nvidia_rtx_pro_6000",
+            "gpusPerNode": 1,
+            "capacityNodeCount": 8
+        }]
         with self.assertRaises(fetch_ornn.OrnnCatalogError) as ctx:
             fetch_ornn.verify_zero_stock([], self.BOOKS, schedules)
         self.assertIn("nvidia_rtx_pro_6000", str(ctx.exception))
 
     def test_verify_zero_stock_allows_agreement(self):
-        schedules = [{"gpuSlug": "nvidia_h100_sxm", "spotGpusOffered": 0}]
+        schedules = [{
+            "gpuSlug": "nvidia_h100_sxm",
+            "gpusPerNode": 4,
+            "capacityNodeCount": 0
+        }]
         fetch_ornn.verify_zero_stock([], self.BOOKS, schedules)  # no raise
 
     def test_unmapped_slug_compacts_and_stays_visible(self):
