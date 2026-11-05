@@ -91,7 +91,11 @@ export const CLOUDS_LIST = [
   'GCP',
   'Hyperbolic',
   'IBM',
-  'io.net',
+  // The identifier form stays 'IoNet' (CodeRabbit round 1: CLOUDS_LIST
+  // entries double as catalog-lookup/workspace identifiers —
+  // lowercase('io.net') can never match the 'ionet' key). The DISPLAY
+  // name is owned by CLOUD_CANONICALIZATIONS' explicit override below.
+  'IoNet',
   'Kubernetes',
   'Lambda',
   'Latitude',

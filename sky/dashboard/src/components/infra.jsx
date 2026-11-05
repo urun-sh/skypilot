@@ -386,7 +386,10 @@ export function ProvidersSection({
   // its explicit overrides.
   const displayName = (cloud) => CLOUD_CANONICALIZATIONS[cloud] || cloud;
   const cloudRowByKey = new Map(
-    cloudRows.map((row) => [(row.name || '').toLowerCase(), row])
+    // Join on the explicit key when the rows carry one (getEnabledCloudsList
+    // rows do) — a display name like 'io.net' cannot lowercase back to the
+    // 'ionet' key (CodeRabbit round 1 on #87).
+    cloudRows.map((row) => [row.key ?? (row.name || '').toLowerCase(), row])
   );
   const presentCount = providerKeys.filter(
     (cloud) => providers?.[cloud]?.present === true
