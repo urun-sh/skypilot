@@ -513,6 +513,18 @@ class TestFetcherRows(unittest.TestCase):
                 [], self.BOOKS,
                 [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": "lots",
                   "capacityNodeCount": 2}])
+        # Round 2: int(0.5) truncates to 0 — a fractional count must be
+        # refused, not read as zero capacity (and bools are never counts).
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": 0.5,
+                  "capacityNodeCount": 8}])
+        with self.assertRaises(fetch_ornn.OrnnCatalogError):
+            fetch_ornn.verify_zero_stock(
+                [], self.BOOKS,
+                [{"gpuSlug": "nvidia_h100_sxm", "gpusPerNode": True,
+                  "capacityNodeCount": 8}])
 
     def test_unmapped_slug_compacts_and_stays_visible(self):
         rows = list(
