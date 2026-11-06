@@ -29,6 +29,8 @@ are destroyed with the disk — export before terminating.
 
 from __future__ import annotations
 
+import time
+
 import typing
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -123,6 +125,42 @@ def _ensure_account_ssh_key(client: utils.OrnnClient, public_key: str) -> str:
     return str(key_id)
 
 
+def _activate_with_retry(client: utils.OrnnClient,
+                         reservation_id: str,
+                         key_id: str,
+                         node_count: int,
+                         cluster_name_on_cloud: str) -> None:
+    """Boot the reservation's VMs, retrying through the server-side
+    materialization delay.
+
+    MEASURED IN THE LIVE E2E (2026-11-06): the reservation record
+    materializes server-side with a DELAY after the fill — an activate
+    fired +350ms after the fill is refused with "Ornn could not find
+    that reservation". Bounded retry (the activate is idempotent by its
+    per-cluster request id); any other refusal stays loud and typed.
+    Shared by the fresh-bid path and the adoption resume.
+    """
+    activate_deadline = time.monotonic() + 120.0
+    while True:
+        try:
+            client.activate_access(
+                reservation_id,
+                [key_id],
+                machine_count=node_count,
+                network_mode="public",
+                request_id=f"skypilot-activate-{cluster_name_on_cloud}",
+            )
+            return
+        except utils.OrnnError as exc:
+            if ("could not find" not in str(exc) or
+                    time.monotonic() >= activate_deadline):
+                raise
+            logger.info(
+                "ornn: reservation %s not materialized yet; retrying "
+                "activate", reservation_id)
+            time.sleep(5.0)
+
+
 def run_instances(
     region: str,
     cluster_name: str,
@@ -153,6 +191,33 @@ def run_instances(
             )
             created: List[str] = []
             reservation_id = recorded
+            # v2 (CodeRabbit on #90): an adopted reservation may be a
+            # PRE-activation relaunch — a first attempt that died between
+            # the fill and the activate leaves a live reservation with NO
+            # booted node, and waiting on it would just burn the deadline.
+            # Adopt the boot too: activate only when no node is exposed
+            # yet, idempotently by the same per-cluster request id, machine
+            # count from the reservation's own reservedNodeCount.
+            adopt_targets = client.list_storage_targets()
+            if (utils.OrnnClient.target_for_reservation(
+                    adopt_targets, recorded) is None):
+                public_key = (config.node_config or {}).get("PublicKey")
+                if isinstance(public_key, str):
+                    public_key = public_key.strip()
+                if (not public_key or
+                        public_key == _SSH_PUBLIC_KEY_PLACEHOLDER):
+                    raise utils.OrnnError(
+                        "node_config['PublicKey'] is missing or was never "
+                        f"substituted (got {public_key!r}) — the adopted "
+                        "reservation exposes no booted node, and resuming "
+                        "its activation needs the account key")
+                adopt_key_id = _ensure_account_ssh_key(client,
+                                                       str(public_key))
+                adopt_node_count = int(
+                    reservation.get("reservedNodeCount") or 1)
+                _activate_with_retry(client, recorded, adopt_key_id,
+                                     adopt_node_count,
+                                     cluster_name_on_cloud)
         else:
             raise utils.OrnnError(
                 f"cluster {cluster_name_on_cloud!r} is recorded against "
@@ -178,7 +243,35 @@ def run_instances(
                 f"substituted (got {public_key!r}); auth.configure_ssh_info "
                 "must run before provisioning — a spot bid without a real "
                 "account key is an unreachable VM")
-        _ensure_account_ssh_key(client, str(public_key))
+        # v2 MEASURED (2026-11-06): a filled bid does NOT auto-launch —
+        # activation boots the machine and provisions exactly the
+        # sshKeyIds passed THERE. The key must exist BEFORE the bid (the
+        # activate call names it by id), so the id is captured here.
+        key_id = _ensure_account_ssh_key(client, str(public_key))
+
+        # v2: bids buy NODES — whole machines. The free quote names the
+        # box shape (gpusPerNode) at the live on-demand ask; the node
+        # count resolves from it so the bid always covers the requested
+        # GPU count (a bigger box, never a smaller one — the v1
+        # _sellable_gpu_count rule). on-demand fills instantly and runs
+        # until market_end; v2's 'spot' tier yields SCHEDULED bookings,
+        # useless for an immediate launch, so the lane buys on-demand
+        # and the QUOTE is the price truth at launch (catalog rows are
+        # advisory admission pricing).
+        quote = client.quote_market(gpu_slug, sale_type="on-demand")
+        quote_nodes = [
+            n for n in (quote.get("nodes") or [])
+            if isinstance(n, dict) and int(n.get("gpusPerNode") or 0) >= 1
+        ]
+        if not quote_nodes:
+            raise utils.OrnnCapacityRefusedError(
+                f"ornn on-demand quote for {gpu_slug} carries no node "
+                f"capacity: {sorted(quote)} — capacity refusal at the "
+                "current ask, not retried")
+        per_node = int(quote_nodes[0]["gpusPerNode"])
+        node_count = -(-int(gpus) // per_node)  # ceil: whole boxes only
+        ask_per_gpu = int(
+            quote_nodes[0].get("pricePerGpuHourMicroUsd") or 0)
 
         # MARKET order: fill-now-or-cancelled. A cancelled market bid is a
         # capacity refusal (typed, surfaced, never blind-retried); the
@@ -186,46 +279,64 @@ def run_instances(
         # re-places the SAME bid.
         bid = client.place_spot_bid(
             gpu_slug,
-            gpus,
-            order_type="market",
+            nodes=node_count,
+            sale_type="on-demand",
             idempotency_key=f"skypilot-{cluster_name_on_cloud}",
             confirm=True,
         )
-        order = bid.get("order") if isinstance(bid.get("order"), dict) else bid
+        # Explicitly narrowed (CodeRabbit on #90 round 1): the response
+        # shape is an object under "order", falling back to the bid body
+        # itself for a legacy envelope — typed so the fillIds read below
+        # is a Dict[str, Any] access for mypy, never a guessing game.
+        raw_order = bid.get("order")
+        order: Dict[str, Any] = (raw_order if isinstance(raw_order, dict)
+                                 else bid)
         order_status = str(order.get("status") or "").strip().lower()
         if order_status == "cancelled":
             raise utils.OrnnCapacityRefusedError(
                 f"ornn market bid for {gpu_slug} x{gpus} (cluster "
                 f"{cluster_name_on_cloud!r}) was CANCELLED — capacity "
                 "refusal at the current ask, not retried (report and decide)")
-        reservation_id = str(
-            order.get("orderId") or order.get("reservationId") or "")
+        fill_ids = [
+            str(f).strip() for f in (order.get("fillIds") or [])
+            if str(f or "").strip()
+        ]
+        # v2 MEASURED: the fill ID IS the reservation ID (no orderId on
+        # a filled v2 bid).
+        reservation_id = fill_ids[0] if fill_ids else ""
         if not reservation_id:
             raise utils.OrnnError(
-                f"ornn spot bid response carried no order/reservation id: "
+                f"ornn market bid response carried no fill id: "
                 f"{sorted(order)}")
         created = [reservation_id]
         # The identity store is written BEFORE the readiness wait
         # (CodeRabbit on skypilot-controller#529): a reservation that
-        # wedges in wait_until_ready (the 2026-10-08 auto-launch wedge
-        # class — reproducible, ENG-541 Q4) must remain attributable to
+        # wedges in wait_until_ready must remain attributable to
         # THIS cluster, or terminate/query/reconcile cannot find it and
-        # the box keeps billing with no owner able to cancel it.
-        # Recording a created reservation is always safe: teardown is
-        # cancel-only and 404-idempotent, and an ended reservation is
-        # skipped by _is_live everywhere the store is read.
+        # the box keeps billing with no owner able to end it.
         utils.remember_cluster(cluster_name_on_cloud, reservation_id, gpu_slug,
                                gpus)
         logger.info(
-            "ornn: market bid %s x%d for cluster %s filled as reservation %s",
+            "ornn: market bid %s x%d (%d node[s] of %d GPU[s], ask "
+            "$%.2f/GPU-hr) for cluster %s filled as reservation %s",
             gpu_slug,
             gpus,
+            node_count,
+            per_node,
+            ask_per_gpu / 1_000_000.0,
             cluster_name_on_cloud,
             reservation_id,
         )
 
-    # SSH-ready: the access record must materialize machines. Fails CLOSED
-    # on cancel/complete-without-machines and on the deadline (the
+        # v2: no auto-launch — the ACTIVATE call boots the machine and
+        # provisions the key captured above. Idempotent per cluster
+        # (the helper retries through the fill->record materialization
+        # delay measured in the live e2e).
+        _activate_with_retry(client, reservation_id, key_id, node_count,
+                             cluster_name_on_cloud)
+
+    # SSH-ready: the node address must surface in storage_targets. Fails
+    # CLOSED on cancel/complete-without-node and on the deadline (the
     # security-update first boot takes minutes and is tolerated by the
     # default timeout, then loud). The reservation is ALREADY recorded:
     # a failed wait leaves an attributable, cancellable box — never an
@@ -280,12 +391,13 @@ def terminate_instances(
     provider_config: Optional[Dict[str, Any]] = None,
     worker_only: bool = False,
 ) -> None:
-    """Cancel the cluster's spot reservation (DELETE-only teardown).
+    """End the cluster's filled bid (v2 market_end; DELETE-only teardown).
 
     An empty identity is refused (it filters nothing); the reservation is
     resolved ONLY through the local identity store (the ownership gate —
-    an unattributed reservation is invisible by design); and a
-    not-found/already-ended cancel is idempotent success.
+    an unattributed reservation is invisible by design); not-found is
+    idempotent success, and the v2 "conflicting operation" refusal (an
+    end already in flight) is success inside end_fill.
     """
     del provider_config, worker_only  # single-node lane; the head is the cluster
     if not str(cluster_name_on_cloud or "").strip():
@@ -304,10 +416,14 @@ def terminate_instances(
         )
         return
     try:
-        client.cancel_spot_order(reservation_id, confirm=True)
+        # v2 MEASURED (2026-11-06): market_end is the teardown (a fill ID
+        # is its reservation ID) — async, and repeats while the end is
+        # still processing refuse with "Wait for conflicting operation",
+        # which end_fill returns as success-in-flight data.
+        client.end_fill(reservation_id)
     except utils.OrnnNotFoundError:
         # Already ended server-side: teardown is idempotent.
-        logger.info("ornn: reservation %s already gone on cancel",
+        logger.info("ornn: reservation %s already gone on end",
                     reservation_id)
     utils.forget_cluster(cluster_name_on_cloud)
 
@@ -329,21 +445,26 @@ def get_cluster_info(
         return common.ClusterInfo(instances={},
                                   head_instance_id=None,
                                   provider_name=PROVIDER_NAME)
-    machines = client.show_access(reservation_id)
+    # v2 MEASURED (2026-11-06): the node address lives in
+    # storage_targets (ip + nodeUsername); access_show stays empty for
+    # VM-mode reservations.
+    targets = client.list_storage_targets()
+    target = utils.OrnnClient.target_for_reservation(targets, reservation_id)
+    host, ssh_user = (utils.OrnnClient.target_node_endpoint(target)
+                      if target is not None else ("", utils.SSH_USER))
     instances: Dict[str, List[common.InstanceInfo]] = {}
     node_name = str(
         reservation.get("spotNodeId") or reservation.get("nodeId") or
         reservation_id)
-    host, ssh_port = (utils.OrnnClient.machine_endpoint(machines[0])
-                      if machines else ("", 22))
     instances[reservation_id] = [
         common.InstanceInfo(
             instance_id=reservation_id,
-            # A spot VM exposes one public SSH endpoint (host/port from the
-            # access record); there is no separate internal address.
+            # A VM exposes one public SSH endpoint (the storage-target
+            # ip); there is no separate internal address and no custom
+            # port (v2 carries none — measured: stock 22).
             internal_ip=host,
             external_ip=host,
-            ssh_port=ssh_port,
+            ssh_port=22,
             tags={},
             node_name=node_name,
         )
@@ -352,9 +473,9 @@ def get_cluster_info(
         instances=instances,
         head_instance_id=reservation_id,
         provider_name=PROVIDER_NAME,
-        # The documented Ornn login (UNMEASURED 2026-10-08 — both wedges
-        # died before SSH; measure on the first healthy fill).
-        ssh_user=utils.SSH_USER,
+        # The v2 storage target carries the node's username
+        # (MEASURED 2026-11-06: 'ubuntu'); SSH_USER remains the fallback.
+        ssh_user=ssh_user or utils.SSH_USER,
     )
 
 

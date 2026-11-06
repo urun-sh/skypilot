@@ -54,14 +54,47 @@ class _StubClient:
             "status": "active"
         }]
         self.reservations = {}
+        # v2 MEASURED (2026-11-06): a filled market bid's order carries
+        # fillIds (the fill ID IS the reservation ID).
         self.bid_response = {
             "order": {
-                "orderId": "resv-1",
-                "status": "running",
-                "orderType": "market"
+                "orderId": "ord-1",
+                "status": "filled",
+                "fillIds": ["resv-1"],
+                "filledGpus": 1,
+                "filledNodes": 1,
+                "saleType": "on-demand",
             },
         }
-        self.machines = []
+        self.quote_response = {
+            "gpuSlug": "nvidia_rtx_pro_6000",
+            "nodes": [{
+                "gpus": 1,
+                "gpusPerNode": 1,
+                "pricePerGpuHourMicroUsd": 1500000,
+                "listingId": "9704db15-0000-0000-0000-000000000001",
+                "region": "us-west-2",
+            }],
+            "region": None,
+            "saleType": "on-demand",
+        }
+        # v2 MEASURED: the node address lives in storage_targets.
+        self.targets = [{
+            "id": "resv-1",
+            "label": "1 node",
+            "nodeCount": 1,
+            "gpuCount": 1,
+            "gpuType": "nvidia_rtx_pro_6000",
+            "nodeUsername": "ubuntu",
+            "status": "active",
+            "nodes": [{
+                "ip": "gpu-1.ornn.com",
+                "name": "Node 1",
+                "reservationId": "resv-1",
+            }],
+            "optionKey": "node:resv-1",
+            "reservationIds": ["resv-1"],
+        }]
         self.cancel_not_found = False
 
     # -- record + canned behavior ------------------------------------------
@@ -72,8 +105,8 @@ class _StubClient:
     def list_ssh_keys(self):
         return list(self.ssh_keys)
 
-    def add_ssh_key(self, public_key, *, label, confirm=True):
-        self.calls.append(("add_ssh_key", public_key, label, confirm))
+    def add_ssh_key(self, public_key, *, label):
+        self.calls.append(("add_ssh_key", public_key, label))
         return {"id": "key-2"}
 
     def list_spot_books(self):
@@ -82,15 +115,20 @@ class _StubClient:
             "bestAskPricePerGpuHourMicroUsd": 2000000
         }]
 
+    def quote_market(self, gpu_slug, *, nodes=1, sale_type="on-demand",
+                     region=None):
+        self.calls.append(("quote_market", gpu_slug, nodes, sale_type))
+        return json.loads(json.dumps(self.quote_response))
+
     def place_spot_bid(self,
                        gpu_slug,
-                       gpus,
                        *,
-                       order_type="market",
-                       price_per_gpu_hour_micro_usd=None,
+                       nodes=1,
+                       sale_type="on-demand",
+                       region=None,
                        idempotency_key=None,
                        confirm=False):
-        self.calls.append(("place_spot_bid", gpu_slug, gpus, order_type,
+        self.calls.append(("place_spot_bid", gpu_slug, nodes, sale_type,
                            idempotency_key, confirm))
         return json.loads(json.dumps(self.bid_response))
 
@@ -100,32 +138,50 @@ class _StubClient:
             "status": "active"
         })
 
-    def cancel_spot_order(self, order_id, *, confirm=True):
-        self.calls.append(("cancel_spot_order", order_id, confirm))
+    def end_fill(self, fill_id):
+        self.calls.append(("end_fill", fill_id))
         if self.cancel_not_found:
             raise provision_utils.OrnnNotFoundError("not_found")
-        return {"order": {"orderId": order_id, "status": "ended"}}
+        return {"status": "ended", "fillId": fill_id}
 
     def wait_until_ready(self, reservation_id, **kwargs):
         self.calls.append(("wait_until_ready", reservation_id))
         if getattr(self, "fail_wait", False):
             raise provision_utils.OrnnError(
-                "reservation resv-1 still 'active' with no SSH machines "
-                "after 1500s; refusing to wait longer")
+                "reservation resv-1 still 'active' with no node after "
+                "1500s; refusing to wait longer")
         return self.show_reservation(reservation_id)
 
-    def activate_access(self, *args, **kwargs):
-        self.calls.append(("activate_access", args, kwargs))
-        raise provision_utils.OrnnImageBlockedError("image_required")
+    def activate_access(self, reservation_id, ssh_key_ids, *,
+                        access_mode="vm", machine_count=None,
+                        network_mode=None, request_id=None):
+        self.calls.append(("activate_access", reservation_id,
+                           tuple(ssh_key_ids), machine_count, request_id))
+        if getattr(self, "activate_not_found_once", False):
+            # MEASURED in the live e2e 2026-11-06: the reservation record
+            # materializes server-side with a delay after the fill.
+            self.activate_not_found_once = False
+            raise provision_utils.OrnnError(
+                "tools/call access_activate: Ornn could not find that "
+                "reservation")
+        return {"nodes": []}
 
-    def show_access(self, reservation_id):
-        # Mirrors the real client: the machines LIST, not the envelope.
-        return list(self.machines)
+    def list_storage_targets(self):
+        return json.loads(json.dumps(self.targets))
 
 
 def _ready_stub():
     stub = _StubClient()
-    stub.machines = [{"host": "gpu-1.ornn.com", "port": 2222}]
+    stub.targets = [{
+        "id": "resv-1",
+        "reservationIds": ["resv-1"],
+        "nodeUsername": "ubuntu",
+        "nodeCount": 1,
+        "gpuCount": 1,
+        "status": "active",
+        "nodes": [{"ip": "gpu-1.ornn.com", "name": "Node 1",
+                   "reservationId": "resv-1"}],
+    }]
     return stub
 
 
@@ -150,20 +206,48 @@ class TestProvisionerLifecycle(unittest.TestCase):
         self.assertEqual(record.head_instance_id, "resv-1")
         self.assertEqual(record.created_instance_ids, ["resv-1"])
         bid = next(c for c in stub.calls if c[0] == "place_spot_bid")
-        # The launch path is the MARKET bid with the stable idempotency key;
-        # confirm=True (a filled bid auto-starts the VM with the org's keys).
+        # v2 MEASURED (2026-11-06): the launch path QUOTES first (free),
+        # then places the on-demand whole-node bid with the stable
+        # idempotency key — the quote's gpusPerNode resolves the count.
         self.assertEqual(bid[1], "nvidia_rtx_pro_6000")
-        self.assertEqual(bid[2], 1)
-        self.assertEqual(bid[3], "market")
+        self.assertEqual(bid[2], 1)  # 1 GPU / gpusPerNode=1 -> one node
+        self.assertEqual(bid[3], "on-demand")
         self.assertEqual(bid[4], "skypilot-c-on-cloud")
         self.assertIs(bid[5], True)
-        # No manual activation in the launch path (the image-blocked wedge
-        # class, ENG-541 Q4): no activate_access call was recorded.
-        self.assertEqual([c for c in stub.calls if c[0] == "activate_access"],
-                         [])
+        quote = next(c for c in stub.calls if c[0] == "quote_market")
+        self.assertLess(stub.calls.index(quote), stub.calls.index(bid))
+        # v2: no auto-launch — the ACTIVATE call is IN the launch path now,
+        # booting the box with the account key captured before the bid.
+        activate = [c for c in stub.calls if c[0] == "activate_access"]
+        self.assertEqual(len(activate), 1)
+        self.assertEqual(activate[0][1], "resv-1")
+        # _config's deploy key is NOT on the stub account, so the
+        # provisioner registers it (key-2) and activates with THAT id.
+        self.assertEqual(activate[0][2], ("key-2",))
         # The reservation is attributed in the local identity store.
         self.assertEqual(provision_utils.reservation_id_for("c-on-cloud"),
                          "resv-1")
+
+    def test_activate_retries_through_materialization_delay(self):
+        """MEASURED in the live e2e (2026-11-06): an activate fired
+        +350ms after the fill is refused with 'Ornn could not find that
+        reservation' — the record materializes server-side with a delay.
+        The launch retries (the activate is idempotent by request id),
+        bounded; any other refusal stays loud."""
+        stub = _ready_stub()
+        stub.activate_not_found_once = True
+        sleeps = []
+        with mock.patch.object(provision_utils,
+                               "client_from_env",
+                               return_value=stub), \
+             mock.patch.object(provision_instance.time, "sleep",
+                               side_effect=lambda s: sleeps.append(s)):
+            record = provision_instance.run_instances("ornn", "c", "c-on-cloud",
+                                                      _config())
+        self.assertEqual(record.head_instance_id, "resv-1")
+        self.assertEqual(len(sleeps), 1)
+        activates = [c for c in stub.calls if c[0] == "activate_access"]
+        self.assertEqual(len(activates), 2)
 
     def test_reservation_recorded_before_the_readiness_wait(self):
         """CodeRabbit on skypilot-controller#529: a reservation that WEDGES
@@ -196,8 +280,8 @@ class TestProvisionerLifecycle(unittest.TestCase):
             # again).
             provision_instance.terminate_instances("c-on-cloud")
         self.assertEqual(set(seen), {"resv-1"})
-        self.assertEqual([c for c in stub.calls if c[0] == "cancel_spot_order"],
-                         [("cancel_spot_order", "resv-1", True)])
+        self.assertEqual([c for c in stub.calls if c[0] == "end_fill"],
+                         [("end_fill", "resv-1")])
 
     def test_terminated_wait_failure_does_not_double_bid(self):
         """A wedged launch leaves the store entry; a RETRY must ADOPT the
@@ -299,6 +383,36 @@ class TestProvisionerLifecycle(unittest.TestCase):
                 provision_instance.run_instances("ornn", "c", "c-on-cloud",
                                                  _config())
 
+    def test_adoption_resumes_an_interrupted_activation(self):
+        """CodeRabbit on #90: a first attempt that died between the fill
+        and the activate leaves a live reservation with NO booted node —
+        the adoption must resume the boot (same per-cluster request id,
+        node count from the reservation's own reservedNodeCount), never
+        wait out the deadline on an unactivated box."""
+        stub = _ready_stub()
+        stub.targets = []  # live reservation, no booted node
+        stub.reservations["resv-1"] = {"reservationId": "resv-1",
+                                       "status": "active",
+                                       "reservedNodeCount": 1}
+        # The store already attributes resv-1 to this cluster (the first
+        # attempt recorded it before dying between fill and activate).
+        provision_utils.remember_cluster("c-on-cloud", "resv-1",
+                                        "nvidia_rtx_pro_6000", 1)
+        with mock.patch.object(provision_utils,
+                               "client_from_env",
+                               return_value=stub):
+            record = provision_instance.run_instances("ornn", "c", "c-on-cloud",
+                                                      _config())
+        self.assertEqual(record.head_instance_id, "resv-1")
+        self.assertEqual(record.created_instance_ids, [])
+        activates = [c for c in stub.calls if c[0] == "activate_access"]
+        self.assertEqual(len(activates), 1)
+        # machine_count comes from the reservation's reservedNodeCount.
+        self.assertEqual(activates[0][3], 1)
+        # And the SAME per-cluster request id rides the resume.
+        self.assertEqual(activates[0][4],
+                         "skypilot-activate-c-on-cloud")
+
     def test_adoption_of_recorded_live_reservation(self):
         stub = _ready_stub()
         with mock.patch.object(provision_utils,
@@ -339,9 +453,9 @@ class TestProvisionerLifecycle(unittest.TestCase):
             provision_instance.run_instances("ornn", "c", "c-on-cloud",
                                              _config())
             provision_instance.terminate_instances("c-on-cloud")
-        cancels = [c for c in stub.calls if c[0] == "cancel_spot_order"]
-        self.assertEqual(len(cancels), 1)
-        self.assertEqual(cancels[0][1], "resv-1")
+        ends = [c for c in stub.calls if c[0] == "end_fill"]
+        self.assertEqual(len(ends), 1)
+        self.assertEqual(ends[0][1], "resv-1")
         self.assertIsNone(provision_utils.reservation_id_for("c-on-cloud"))
 
     def test_terminate_empty_identity_refused(self):
@@ -388,10 +502,10 @@ class TestProvisionerLifecycle(unittest.TestCase):
                                              _config())
             info = provision_instance.get_cluster_info("ornn", "c-on-cloud")
         self.assertEqual(info.provider_name, "ornn")
-        # `tenant` is the documented login (UNMEASURED 2026-10-08 — measure
-        # on the first healthy fill and correct provision_utils.SSH_USER).
-        self.assertEqual(info.ssh_user, "tenant")
-        self.assertEqual(info.instances["resv-1"][0].ssh_port, 2222)
+        # v2 MEASURED (2026-11-06): the storage target carries the node's
+        # username ('ubuntu') and ip; no custom SSH port in v2 (stock 22).
+        self.assertEqual(info.ssh_user, "ubuntu")
+        self.assertEqual(info.instances["resv-1"][0].ssh_port, 22)
         self.assertEqual(info.instances["resv-1"][0].external_ip,
                          "gpu-1.ornn.com")
 

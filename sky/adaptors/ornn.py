@@ -38,16 +38,30 @@ Wire receipts (2026-10-08, ENG-541):
   ``sshKeyIds``); telemetry tools are the snake_case exception
   (``node_id``).
 
-API v2 (2026-11-05): the tool surface was renamed mid-migration —
+API v2 (2026-11-05/06): the tool surface was renamed mid-migration —
 ``ornn_spot_books`` → ``market_books``, ``ornn_spot_book`` → ``market_book``,
 ``ornn_spot_trades`` → ``market_trades``, ``ornn_schedules_list`` →
-``listings_list`` (state/kind/limit/cursor; result key ``listings``). The
-catalog path (this port) reads only those four. The LAUNCH path's v1 names
-(``place_spot_bid`` → ``market_bid``, reservations_*/access/ssh_keys_*/clusters_*)
-is a name+argument-shape change (``market_bid`` takes ``nodes``/``diskId``;
-``reservations_purchase`` takes ``listingTermId``/``pricePerGpuHourMicroUsd``)
-that is UNMEASURED against a live reservation — ported with the e2e lane,
-never blind.
+``listings_list``, ``ornn_reservations_*`` → ``reservations_*``,
+``ornn_access_*`` → ``access_*``, ``ornn_ssh_keys_*`` → ``ssh_keys_*``.
+The LAUNCH path is now MEASURED against live reservations (2026-11-06,
+~$2.25 total spend, one on-demand rtx_pro_6000 fill exercised
+bid→activate→teardown end to end):
+
+* Bids buy NODES — whole machines — via ``market_bid`` (v1's 1-8 GPU
+  slice is gone); ``market_quote`` is the free preview, and the fill ID
+  IS the reservation ID. The v1 confirm-gate is gone server-side; this
+  client rebuilds the launch-refusal floor on the quote (no
+  ``confirm`` → no spend).
+* A filled bid does NOT auto-launch: ``access_activate`` boots the
+  machine and provisions the ``sshKeyIds`` passed THERE (later key adds
+  do not reach a booted box).
+* The SSH surface is ``storage_targets`` (``nodes[].ip`` +
+  ``nodeUsername``) — ``access_show`` STAYS EMPTY for VM-mode
+  reservations even with the box up (measured on two live fills).
+* Teardown is ``market_end {fillId}`` — async (the node vanishes from
+  ``storage_targets`` in ~30s) and NOT 404-idempotent: repeats while
+  processing refuse with "Wait for conflicting operation", treated as
+  success-in-flight by this client.
 
 Every call carries an explicit timeout (a single hung HTTP call once wedged
 a runner 30+ min); token values never appear in error strings.
@@ -665,67 +679,118 @@ class OrnnClient:
         trades = payload.get("trades") if isinstance(payload, dict) else None
         return trades if isinstance(trades, list) else []
 
-    def place_spot_bid(
+    def quote_market(
         self,
         gpu_slug: str,
-        gpus: int,
         *,
-        order_type: str = "market",
-        price_per_gpu_hour_micro_usd: Optional[int] = None,
-        idempotency_key: Optional[str] = None,
-        confirm: bool = False,
+        nodes: int = 1,
+        sale_type: str = "on-demand",
+        region: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Place a 1-8 GPU bid on ONE node.
+        """The free fill quote (``market_quote``): per-node capacity,
+        price and region for a would-be bid — v2's preview surface.
 
-        ``order_type='market'`` fills now or is CANCELLED (the lane's
-        semantics — a cancelled market bid is a capacity refusal to
-        surface, never to blind-retry); ``'limit'`` rests at the capped
-        price. Without ``confirm`` the call is a FREE preview.
+        Live-measured 2026-11-06: the quote carries ``nodes[]`` with
+        ``gpus``/``gpusPerNode``/``pricePerGpuHourMicroUsd``/``listingId``
+        per node. v2 bids buy WHOLE MACHINES (``nodes``), never v1's
+        1-8 GPU slice — the caller resolves the node count from this
+        quote's own ``gpusPerNode``.
         """
         arguments: Dict[str, Any] = {
             "gpuSlug": gpu_slug,
-            "gpus": gpus,
-            "orderType": order_type,
+            "nodes": int(nodes),
+            "saleType": sale_type,
         }
-        if price_per_gpu_hour_micro_usd is not None:
-            arguments["pricePerGpuHourMicroUsd"] = price_per_gpu_hour_micro_usd
-        if idempotency_key is not None:
-            arguments["idempotencyKey"] = idempotency_key
-        if confirm:
-            arguments["confirm"] = True
-        payload = self._call_tool("ornn_spot_bid", arguments)
+        if region is not None:
+            arguments["region"] = region
+        payload = self._call_tool("market_quote", arguments)
         if not isinstance(payload, dict):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_spot_bid: expected an object, got "
+                "tools/call market_quote: expected an object, got "
+                f"{str(payload)[:200]!r}")
+        return payload
+
+    def place_spot_bid(
+        self,
+        gpu_slug: str,
+        *,
+        nodes: int = 1,
+        sale_type: str = "on-demand",
+        region: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        confirm: bool = False,
+    ) -> Dict[str, Any]:
+        """Place a WHOLE-NODE market bid (``market_bid``); v2 of the API.
+
+        v2 (live-measured 2026-11-06): bids buy ``nodes`` — whole
+        machines — and on-demand market bids FILL INSTANTLY, the fill ID
+        being the reservation ID (``order.fillIds[0]``). The v1
+        confirm-gate is GONE server-side; ``market_quote`` is the free
+        preview, so without ``confirm`` this returns the quote — never a
+        spend (the lane's launch-refusal floor, rebuilt on v2's own
+        probe).
+        """
+        if not confirm:
+            return self.quote_market(gpu_slug, nodes=nodes,
+                                     sale_type=sale_type, region=region)
+        arguments: Dict[str, Any] = {
+            "gpuSlug": gpu_slug,
+            "nodes": int(nodes),
+            "saleType": sale_type,
+        }
+        if region is not None:
+            arguments["region"] = region
+        if idempotency_key is not None:
+            arguments["idempotencyKey"] = idempotency_key
+        payload = self._call_tool("market_bid", arguments)
+        if not isinstance(payload, dict):
+            raise OrnnMcpProtocolError(
+                "tools/call market_bid: expected an object, got "
                 f"{str(payload)[:200]!r}")
         return payload
 
     def list_spot_orders(self) -> List[Dict[str, Any]]:
-        payload = self._call_tool("ornn_spot_orders", {})
+        payload = self._call_tool("market_orders", {})
         orders = payload.get("orders") if isinstance(payload, dict) else None
         if not isinstance(orders, list):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_spot_orders: expected orders list, got "
+                "tools/call market_orders: expected orders list, got "
                 f"{str(payload)[:200]!r}")
         return orders
 
-    def cancel_spot_order(self,
-                          order_id: str,
-                          *,
-                          confirm: bool = True) -> Dict[str, Any]:
-        """Cancel a resting bid OR end a running spot reservation
-        (DELETE-only teardown: a running bid's orderId IS its reservationId).
-        404/already-ended is idempotent success."""
-        payload = self._call_tool(
-            "ornn_spot_cancel",
-            {
-                "orderId": order_id,
-                "confirm": confirm
-            } if confirm else {"orderId": order_id},
-        )
+    def cancel_spot_order(self, order_id: str) -> Dict[str, Any]:
+        """Cancel a RESTING bid (``market_cancel``; v2 rename — the
+        confirm-gate is gone server-side, so every call is live)."""
+        payload = self._call_tool("market_cancel", {"orderId": order_id})
         if not isinstance(payload, dict):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_spot_cancel: expected an object, got "
+                "tools/call market_cancel: expected an object, got "
+                f"{str(payload)[:200]!r}")
+        return payload
+
+    def end_fill(self, fill_id: str) -> Dict[str, Any]:
+        """End a FILLED bid (``market_end``): the v2 teardown — a fill ID
+        is its reservation ID.
+
+        Live-measured 2026-11-06: the call is ASYNC — it echoes the
+        reservation record while the node disappears from
+        ``storage_targets`` within ~30s — and it is NOT 404-idempotent
+        like v1's cancel: a repeat while the end is still processing
+        refuses with "Wait for conflicting operation". That refusal
+        means the teardown is ALREADY IN FLIGHT — the caller's goal —
+        so it is returned as data here (the typed refusal only fires
+        for other bodies); an ended-fill repeat after processing also
+        lands here rather than wedging teardown.
+        """
+        try:
+            payload = self._call_tool("market_end", {"fillId": fill_id})
+        except OrnnError as exc:
+            if ("conflicting operation" in str(exc)):
+                return {"status": "end_already_in_flight", "fillId": fill_id}
+            raise
+        if not isinstance(payload, dict):
+            raise OrnnMcpProtocolError(
+                "tools/call market_end: expected an object, got "
                 f"{str(payload)[:200]!r}")
         return payload
 
@@ -734,28 +799,33 @@ class OrnnClient:
     def list_reservations(self,
                           *,
                           kind: Optional[str] = None,
-                          status: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Schedule + spot reservations (the instance inventory)."""
-        arguments: Dict[str, Any] = {}
+                          status: Optional[str] = None,
+                          limit: int = 100) -> List[Dict[str, Any]]:
+        """The account's reservations (``reservations_list``; the v1
+        ``ornn_reservations_list`` rename). v2 rows carry the ID under
+        ``reservationId`` — there is no ``id`` field (live-measured
+        2026-11-06) — and the envelope paginates by ``cursor``.
+        """
+        arguments: Dict[str, Any] = {"limit": int(limit)}
         if kind is not None:
             arguments["kind"] = kind
         if status is not None:
             arguments["status"] = status
-        payload = self._call_tool("ornn_reservations_list", arguments)
+        payload = self._call_tool("reservations_list", arguments)
         rows = payload.get("reservations") if isinstance(payload,
                                                          dict) else None
         if not isinstance(rows, list):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_reservations_list: expected reservations "
+                "tools/call reservations_list: expected reservations "
                 f"list, got {str(payload)[:200]!r}")
         return rows
 
     def show_reservation(self, reservation_id: str) -> Dict[str, Any]:
-        payload = self._call_tool("ornn_reservations_show",
+        payload = self._call_tool("reservations_show",
                                   {"reservationId": reservation_id})
         if not isinstance(payload, dict):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_reservations_show: expected an object, got "
+                "tools/call reservations_show: expected an object, got "
                 f"{str(payload)[:200]!r}")
         return payload
 
@@ -821,21 +891,70 @@ class OrnnClient:
     # -- access ------------------------------------------------------------
 
     def show_access(self, reservation_id: str) -> List[Dict[str, Any]]:
-        """The reservation's SSH machines (empty until the VM is up).
+        """The reservation's access nodes (``access_show``; the v1
+        ``ornn_access_show`` rename).
 
-        UNMEASURED 2026-10-08 (both wedged before any machine appeared):
-        per the API skill the machines carry the SSH ``host``/``port``.
-        Parsed defensively; measure on first healthy fill.
+        Live-measured 2026-11-06: this surface STAYS EMPTY for VM-mode
+        reservations — two live reservations, hours of polling, zero
+        nodes — while the boxes were up with sshd answering. The VM
+        SSH surface is ``storage_targets`` (see
+        ``list_storage_targets``); this call is kept for shape parity
+        and a future server-side fix.
         """
-        payload = self._call_tool("ornn_access_show",
+        payload = self._call_tool("access_show",
                                   {"reservationId": reservation_id})
-        machines = payload.get("machines") if isinstance(payload,
-                                                         dict) else None
-        if not isinstance(machines, list):
+        nodes = payload.get("nodes") if isinstance(payload, dict) else None
+        if not isinstance(nodes, list):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_access_show: expected machines list, got "
+                "tools/call access_show: expected nodes list, got "
                 f"{str(payload)[:200]!r}")
-        return machines
+        return nodes
+
+    def list_storage_targets(self) -> List[Dict[str, Any]]:
+        """The account's node targets (``storage_targets``) — the MEASURED
+        v2 SSH surface: each target carries ``nodeUsername`` and
+        ``nodes[]`` with the live ``ip`` per node, keyed by
+        ``reservationIds`` (live-measured 2026-11-06: a booted VM's
+        address appears here — and nowhere in access_show — within
+        minutes of ``access_activate``).
+        """
+        payload = self._call_tool("storage_targets", {})
+        targets = payload.get("targets") if isinstance(payload, dict) else None
+        if not isinstance(targets, list):
+            raise OrnnMcpProtocolError(
+                "tools/call storage_targets: expected targets list, got "
+                f"{str(payload)[:200]!r}")
+        return targets
+
+    @staticmethod
+    def target_for_reservation(targets: List[Dict[str, Any]],
+                               reservation_id: str) -> Optional[Dict[str, Any]]:
+        """The target row whose ``reservationIds`` name this reservation."""
+        wanted = str(reservation_id or "").strip()
+        for target in targets:
+            if not isinstance(target, dict):
+                continue
+            ids = target.get("reservationIds")
+            if isinstance(ids, list) and wanted in [
+                    str(i) for i in ids if i is not None]:
+                return target
+        return None
+
+    @staticmethod
+    def target_node_endpoint(target: Dict[str, Any]) -> Tuple[str, str]:
+        """The target's FIRST node (ip, username) — loudly refused when
+        absent (never a guessed address for a box that is billing)."""
+        nodes = target.get("nodes")
+        node = next((n for n in (nodes or []) if isinstance(n, dict) and
+                     str(n.get("ip") or "").strip()), None)
+        if node is None:
+            raise OrnnMcpProtocolError(
+                f"storage target carries no node ip: {str(target)[:200]!r}")
+        user = str(target.get("nodeUsername") or "").strip()
+        if not user:
+            raise OrnnMcpProtocolError(
+                f"storage target carries no nodeUsername: {str(target)[:200]!r}")
+        return str(node["ip"]).strip(), user
 
     def activate_access(
         self,
@@ -844,15 +963,22 @@ class OrnnClient:
         *,
         access_mode: str = "vm",
         machine_count: Optional[int] = None,
-        network_mode: Optional[str] = None,
-        confirm: bool = True,
+        network_mode: Optional[str] = "public",
+        request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Launch VM/bare-metal access for a reservation.
+        """Boot the reservation's VMs (``access_activate``; the v1
+        ``ornn_access_activate`` rename).
 
-        NOT in the lane's launch path: spot bids AUTO-LAUNCH with every
-        active account key, and a spot reservation can refuse with
-        ``image_required`` (typed, never retried — see OrnnImageBlockedError).
-        Kept for the manual recovery path (Q4/Q5 on ENG-541).
+        v2 MEASURED (2026-11-06): activation is the step that BOOTS the
+        machine — a filled bid alone yields a reservation with zero
+        nodes — and the ``sshKeyIds`` passed HERE are the ones
+        provisioned onto the box (keys added later do not reach a
+        booted VM's authorized_keys). Async: returns ``{"nodes": []}``
+        while the machine boots; the address surfaces in
+        ``storage_targets``. The v1 confirm-gate and the v1
+        ``image_required`` refusal are gone server-side; the v1
+        auto-launch-on-fill is GONE too — activation is now REQUIRED
+        in the launch path.
         """
         arguments: Dict[str, Any] = {
             "reservationId": reservation_id,
@@ -863,56 +989,43 @@ class OrnnClient:
             arguments["machineCount"] = machine_count
         if network_mode is not None:
             arguments["networkMode"] = network_mode
-        if confirm:
-            arguments["confirm"] = True
-        payload = self._call_tool("ornn_access_activate", arguments)
+        if request_id is not None:
+            arguments["requestId"] = request_id
+        payload = self._call_tool("access_activate", arguments)
         if not isinstance(payload, dict):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_access_activate: expected an object, got "
+                "tools/call access_activate: expected an object, got "
                 f"{str(payload)[:200]!r}")
         return payload
 
     # -- ssh keys ----------------------------------------------------------
-
     def list_ssh_keys(self) -> List[Dict[str, Any]]:
-        payload = self._call_tool("ornn_ssh_keys_list", {})
+        payload = self._call_tool("ssh_keys_list", {"limit": 100})
         keys = payload.get("ssh_keys") if isinstance(payload, dict) else None
         if not isinstance(keys, list):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_ssh_keys_list: expected ssh_keys list, got "
+                "tools/call ssh_keys_list: expected ssh_keys list, got "
                 f"{str(payload)[:200]!r}")
         return keys
 
     def add_ssh_key(self,
                     public_key: str,
                     *,
-                    label: str,
-                    confirm: bool = True) -> Dict[str, Any]:
-        """Register an ACCOUNT key (spot VMs attach every active account
-        key at launch). Confirm-gated; a free preview without confirm."""
+                    label: str) -> Dict[str, Any]:
+        """Register an ACCOUNT key (``ssh_keys_add``; the v1
+        ``ornn_ssh_keys_add`` rename — v2 has no confirm gate, every
+        call is live). The key reaches a VM only via the
+        ``access_activate`` call's ``sshKeyIds`` (live-measured
+        2026-11-06: later adds do not propagate to booted boxes)."""
         arguments: Dict[str, Any] = {"publicKey": public_key, "label": label}
-        if confirm:
-            arguments["confirm"] = True
-        payload = self._call_tool("ornn_ssh_keys_add", arguments)
+        payload = self._call_tool("ssh_keys_add", arguments)
         if not isinstance(payload, dict):
             raise OrnnMcpProtocolError(
-                "tools/call ornn_ssh_keys_add: expected an object, got "
+                "tools/call ssh_keys_add: expected an object, got "
                 f"{str(payload)[:200]!r}")
         return payload
 
     # -- polling -----------------------------------------------------------
-
-    @staticmethod
-    def machine_endpoint(machine: Dict[str, Any]) -> Tuple[str, int]:
-        """One machine's SSH (host, port) — defensively parsed until
-        measured on a healthy fill (ENG-541)."""
-        host = (machine.get("host") or machine.get("hostname") or
-                machine.get("ip") or "")
-        port = machine.get("port") or machine.get("sshPort") or 22
-        if not str(host).strip():
-            raise OrnnMcpProtocolError(
-                f"access machine entry has no host: {str(machine)[:200]!r}")
-        return str(host).strip(), int(port)
 
     def wait_until_ready(
         self,
@@ -923,14 +1036,20 @@ class OrnnClient:
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.monotonic,
     ) -> Dict[str, Any]:
-        """Poll the reservation until its access record has machines.
+        """Poll until the reservation's node address surfaces, then
+        return the storage-target row (``target_node_endpoint`` parses
+        the ip/username).
 
-        Fails CLOSED on: a cancelled/ended reservation (the market bid was
-        refused or the VM died beneath us), a completed reservation that
-        never exposed machines (the 2026-10-08 wedge class — reproducible,
-        filed with Ornn as Q4), and the deadline (the provider applies
-        security updates BEFORE the SSH port opens; first boot takes
-        minutes longer, so the default tolerates it and then fails loud).
+        v2 MEASURED (2026-11-06): readiness is NOT ``access_show`` —
+        that surface stays empty for VM-mode reservations even with the
+        box up; the node address surfaces in ``storage_targets`` within
+        minutes of ``access_activate``. Fails CLOSED on: a cancelled
+        reservation (the market bid died beneath us — a capacity
+        refusal to surface, never auto-retried), a completed
+        reservation without a node (the v1 2026-10-08 wedge class,
+        still fail-closed), and the deadline (the security-update first
+        boot takes minutes; the default tolerates it, past that it
+        fails loud).
         """
         if poll_interval_s < 5:
             raise OrnnError(
@@ -941,41 +1060,37 @@ class OrnnClient:
         while True:
             reservation = self.show_reservation(reservation_id)
             status = str(reservation.get("status") or "").strip().lower()
-            if status:
+            if status != last_status:
                 last_status = status
-            # The fill→deploy window: ornn_access_show REFUSES with
-            # ACCESS_PENDING_REFUSAL while the reservation is still
-            # pendingOperation=activate (the VM has not deployed yet).
-            # That is a poll signal, not a verdict — swallow it and keep
-            # the deadline bound; every other access error stays loud and
-            # typed (ENG-580: a filled bid died +16s on this exact
-            # refusal before the VM could deploy).
-            try:
-                machines = self.show_access(reservation_id)
-            except OrnnError as e:
-                if ACCESS_PENDING_REFUSAL not in str(e):
-                    raise
-                machines = []
-            if machines:
-                return reservation
+            targets = self.list_storage_targets()
+            target = self.target_for_reservation(targets, reservation_id)
+            if target is not None:
+                try:
+                    self.target_node_endpoint(target)
+                    return target
+                except OrnnMcpProtocolError:
+                    # A target row without an address is mid-provision:
+                    # a poll signal, not a verdict — keep polling under
+                    # the deadline; anything else stays loud.
+                    pass
             if status == STATUS_CANCELLED:
                 raise OrnnCapacityRefusedError(
                     f"reservation {reservation_id} was cancelled while "
-                    "waiting for SSH-ready (capacity refusal — not "
-                    "auto-retried; report and decide)")
+                    "waiting for the node to surface — a capacity "
+                    "refusal at the current ask, never auto-retried")
             if status == STATUS_COMPLETED:
-                # A completed reservation with no machines is the wedge
-                # class: it can never become ready on its own.
+                # A completed reservation with no node can never become
+                # ready on its own — the wedge class, fail-closed.
                 raise OrnnError(
                     f"reservation {reservation_id} completed "
                     f"(endReason={reservation.get('endReason')!r}) without "
-                    "ever exposing SSH machines — the auto-launch path "
-                    "wedge (ENG-541 Q4); terminate and report, not retried")
+                    "ever exposing a node — the wedge class, fail-closed: "
+                    "terminate and report, not retried")
             if now() >= deadline:
                 raise OrnnError(
                     f"reservation {reservation_id} still "
-                    f"{last_status or 'provisioning'!r} with no SSH "
-                    f"machines after {timeout_s:.0f}s; refusing to wait "
-                    "longer (security-update first boot tolerated, "
-                    "deadline is the bound)")
+                    f"{last_status or 'provisioning'!r} with no node "
+                    f"after {timeout_s:.0f}s; refusing to wait longer "
+                    "(security-update first boot tolerated, deadline "
+                    "is the bound)")
             sleep(poll_interval_s)
