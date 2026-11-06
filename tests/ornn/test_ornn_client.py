@@ -171,38 +171,51 @@ class TestHandshakeAndAuth(unittest.TestCase):
 
 class TestToolCalls(unittest.TestCase):
 
-    def test_camelcase_args_and_confirm_gating(self):
+    def test_v2_bid_preview_and_confirm_shapes(self):
+        """v2 (measured 2026-11-06): without confirm the call is the FREE
+        market_quote (the v1 confirm-gate is gone server-side — the quote
+        rebuilds the launch-refusal floor); with confirm it is the LIVE
+        market_bid, camelCase, nodes not gpus, and NO confirm key ever
+        leaves the client."""
         client, transport = _client(
             _tool_script(
-                _mcp_result({"preview": True}),
+                _mcp_result({"nodes": [{"gpusPerNode": 1}]}),
                 _mcp_result({"order": {
                     "orderId": "o1",
-                    "status": "running"
+                    "status": "filled",
+                    "fillIds": ["f1"]
                 }}),
             ))
         client.place_spot_bid("nvidia_rtx_pro_6000",
-                              1,
-                              order_type="market",
+                              nodes=1,
+                              sale_type="on-demand",
                               idempotency_key="k",
                               confirm=False)
-        preview_args = json.loads(
-            transport.calls[-1]["payload"])["params"]["arguments"]
-        # camelCase, and NO confirm key without a confirm (the free preview).
+        preview_call = json.loads(
+            transport.calls[-1]["payload"])["params"]
+        self.assertEqual(preview_call["name"], "market_quote")
         self.assertEqual(
-            preview_args, {
+            preview_call["arguments"], {
                 "gpuSlug": "nvidia_rtx_pro_6000",
-                "gpus": 1,
-                "orderType": "market",
-                "idempotencyKey": "k"
+                "nodes": 1,
+                "saleType": "on-demand",
             })
         client.place_spot_bid("nvidia_rtx_pro_6000",
-                              1,
-                              order_type="market",
+                              nodes=1,
+                              sale_type="on-demand",
                               idempotency_key="k",
                               confirm=True)
-        confirmed_args = json.loads(
-            transport.calls[-1]["payload"])["params"]["arguments"]
-        self.assertIs(confirmed_args["confirm"], True)
+        bid_call = json.loads(
+            transport.calls[-1]["payload"])["params"]
+        self.assertEqual(bid_call["name"], "market_bid")
+        self.assertEqual(
+            bid_call["arguments"], {
+                "gpuSlug": "nvidia_rtx_pro_6000",
+                "nodes": 1,
+                "saleType": "on-demand",
+                "idempotencyKey": "k",
+            })
+        self.assertNotIn("confirm", bid_call["arguments"])
 
     def test_json_payload_parsed_from_content_text(self):
         client, _ = _client(
@@ -219,12 +232,12 @@ class TestToolCalls(unittest.TestCase):
     def test_sse_envelope_parsed(self):
         client, _ = _client(
             _tool_script(
-                _sse_mcp_result({"machines": [{
-                    "host": "h",
-                    "port": 2222
+                _sse_mcp_result({"nodes": [{
+                    "ip": "5.78.29.40",
+                    "name": "Node 1"
                 }]})))
-        machines = client.show_access("r-1")
-        self.assertEqual(machines[0]["port"], 2222)
+        nodes = client.show_access("r-1")
+        self.assertEqual(nodes[0]["ip"], "5.78.29.40")
 
     def test_v2_catalog_tool_names_and_args(self):
         """API v2 renamed the catalog surface: market_books and
@@ -330,7 +343,7 @@ class TestRefusals(unittest.TestCase):
             c for c in transport.calls
             if (_jsonrpc(c) or {}).get("method") == "tools/call" and
             (_jsonrpc(c) or {}
-            ).get("params", {}).get("name") == "ornn_access_activate"
+            ).get("params", {}).get("name") == "access_activate"
         ]
         self.assertEqual(len(activates), 1)
 
@@ -351,7 +364,8 @@ class TestRefusals(unittest.TestCase):
         # stay distinguishable verbatim.
         client, _ = self._refusal("insufficient_credits")
         with self.assertRaises(api.OrnnError) as ctx:
-            client.place_spot_bid("nvidia_rtx_pro_6000", 1, confirm=True)
+            client.place_spot_bid("nvidia_rtx_pro_6000", nodes=1,
+                                 confirm=True)
         self.assertIn("insufficient_credits", str(ctx.exception))
 
     def test_jsonrpc_error_level_is_protocol_error(self):
@@ -409,28 +423,39 @@ class TestHTTPLayer(unittest.TestCase):
 
 class TestWaitUntilReady(unittest.TestCase):
 
-    def _poll_pair(self, reservation_status="active", machines=None):
+    def _poll_pair(self, reservation_status="active", target=None):
+        """One wait loop = reservations_show + storage_targets (the
+        v2 MEASURED poll order — access_show is not in the loop: it
+        stays empty for VM-mode reservations even with the box up)."""
         return [
             _mcp_result({
                 "reservationId": "r1",
                 "status": reservation_status
             }),
-            _mcp_result({"machines": [] if machines is None else machines}),
+            _mcp_result({"targets": [] if target is None else [target]}),
         ]
 
-    def test_ready_when_machines_materialize(self):
+    _READY_TARGET = {
+        "id": "r1",
+        "reservationIds": ["r1"],
+        "nodeUsername": "ubuntu",
+        "nodeCount": 1,
+        "gpuCount": 1,
+        "status": "active",
+        "nodes": [{"ip": "5.78.29.40", "name": "Node 1",
+                   "reservationId": "r1"}],
+    }
+
+    def test_ready_when_the_node_address_surfaces(self):
         script = _tool_script(
             *(self._poll_pair("active") +
-              self._poll_pair("active", machines=[{
-                  "host": "h",
-                  "port": 22
-              }])))
+              self._poll_pair("active", target=self._READY_TARGET)))
         client, _ = _client(script)
-        reservation = client.wait_until_ready("r1",
-                                              timeout_s=60,
-                                              poll_interval_s=5,
-                                              sleep=lambda s: None)
-        self.assertEqual(reservation["status"], "active")
+        target = client.wait_until_ready("r1",
+                                        timeout_s=60,
+                                        poll_interval_s=5,
+                                        sleep=lambda s: None)
+        self.assertEqual(target["nodeUsername"], "ubuntu")
 
     def test_cancelled_reservation_fails_closed(self):
         client, _ = _client(_tool_script(*self._poll_pair("cancelled")))
@@ -440,11 +465,11 @@ class TestWaitUntilReady(unittest.TestCase):
                                     poll_interval_s=5,
                                     sleep=lambda s: None)
 
-    def test_completed_without_machines_fails_closed(self):
-        # The 2026-10-08 wedge class: completed + empty access records is a
+    def test_completed_without_a_node_fails_closed(self):
+        # The 2026-10-08 wedge class: completed + no node target is a
         # dead reservation, never an endless wait.
         client, _ = _client(
-            _tool_script(*self._poll_pair("completed", machines=None)))
+            _tool_script(*self._poll_pair("completed", target=None)))
         with self.assertRaises(api.OrnnError) as ctx:
             client.wait_until_ready("r1",
                                     timeout_s=60,
@@ -464,43 +489,43 @@ class TestWaitUntilReady(unittest.TestCase):
                 now=lambda: clock["t"])
         self.assertIn("refusing to wait longer", str(ctx.exception))
 
-    def _pending_refusal(self):
-        # The exact live refusal body receipted 2026-10-20 (ENG-580):
-        # a filled $1.80 bid died +16s on this instead of polling
-        # through the pendingOperation=activate window.
-        return _mcp_result("reservation cannot launch in its current state",
-                           is_error=True)
+    def _pending_target(self):
+        # v2 mid-provision: a target row exists but carries no node ip
+        # yet (MEASURED shape: nodes[] fills within minutes of activate).
+        return {
+            "id": "r1",
+            "reservationIds": ["r1"],
+            "nodeUsername": "ubuntu",
+            "nodes": [],
+        }
 
-    def test_pending_activation_refusal_is_polled_through(self):
-        # fill→deploy window: access_show refuses while the reservation
-        # is pendingOperation=activate; the wait must poll through it
-        # within the deadline and succeed once machines materialize.
+    def test_addressless_target_is_polled_through(self):
+        # fill→boot window: a target row without an address is a poll
+        # signal, not a verdict; the wait polls through it within the
+        # deadline and succeeds once the address surfaces.
         script = _tool_script(*([
             _mcp_result({
                 "reservationId": "r1",
                 "status": "active"
             }),
-            self._pending_refusal()
+            _mcp_result({"targets": [self._pending_target()]})
         ] * 3 + [
             _mcp_result({
                 "reservationId": "r1",
                 "status": "active"
             }),
-            _mcp_result({"machines": [{
-                "host": "h",
-                "port": 22
-            }]})
+            _mcp_result({"targets": [self._READY_TARGET]})
         ]))
         client, _ = _client(script)
-        reservation = client.wait_until_ready("r1",
-                                              timeout_s=60,
-                                              poll_interval_s=5,
-                                              sleep=lambda s: None)
-        self.assertEqual(reservation["status"], "active")
+        target = client.wait_until_ready("r1",
+                                        timeout_s=60,
+                                        poll_interval_s=5,
+                                        sleep=lambda s: None)
+        self.assertEqual(target["nodeUsername"], "ubuntu")
 
-    def test_other_access_refusals_stay_fatal(self):
-        # Only the pending-activation body is a poll signal; any other
-        # access_show refusal must stay loud, typed, and immediate —
+    def test_other_targets_refusals_stay_fatal(self):
+        # Only an addressless target ROW is a poll signal; any other
+        # storage_targets refusal must stay loud, typed, and immediate —
         # never a silent endless wait on a dead reservation.
         script = _tool_script(
             _mcp_result({
@@ -516,19 +541,32 @@ class TestWaitUntilReady(unittest.TestCase):
         self.assertIn("some unrelated refusal", str(ctx.exception))
 
 
-class TestMachineEndpoint(unittest.TestCase):
+class TestTargetNodeEndpoint(unittest.TestCase):
+    """The v2 MEASURED SSH surface: storage_targets carries the node ip
+    and the target's nodeUsername ('ubuntu', 2026-11-06) — no port, no
+    per-machine user."""
 
-    def test_host_port_parsed(self):
-        host, port = api.OrnnClient.machine_endpoint({
-            "host": "gpu-1.ornn.com",
-            "port": 2222
+    def test_ip_and_username_parsed(self):
+        ip, user = api.OrnnClient.target_node_endpoint({
+            "nodeUsername": "ubuntu",
+            "nodes": [{"ip": "5.78.29.40", "name": "Node 1"}],
         })
-        self.assertEqual(host, "gpu-1.ornn.com")
-        self.assertEqual(port, 2222)
+        self.assertEqual(ip, "5.78.29.40")
+        self.assertEqual(user, "ubuntu")
 
-    def test_hostless_entry_is_protocol_error(self):
+    def test_ipless_target_is_protocol_error(self):
+        # Never a guessed address for a box that is billing.
         with self.assertRaises(api.OrnnMcpProtocolError):
-            api.OrnnClient.machine_endpoint({"port": 2222})
+            api.OrnnClient.target_node_endpoint({
+                "nodeUsername": "ubuntu",
+                "nodes": [{"name": "Node 1"}],
+            })
+
+    def test_userless_target_is_protocol_error(self):
+        with self.assertRaises(api.OrnnMcpProtocolError):
+            api.OrnnClient.target_node_endpoint({
+                "nodes": [{"ip": "5.78.29.40"}],
+            })
 
 
 if __name__ == "__main__":
