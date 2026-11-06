@@ -125,6 +125,42 @@ def _ensure_account_ssh_key(client: utils.OrnnClient, public_key: str) -> str:
     return str(key_id)
 
 
+def _activate_with_retry(client: utils.OrnnClient,
+                         reservation_id: str,
+                         key_id: str,
+                         node_count: int,
+                         cluster_name_on_cloud: str) -> None:
+    """Boot the reservation's VMs, retrying through the server-side
+    materialization delay.
+
+    MEASURED IN THE LIVE E2E (2026-11-06): the reservation record
+    materializes server-side with a DELAY after the fill — an activate
+    fired +350ms after the fill is refused with "Ornn could not find
+    that reservation". Bounded retry (the activate is idempotent by its
+    per-cluster request id); any other refusal stays loud and typed.
+    Shared by the fresh-bid path and the adoption resume.
+    """
+    activate_deadline = time.monotonic() + 120.0
+    while True:
+        try:
+            client.activate_access(
+                reservation_id,
+                [key_id],
+                machine_count=node_count,
+                network_mode="public",
+                request_id=f"skypilot-activate-{cluster_name_on_cloud}",
+            )
+            return
+        except utils.OrnnError as exc:
+            if ("could not find" not in str(exc) or
+                    time.monotonic() >= activate_deadline):
+                raise
+            logger.info(
+                "ornn: reservation %s not materialized yet; retrying "
+                "activate", reservation_id)
+            time.sleep(5.0)
+
+
 def run_instances(
     region: str,
     cluster_name: str,
@@ -155,6 +191,33 @@ def run_instances(
             )
             created: List[str] = []
             reservation_id = recorded
+            # v2 (CodeRabbit on #90): an adopted reservation may be a
+            # PRE-activation relaunch — a first attempt that died between
+            # the fill and the activate leaves a live reservation with NO
+            # booted node, and waiting on it would just burn the deadline.
+            # Adopt the boot too: activate only when no node is exposed
+            # yet, idempotently by the same per-cluster request id, machine
+            # count from the reservation's own reservedNodeCount.
+            adopt_targets = client.list_storage_targets()
+            if (utils.OrnnClient.target_for_reservation(
+                    adopt_targets, recorded) is None):
+                public_key = (config.node_config or {}).get("PublicKey")
+                if isinstance(public_key, str):
+                    public_key = public_key.strip()
+                if (not public_key or
+                        public_key == _SSH_PUBLIC_KEY_PLACEHOLDER):
+                    raise utils.OrnnError(
+                        "node_config['PublicKey'] is missing or was never "
+                        f"substituted (got {public_key!r}) — the adopted "
+                        "reservation exposes no booted node, and resuming "
+                        "its activation needs the account key")
+                adopt_key_id = _ensure_account_ssh_key(client,
+                                                       str(public_key))
+                adopt_node_count = int(
+                    reservation.get("reservedNodeCount") or 1)
+                _activate_with_retry(client, recorded, adopt_key_id,
+                                     adopt_node_count,
+                                     cluster_name_on_cloud)
         else:
             raise utils.OrnnError(
                 f"cluster {cluster_name_on_cloud!r} is recorded against "
@@ -221,7 +284,13 @@ def run_instances(
             idempotency_key=f"skypilot-{cluster_name_on_cloud}",
             confirm=True,
         )
-        order = bid.get("order") if isinstance(bid.get("order"), dict) else bid
+        # Explicitly narrowed (CodeRabbit on #90 round 1): the response
+        # shape is an object under "order", falling back to the bid body
+        # itself for a legacy envelope — typed so the fillIds read below
+        # is a Dict[str, Any] access for mypy, never a guessing game.
+        raw_order = bid.get("order")
+        order: Dict[str, Any] = (raw_order if isinstance(raw_order, dict)
+                                 else bid)
         order_status = str(order.get("status") or "").strip().lower()
         if order_status == "cancelled":
             raise utils.OrnnCapacityRefusedError(
@@ -260,34 +329,11 @@ def run_instances(
         )
 
         # v2: no auto-launch — the ACTIVATE call boots the machine and
-        # provisions the key captured above. Idempotent per cluster.
-        #
-        # MEASURED IN THE LIVE E2E (2026-11-06): the reservation record
-        # materializes server-side with a DELAY after the fill — an
-        # activate fired +350ms after the fill is refused with "Ornn
-        # could not find that reservation". Bounded retry (the activate
-        # is idempotent by request id); any other refusal stays loud and
-        # typed.
-        activate_deadline = time.monotonic() + 120.0
-        while True:
-            try:
-                client.activate_access(
-                    reservation_id,
-                    [key_id],
-                    machine_count=node_count,
-                    network_mode="public",
-                    request_id=(f"skypilot-activate-"
-                               f"{cluster_name_on_cloud}"),
-                )
-                break
-            except utils.OrnnError as exc:
-                if ("could not find" not in str(exc) or
-                        time.monotonic() >= activate_deadline):
-                    raise
-                logger.info(
-                    "ornn: reservation %s not materialized yet; retrying "
-                    "activate", reservation_id)
-                time.sleep(5.0)
+        # provisions the key captured above. Idempotent per cluster
+        # (the helper retries through the fill->record materialization
+        # delay measured in the live e2e).
+        _activate_with_retry(client, reservation_id, key_id, node_count,
+                             cluster_name_on_cloud)
 
     # SSH-ready: the node address must surface in storage_targets. Fails
     # CLOSED on cancel/complete-without-node and on the deadline (the

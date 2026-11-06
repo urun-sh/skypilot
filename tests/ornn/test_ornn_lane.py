@@ -383,6 +383,36 @@ class TestProvisionerLifecycle(unittest.TestCase):
                 provision_instance.run_instances("ornn", "c", "c-on-cloud",
                                                  _config())
 
+    def test_adoption_resumes_an_interrupted_activation(self):
+        """CodeRabbit on #90: a first attempt that died between the fill
+        and the activate leaves a live reservation with NO booted node —
+        the adoption must resume the boot (same per-cluster request id,
+        node count from the reservation's own reservedNodeCount), never
+        wait out the deadline on an unactivated box."""
+        stub = _ready_stub()
+        stub.targets = []  # live reservation, no booted node
+        stub.reservations["resv-1"] = {"reservationId": "resv-1",
+                                       "status": "active",
+                                       "reservedNodeCount": 1}
+        # The store already attributes resv-1 to this cluster (the first
+        # attempt recorded it before dying between fill and activate).
+        provision_utils.remember_cluster("c-on-cloud", "resv-1",
+                                        "nvidia_rtx_pro_6000", 1)
+        with mock.patch.object(provision_utils,
+                               "client_from_env",
+                               return_value=stub):
+            record = provision_instance.run_instances("ornn", "c", "c-on-cloud",
+                                                      _config())
+        self.assertEqual(record.head_instance_id, "resv-1")
+        self.assertEqual(record.created_instance_ids, [])
+        activates = [c for c in stub.calls if c[0] == "activate_access"]
+        self.assertEqual(len(activates), 1)
+        # machine_count comes from the reservation's reservedNodeCount.
+        self.assertEqual(activates[0][3], 1)
+        # And the SAME per-cluster request id rides the resume.
+        self.assertEqual(activates[0][4],
+                         "skypilot-activate-c-on-cloud")
+
     def test_adoption_of_recorded_live_reservation(self):
         stub = _ready_stub()
         with mock.patch.object(provision_utils,
