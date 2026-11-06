@@ -31,7 +31,7 @@ https://docs.io.net; every endpoint below was verified live 2026-11-03):
   whole box for ``num_cards`` GPUs; ``total_cost_usdc`` covers the
   whole deployment (replicas × hours).
 * **Deployments carry names.** The deploy body takes
-  ``resource_private_name`` and ``GET /deploy`` lists every deployment
+  ``resource_private_name`` and ``GET /deployments`` lists every deployment
   with its ``name``, so the cluster identity is server-side — no local
   identity store.
 * **SSH arrives as a command string.** ``GET /deployment/{id}/vms``
@@ -90,7 +90,9 @@ DEFAULT_IMAGE_TYPE = 'general'
 # the account would have to be decades past exhausted for the cap to lie.
 MAX_DEPLOYMENT_PAGES = 20
 
-# Observed deployment status values (docs + live GET /deploy 2026-11-03):
+# Observed deployment status values (docs + live list 2026-11-03; the
+# list endpoint was renamed GET /deploy -> GET /deployments and became
+# 1-indexed (page >= 1 enforced, 422 below) by 2026-11-05 — live-probed):
 # 'running' while the boxes are up and serving; the steady-state signal
 # this client trusts for readiness is status == 'running' plus SSH-bearing
 # VMs, not compute_minutes_remaining (the set is not documented as
@@ -451,11 +453,11 @@ class IonetClient:
     def list_deployments(
         self,
         *,
-        page: int = 0,
+        page: int = 1,
         page_size: int = 10,
         status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """GET /deploy — every deployment on the account
+        """GET /deployments — every deployment on the account
         (``data.deployments``), PAGINATED.
 
         This is the server-side cluster identity source: deployments
@@ -478,20 +480,20 @@ class IonetClient:
             }
             if status:
                 query['status'] = str(status)
-            payload = self._call('GET', '/deploy', query=query) or {}
+            payload = self._call('GET', '/deployments', query=query) or {}
             if not isinstance(payload, dict):
                 raise IonetError(
-                    'GET /deploy: expected an object, got '
+                    'GET /deployments: expected an object, got '
                     f'{type(payload).__name__}')
             data = payload.get('data')
             if not isinstance(data, dict):
                 raise IonetError(
-                    'GET /deploy: expected an object at .data, got '
+                    'GET /deployments: expected an object at .data, got '
                     f'{type(data).__name__}')
             rows = data.get('deployments')
             if not isinstance(rows, list):
                 raise IonetError(
-                    'GET /deploy: expected a list at .data.deployments, '
+                    'GET /deployments: expected a list at .data.deployments, '
                     f'got {type(rows).__name__}')
             valid = [row for row in rows if isinstance(row, dict)]
             for row in valid:
@@ -503,7 +505,8 @@ class IonetClient:
             current += 1
             if current - int(page) >= MAX_DEPLOYMENT_PAGES:
                 raise IonetError(
-                    f'GET /deploy: exceeded {MAX_DEPLOYMENT_PAGES} pages '
+                    f'GET /deployments: exceeded {MAX_DEPLOYMENT_PAGES} '
+                    f'pages '
                     f'({int(page_size)} rows each) — refusing an unbounded '
                     'walk; raise the cap if the account is really this big')
         return list(collected.values())

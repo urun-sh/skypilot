@@ -341,6 +341,23 @@ class TestDeploymentListPagination(unittest.TestCase):
         self.assertEqual(len(transport.calls),
                          ionet_api.MAX_DEPLOYMENT_PAGES)
 
+    def test_list_uses_the_renamed_1_indexed_endpoint(self):
+        """Live-probed 2026-11-05: GET /deploy is gone (405) — the list
+        surface is GET /deployments and 1-indexed (page=0 is a 422). A
+        client stuck on the old endpoint can neither adopt nor
+        terminate: every provisioner path lists before acting, so the
+        first request must carry the new path and page=1."""
+        transport = _Transport(self._page('dep-1'))
+        client = ionet_api.IonetClient('k', transport=transport)
+        rows = client.list_deployments()
+        self.assertEqual([r['id'] for r in rows], ['dep-1'])
+        method, url, _, _ = transport.calls[0]
+        self.assertEqual(method, 'GET')
+        path, query = url.split('?', 1)
+        self.assertTrue(path.endswith('/deployments'),
+                        f'expected /deployments, got {path}')
+        self.assertIn('page=1', query)
+
 
 class TestFixtureModeOffline(unittest.TestCase):
     """--from-fixture is OFFLINE (CodeRabbit round 1): no client is
