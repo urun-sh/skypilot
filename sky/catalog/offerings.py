@@ -197,12 +197,35 @@ def _region_details(rows: 'pd.DataFrame', cloud: str) -> List[Dict[str, Any]]:
     return details
 
 
+# GCP G4 shapes that carry a FRACTIONAL vGPU slice (1/8, 1/4 and 1/2 of a
+# card) but are priced as count-1 catalog rows; only g4-standard-48 is a
+# whole card. The catalog deliberately prices every G4 shape ("the
+# CATALOG's pricing view, not a launchability claim", test_gcp.py) and
+# the RUNNER excludes the slices via _CATALOG_UNTRUSTED_SKUS; the
+# offerings aggregation must apply the same rule or the dashboard quotes
+# a SLICE as the GPU's price (2026-11-09: the "cheapest RTX PRO 6000"
+# showed the 1/8 slice's $0.24 spot while the whole card is $4.50
+# on-demand / $1.68 spot — gcp is the only offerings cloud whose
+# catalog carries fractional-GPU rows).
+_GCP_FRACTIONAL_GPU_INSTANCE_TYPES = frozenset({
+    'g4-standard-6',
+    'g4-standard-12',
+    'g4-standard-24',
+})
+
+
 def _gpu_offerings(df: 'pd.DataFrame', cloud: str) -> List[Dict[str, Any]]:
     """Per-accelerator aggregation, gpus_only convention of
     common.list_accelerators_impl.
     """
     if 'GpuInfo' in df.columns:
         df = df[~df['GpuInfo'].isna()]
+    if (cloud == 'gcp' and 'InstanceType' in df.columns and not df.empty):
+        # Never quote a fractional G4 slice as a GPU price (see
+        # _GCP_FRACTIONAL_GPU_INSTANCE_TYPES); the whole-card rows
+        # price the GPU the dashboard actually sells.
+        df = df[~df['InstanceType'].isin(
+            _GCP_FRACTIONAL_GPU_INSTANCE_TYPES)]
     if 'AcceleratorName' not in df.columns:
         return []
     df = df[df['AcceleratorName'].notna()]
