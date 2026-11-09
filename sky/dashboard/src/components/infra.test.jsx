@@ -777,7 +777,7 @@ describe('ProvidersSection', () => {
     // +1 occurrence of each label: the legend line reuses the badges.
     expect(screen.getAllByText('live units')).toHaveLength(3); // vast, spheron, legend
     expect(screen.getAllByText('in stock')).toHaveLength(2); // lambda, legend
-    expect(screen.getAllByText('catalog')).toHaveLength(2); // aws, legend
+    expect(screen.getAllByText('on-demand')).toHaveLength(2); // aws, legend
     // Every absent provider (8 defaults + Fluidstack) keeps the outline
     // no-catalog badge, plus the legend's own.
     expect(screen.getAllByText('no catalog')).toHaveLength(10);
@@ -799,7 +799,9 @@ describe('ProvidersSection', () => {
       )
     ).toBeInTheDocument();
     expect(
-      screen.getByText('price list only, no live availability')
+      screen.getByText(
+        'rentable on demand — a price list, with no live availability feed'
+      )
     ).toBeInTheDocument();
     expect(
       screen.getByText('local catalog data is unavailable')

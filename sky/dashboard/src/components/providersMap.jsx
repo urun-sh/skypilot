@@ -341,7 +341,7 @@ export function ProvidersMap({ providers = {} }) {
                 ? `${hovered.units} units`
                 : hovered.mode === 'in_stock'
                   ? 'in stock'
-                  : 'catalog'}
+                  : 'on-demand'}
             </div>
           </div>
         )}

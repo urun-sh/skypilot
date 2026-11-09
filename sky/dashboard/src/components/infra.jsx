@@ -235,7 +235,7 @@ const PROVIDERS_COLUMNS = [
 const PROVIDER_MODE_BADGES = {
   units: { label: 'live units', className: 'bg-emerald-100 text-emerald-800' },
   in_stock: { label: 'in stock', className: 'bg-sky-100 text-sky-800' },
-  catalog: { label: 'catalog', className: 'bg-gray-100 text-gray-500' },
+  catalog: { label: 'on-demand', className: 'bg-gray-100 text-gray-500' },
 };
 const PROVIDER_NO_CATALOG_BADGE = {
   label: 'no catalog',
@@ -256,7 +256,8 @@ const PROVIDER_TIER_LEGEND = [
   },
   {
     badge: PROVIDER_MODE_BADGES.catalog,
-    meaning: 'price list only, no live availability',
+    meaning:
+      'rentable on demand — a price list, with no live availability feed',
   },
   {
     badge: PROVIDER_NO_CATALOG_BADGE,

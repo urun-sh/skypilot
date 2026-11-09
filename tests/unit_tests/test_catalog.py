@@ -950,6 +950,40 @@ def test_provider_gpu_offerings_mtime_passthrough(tmp_path, monkeypatch):
     assert result['providers']['shadeform']['updated_at'] == 1000000.0
 
 
+def test_gcp_offerings_never_quote_fractional_g4_slices(tmp_path,
+                                                        monkeypatch):
+    """The G4 family prices FRACTIONAL vGPU slices (g4-standard-6 = 1/8
+    card, -12 = 1/4, -24 = 1/2) as count-1 catalog rows; only
+    g4-standard-48 is a whole card. The offerings aggregation excludes
+    the slices (mirroring the runner's _CATALOG_UNTRUSTED_SKUS) or the
+    dashboard's "cheapest RTX PRO 6000" quotes a slice: live 2026-11-09,
+    the 1/8 slice's $0.24 spot displayed where the whole card is $4.50
+    on-demand / $1.68 spot."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    # Live G4 prices (us-central1): the slices are cheaper per ROW and
+    # would win every min() without the exclusion.
+    _write_offerings_csv(
+        tmp_path,
+        'gcp',
+        [
+            'g4-standard-6,RTXPRO6000,1,6,22,"{}",0.64688,0.2416,us-central1',
+            'g4-standard-12,RTXPRO6000,1,12,45,"{}",1.29376,0.4832,us-central1',
+            'g4-standard-24,RTXPRO6000,1,24,90,"{}",2.58752,0.9664,us-central1',
+            'g4-standard-48,RTXPRO6000,1,48,180,"{}",4.49993,1.6808,us-central1',
+            'g4-standard-96,RTXPRO6000,2,96,360,"{}",8.99986,3.3616,us-central1',
+        ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    rtx = next(g for g in gpus if g['name'] == 'RTXPRO6000')
+    # The whole-card row prices the GPU; no slice price leaks into any
+    # aggregate or region bucket.
+    assert rtx['price'] == 4.49993
+    assert rtx['spot_price'] == 1.6808
+    assert rtx['counts'] == [1, 2]
+    assert [d['price'] for d in rtx['region_details']] == [4.49993]
+    assert [d['spot_price'] for d in rtx['region_details']] == [1.6808]
+
+
 def test_provider_gpu_offerings_missing_catalog_never_fetches(
         tmp_path, monkeypatch):
     _patch_catalog_dir(monkeypatch, tmp_path)
