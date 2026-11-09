@@ -226,10 +226,15 @@ class TestSecureCloudGuardAndSpotPrice(unittest.TestCase):
             self.assertEqual(row['Price'], '0.40')
             self.assertNotEqual(row['AvailableUnits'], '')
 
-    def test_positive_min_bid_writes_spot_price(self):
-        # The RAW API bids (restored from under the SDK stomp by the
-        # adaptor shim) must reach the CSV as real spot prices — the
-        # CodeRabbit #92 case: a stomped-to-0 bid hid the real tier.
+    def test_positive_min_bid_is_suppressed_until_spot_launches(self):
+        # The RAW API bids are REAL (the adaptor shim restores them from
+        # under the SDK stomp — see test_vast_min_bid_shim.py), but the
+        # LAUNCH path cannot serve an interruptible rental yet (the ray
+        # template's use_spot variable renders null; create_instance
+        # sends no client_max_price), so the catalog must not quote a
+        # spot tier a claim could price while the lane would rent
+        # on-demand capacity at the on-demand price (CodeRabbit #92:
+        # both write paths emit '' by design until that lands).
         rows = _fetch([
             _offer('RTX 4090',
                    cpu_cores=32,
@@ -243,7 +248,9 @@ class TestSecureCloudGuardAndSpotPrice(unittest.TestCase):
                    min_bid=0.39),
         ])
         self.assertEqual(len(rows), 2)
-        self.assertEqual(sorted(r['SpotPrice'] for r in rows), ['0.38', '0.39'])
+        self.assertEqual([r['SpotPrice'] for r in rows], ['', ''])
+        # The on-demand price still quotes the real ask.
+        self.assertEqual([r['Price'] for r in rows], ['0.40', '0.40'])
 
 
 if __name__ == '__main__':
