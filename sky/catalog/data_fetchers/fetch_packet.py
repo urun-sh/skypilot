@@ -1,40 +1,38 @@
-"""Fetch Packet.ai GPU products and emit a SkyPilot catalog CSV.
+"""Fetch Packet.ai GPU products and emit a SkyPilot catalog CSV (v2).
 
-Source data: ``GET /api/v1/launch-options`` on https://dash.packet.ai (the
-authenticated price/stock surface; SLOW — ~30s cold, the client sizes the
-timeout). Rows come from ``data.products`` ONLY — the canonical deployable
-surface (ENG-562's measured rule): a pool row with a ``price_per_hour`` but
-no active product listing the pool id in ``poolIds`` is a PRICING fact, not
-a deployability fact, and must never reach the catalog as a rentable row.
+Source data: ``GET /api/v2/instances/launch-options`` on https://dash.packet.ai
+(the authenticated price surface; SLOW — the client sizes the timeout) plus
+``GET /api/v2/instances/category-check`` per product service. The v1 API is
+RETIRED (measured 2026-11-09: every ``/api/v1`` route answers HTTP 410
+Gone), which had left the lane dead since 2026-10-21.
 
-Instance types are synthesized ``<accelerator>:<count>`` tokens (e.g.
-``rtxpro6000:1``): pool and product ids are ephemeral (the surface flipped
-its product list mid-session on 2026-10-15) and regions are numeric ids,
-so the stable accelerator+count pair is the catalog identity. ``Region`` is
-the region NAME (``us-west-2``) — the create body takes the numeric
-``region_id``, re-resolved by the provisioner from the live launch-options
-at launch. ``Price`` is the whole-box hourly: ``pricePerHourCents`` (USD
-cents per GPU-hour) x the count the token names.
+v2 shape (measured 2026-11-09, live): the launch-options payload is FLAT
+(no ``data`` wrapper, no ``pools``) — ``products[]`` carry
+``pricePerHourCents`` (the WHOLE-BOX hourly, US cents — the 8-GPU B200
+product carries 6392, i.e. $63.92/box ≈ $7.99/GPU) but NO stock;
+availability lives in ``category-check``: ``freeSlots`` per
+``serviceId`` per region id, plus ``serviceRegions`` and ``maintenance``
+(and ``checkFailed`` — a True answer may be incomplete and REFUSES the
+fetch, never guessed around).
 
-Rows are emitted ONLY for products with ``totalAvailableGpus > 0`` in the
-regions the product lists — everything this module can price, the lane can
-actually rent. Products with no available GPUs are omitted by the endpoint
-unless ``featured`` (a featured 0-stock product appears in the list; the
-``totalAvailableGpus > 0`` filter keeps it out of the catalog).
+Instance types stay synthesized ``<accelerator>:<count>`` tokens (e.g.
+``rtxpro6000:1``): product ids are ephemeral and regions are numeric ids,
+so the stable accelerator+count pair is the catalog identity. ``Region``
+is the region NAME resolved from ``regions[]`` by id (``us-west-2``) —
+the create body takes the numeric ``region_id``, re-resolved by the
+provisioner from the live surfaces at launch.
 
-The CREATE seam (ENG-562, measured 2026-10-15): instance creation returns
-501 NOT_IMPLEMENTED for API-key auth (console-session path only). The lane
-bridges it with ADOPTION of console-launched boxes by instance name (the
-provisioner) + a $0 watcher on the create port — the catalog itself writes
-HONEST STOCK (a live in-stock product is rentable through the console path
-and adoptable; the provisioner, not the catalog, owns the create refusal).
-A zero-ROW fetch is cross-checked against the same products list: any
-product reporting stock while no row will be written is a filter bug or
-API drift — REFUSE, never write a false "no stock" catalog.
+Rows are emitted ONLY for (product, region) pairs whose category-check
+reports a free slot — everything this module can price, the lane can
+actually rent (v2 serves ``POST /instances`` for API keys; the v1 501
+create seam is GONE). A zero-ROW fetch is cross-checked against the same
+surfaces: any service reporting a free slot while no row will be written
+is a filter bug or API drift — REFUSE, never write a false "no stock"
+catalog.
 
 Modeled on ``sky/catalog/data_fetchers/fetch_quantacloud.py`` (the newest
-in-tree carry); the differences are all grounded in the measured
-launch-options shape (see sky/adaptors/packet.py for the receipts).
+in-tree carry); the differences are all grounded in the measured v2
+launch-options/category-check shapes (see sky/adaptors/packet.py).
 """
 
 from __future__ import annotations
@@ -202,49 +200,59 @@ def _product_row(product: Dict[str, Any],
                  region_name: str) -> Optional[List[Any]]:
     """One (product, region) -> one CSV row, or None when not lane-rentable.
 
-    The row's price is the WHOLE-BOX hourly: pricePerHourCents is USD cents
-    per GPU-hour (measured: the 1-GPU RTX PRO 6000 product carries 66), so
-    the row multiplies by the count the token names.
+    The row's price is the WHOLE-BOX hourly: v2 ``pricePerHourCents`` is
+    the product's USD-cents price for the WHOLE box (measured 2026-11-09:
+    the 8-GPU B200 product carries 6392 = $63.92/box ≈ $7.99/GPU) — the
+    count the token names is already inside it.
     """
     name = str(product.get('name') or '').strip()
     if not name:
         return None
-    # In-stock ONLY: the products surface omits 0-stock products unless
-    # featured; a featured 0-stock row must not reach the catalog (a
-    # rentable quote for a box that cannot launch).
-    try:
-        available = int(product.get('totalAvailableGpus') or 0)
-    except (TypeError, ValueError):
-        return None
-    if available < 1:
-        return None
+    # v2 products carry NO stock field (v1 totalAvailableGpus is gone):
+    # rentability is decided by iter_rows against the category-check
+    # freeSlots, never here.
     # Monthly plans never touch the wallet and carry no hourly price
     # (pricePerHourCents 0 measured); out of scope for the lane — skip
     # rather than quote an unpriced box as free.
     try:
-        cents_per_gpu_hour = int(product.get('pricePerHourCents') or 0)
+        cents_per_hour = int(product.get('pricePerHourCents') or 0)
     except (TypeError, ValueError):
         return None
-    if cents_per_gpu_hour < 1:
+    if cents_per_hour < 1:
         return None
     accelerator = normalise_accelerator(name)
     if not accelerator:
         return None  # un-mappable family: audit-visible via refusal, not row
     gpu_count = parse_product_gpu_count(name)
-    price = (cents_per_gpu_hour / 100.0) * gpu_count
+    price = cents_per_hour / 100.0
     vram = product.get('vramGb')
-    # vCPUs / RAM are not exposed as FIELDS on the products surface — the
-    # description strings carry them in prose ("96GB ram · 6 vCPU · 150GB
-    # ephemeral NVME", measured live 2026-10-15) — so the row PARSES them
-    # out of the description. A row with no parseable POSITIVE RAM is
-    # skipped: SkyPilot's launch validation rejects memory <= 0 (measured
-    # live on the armed claim 2026-10-15: the 0.0-placeholder row launched
-    # Failed with "'memory' field should be positive. Found: '0.0'") — a
-    # placeholder row would quote a box the launch can never boot.
-    ram_gib = _description_ram_gb(product.get('description'))
+    # v2 exposes vcpuCount / ramMb as FIELDS on some products (measured
+    # 2026-11-09: the 5090 Dynamic - Hourly carries vcpuCount=6,
+    # ramMb=49152 with a BLANK description), while others leave them
+    # null and carry the specs in the description prose ("64GB ram · 16
+    # vCPU", measured on the 4090 Dedicated) — read the FIELD first,
+    # fall back to the prose. A row with no POSITIVE RAM from either
+    # source is skipped: SkyPilot's launch validation rejects memory <=
+    # 0 (measured live on the armed claim 2026-10-15: the 0.0-row
+    # launched Failed with "'memory' field should be positive. Found:
+    # '0.0'") — a placeholder row would quote a box the launch can
+    # never boot, and verify_zero_stock would then refuse the catalog
+    # over genuinely stocked-but-unquotable listings.
+    ram_gib = None
+    ram_mb = product.get('ramMb')
+    if isinstance(ram_mb, (int, float)) and not isinstance(ram_mb, bool):
+        ram_gib = float(ram_mb) / 1024.0
+    if ram_gib is None or ram_gib <= 0:
+        ram_gib = _description_ram_gb(product.get('description'))
     if ram_gib is None or ram_gib <= 0:
         return None
-    vcpus = _description_vcpus(product.get('description'))
+    vcpus = 0.0
+    vcpu_field = product.get('vcpuCount')
+    if isinstance(vcpu_field,
+                  (int, float)) and not isinstance(vcpu_field, bool):
+        vcpus = float(vcpu_field)
+    else:
+        vcpus = _description_vcpus(product.get('description'))
     # pylint: disable=protected-access
     # fetch_latitude's _gpu_info_str is the ONE canonical GpuInfo builder
     # (the vet tier flagged a drifting inline copy on the quantacloud
@@ -263,34 +271,74 @@ def _product_row(product: Dict[str, Any],
     ]
 
 
-def iter_rows(launch_options: Dict[str, Any]) -> Iterator[List[Any]]:
+def iter_rows(
+    launch_options: Dict[str, Any],
+    category_checks: Dict[str, Dict[str, Any]],
+) -> Iterator[List[Any]]:
     """Yield one CSV row per in-stock (accelerator, count, region) to rent.
 
-    A product lists every region it can launch in (``regions[]``, deduped
-    from its pools); one row per region, so the catalog's Region filter
-    matches the claim's region pin exactly. When the same (accelerator,
-    count, region) appears at several prices, the CHEAPEST wins: the row
-    is a rentable quote, and the provisioner re-resolves against the live
-    surface at launch anyway (a stale-cheap row must not quote a price the
-    launch refuses, and a stale-expensive row would hide real capacity).
+    v2 (measured 2026-11-09): products carry NO stock and NO region list —
+    availability lives in ``category_checks[serviceId]`` (the
+    ``GET /instances/category-check`` answer): ``freeSlots`` maps region
+    id → free pod slots for the service. A row is emitted ONLY for a
+    (product, region) whose check reports a free slot (>= 1 pod); a
+    ``checkFailed`` answer may be incomplete and REFUSES the whole fetch
+    (never a guessed-around partial catalog). ``Region`` is the region
+    NAME resolved from ``launch_options.regions[]`` by id. When the same
+    (accelerator, count, region) appears at several prices, the CHEAPEST
+    wins: the row is a rentable quote, and the provisioner re-resolves
+    against the live surfaces at launch anyway.
     """
     products = launch_options.get('products')
     if not isinstance(products, list):
         raise PacketCatalogError(
-            'GET /launch-options: expected a list at .products, got '
-            f'{type(products).__name__} — refusing to treat the surface as '
-            'empty')
+            'GET /instances/launch-options: expected a list at .products, '
+            f'got {type(products).__name__} — refusing to treat the surface '
+            'as empty')
+    all_regions = launch_options.get('regions')
+    if not isinstance(all_regions, list):
+        raise PacketCatalogError(
+            'GET /instances/launch-options: expected a list at .regions, '
+            f'got {type(all_regions).__name__} — refusing to treat the '
+            'surface as empty')
+    region_names: Dict[int, str] = {}
+    for region in all_regions:
+        if (isinstance(region, dict) and isinstance(region.get('id'), int) and
+                str(region.get('name') or '').strip()):
+            region_names[int(region['id'])] = str(region['name']).strip()
+
     best: Dict[Tuple[str, int, str], List[Any]] = {}
     for product in products:
         if not isinstance(product, dict):
             continue
-        regions = product.get('regions')
-        if not isinstance(regions, list):
+        service_id = str(product.get('serviceId') or '')
+        check = category_checks.get(service_id)
+        if check is None:
+            # No category-check answer: not rentable through this fetch —
+            # verify_zero_stock refuses if that empties the catalog.
             continue
-        for region in regions:
-            if not isinstance(region, dict):
+        if check.get('checkFailed'):
+            raise PacketCatalogError(
+                f'category-check for service {service_id!r} reports '
+                'checkFailed=true: the availability answer may be '
+                'incomplete — refusing to write a partial catalog (retry '
+                'the fetch, or investigate the provider)')
+        free_slots = check.get('freeSlots')
+        if not isinstance(free_slots, dict):
+            continue
+        slots_by_region = free_slots.get(service_id)
+        if not isinstance(slots_by_region, dict):
+            continue
+        for raw_region_id, slots in slots_by_region.items():
+            try:
+                region_id = int(raw_region_id)
+            except (TypeError, ValueError):
                 continue
-            region_name = str(region.get('name') or '').strip()
+            if not isinstance(slots, int) or isinstance(slots, bool):
+                continue
+            if slots < 1:
+                continue
+            region_name = region_names.get(region_id)
             if not region_name:
                 continue
             row = _product_row(product, region_name)
@@ -304,58 +352,88 @@ def iter_rows(launch_options: Dict[str, Any]) -> Iterator[List[Any]]:
 
 
 def verify_zero_stock(launch_options: Dict[str, Any],
+                      category_checks: Dict[str, Dict[str, Any]],
                       rows: Sequence[List[Any]]) -> None:
     """Cross-check a zero-ROW fetch before it is written as zero-stock.
 
-    The ruling (ENG-562): a fetch yielding NO catalog rows is cross-checked
-    against the SAME products list — if every product reports
-    ``totalAvailableGpus == 0`` the empty is honest (write the header-only
-    catalog, the Latitude semantics); if ANY product reports stock while no
-    row will be written, the fetch REFUSES rather than write "no capacity"
-    (the Spheron filter-bug semantics — a filter bug or API drift; a lane
-    answering "no capacity" from this state would be a lie).
-
-    This deliberately does NOT gate on the create port: creation being
-    501 for API keys (the measured platform-capability refusal) does not
-    change STOCK — the console path provisions and the provisioner adopts;
-    the catalog owns stock, the provisioner owns the create seam.
+    The ruling (ENG-562, ported to v2 2026-11-09): a fetch yielding NO
+    catalog rows is cross-checked against the SAME surfaces — if no
+    product's category-check reports a free slot in a region the
+    catalog names, the empty is honest (write the header-only catalog,
+    the Latitude semantics); if ANY service reports a free slot while
+    no row will be written, the fetch REFUSES rather than write "no
+    capacity" (the Spheron filter-bug semantics — a filter bug or API
+    drift; a lane answering "no capacity" from this state would be a
+    lie).
     """
     if any(True for _ in rows):
         return  # rows will be written: nothing to cross-check
     products = launch_options.get('products')
     if not isinstance(products, list):
         raise PacketCatalogError(
-            'GET /launch-options: expected a list at .products, got '
-            f'{type(products).__name__} — refusing to treat the surface as '
-            'empty')
-    stocked = [
-        str(p.get('name') or '?')
-        for p in products
-        if isinstance(p, dict) and _product_available_count(p) > 0
-    ]
+            'GET /instances/launch-options: expected a list at .products, '
+            f'got {type(products).__name__} — refusing to treat the surface '
+            'as empty')
+    all_regions = launch_options.get('regions')
+    region_ids: set = set()
+    if isinstance(all_regions, list):
+        for region in all_regions:
+            if isinstance(region, dict) and isinstance(region.get('id'), int):
+                region_ids.add(int(region['id']))
+    stocked = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        service_id = str(product.get('serviceId') or '')
+        check = category_checks.get(service_id)
+        if not isinstance(check, dict):
+            continue
+        free_slots = check.get('freeSlots')
+        by_region = free_slots.get(service_id) if isinstance(free_slots,
+                                                             dict) else None
+        if not isinstance(by_region, dict):
+            continue
+        for raw_region_id, slots in by_region.items():
+            try:
+                region_id = int(raw_region_id)
+            except (TypeError, ValueError):
+                continue
+            if (region_id in region_ids and isinstance(slots, int) and
+                    not isinstance(slots, bool) and slots > 0):
+                label = str(product.get('name') or '?') + '@' + service_id
+                stocked.append(label)
+                break
     if stocked:
         raise PacketCatalogError(
-            f'no rentable catalog rows will be written, but launch-options '
-            f'reports in-stock products {sorted(stocked)}; refusing to write '
-            'a zero-stock catalog from a contradictory fetch — a filter bug '
+            'no rentable catalog rows will be written, but category-check '
+            f'reports free slots for {sorted(stocked)}; refusing to write a '
+            'zero-stock catalog from a contradictory fetch — a filter bug '
             'or API drift (investigate before the lane answers "no '
             'capacity").')
-
-
-def _product_available_count(product: Dict[str, Any]) -> int:
-    value = product.get('totalAvailableGpus')
-    if isinstance(value, bool) or not isinstance(value, int):
-        # totalAvailableGpus: null (no stock) and non-numeric values are
-        # both "no stock" here; a contradictory fetch must come from a
-        # POSITIVE integer, not from a missing field.
-        return 0
-    return value
 
 
 def fetch_launch_options(api_key: Optional[str] = None) -> Dict[str, Any]:
     """The live launch-options payload (authenticated; ~30s cold)."""
     client = packet_api.PacketClient(api_key or 'public-catalog')
     return client.get_launch_options()
+
+
+def fetch_category_checks(
+    api_key: Optional[str] = None,
+    service_ids: Sequence[str] = ()
+) -> Dict[str, Dict[str, Any]]:
+    """The per-service availability answers, keyed by service id.
+
+    ``GET /instances/category-check?serviceId=...`` per DISTINCT service
+    (products share a service 1:1 today, but a shared service is fetched
+    once). Quota-aware: one read per distinct service (the documented
+    budget is 100 reads/min per key), bounded by the service count.
+    """
+    client = packet_api.PacketClient(api_key or 'public-catalog')
+    return {
+        service_id: client.category_check(service_id)
+        for service_id in dict.fromkeys(str(s) for s in service_ids)
+    }
 
 
 def write_csv(rows: Iterable[List[Any]], out_path: str) -> int:
@@ -382,15 +460,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         with open(args.from_fixture, encoding='utf-8') as handle:
             fixture = json.load(handle)
         launch_options = fixture['launch_options']
+        # The fixture carries BOTH surfaces (recorded together — see the
+        # tests) so the offline path exercises the same joins.
+        category_checks = fixture['category_checks']
     else:
-        # /launch-options is AUTHENTICATED on Packet.ai (unlike QuantaCloud's
-        # public catalog endpoints): the key is read from the env or
-        # ~/.packet/credentials; an unset key raises PacketAuthError — an
-        # unauthenticated fetch must never look like "no capacity".
-        launch_options = fetch_launch_options(os.environ.get(args.api_key_env))
+        # /launch-options is AUTHENTICATED on Packet.ai (unlike
+        # QuantaCloud's public catalog endpoints): the key is read from
+        # the env or ~/.packet/credentials; an unset key raises
+        # PacketAuthError — an unauthenticated fetch must never look
+        # like "no capacity".
+        api_key = os.environ.get(args.api_key_env)
+        launch_options = fetch_launch_options(api_key)
+        category_checks = fetch_category_checks(
+            api_key,
+            service_ids=[
+                str(p.get('serviceId'))
+                for p in launch_options.get('products') or []
+                if isinstance(p, dict) and p.get('serviceId')
+            ])
 
-    rows = list(iter_rows(launch_options))
-    verify_zero_stock(launch_options, rows)
+    rows = list(iter_rows(launch_options, category_checks))
+    verify_zero_stock(launch_options, category_checks, rows)
     write_csv(rows, args.output)
     print(f'Wrote {len(rows)} rows to {args.output}')
     return 0

@@ -1,52 +1,56 @@
-"""Packet.ai REST client.
+"""Packet.ai REST client (v2).
 
 Packet.ai (https://dash.packet.ai, by hosted.ai) rents on-demand NVIDIA GPU
-pods (B200, H200, RTX PRO 6000 Blackwell 96GB, RTX 4090/5090, L40s) from a
-prepaid wallet, billed by the second. One ``pk_live_`` API key drives every
-authenticated call (``X-API-Key`` or ``Authorization: Bearer`` — both blessed
-by the machine reference, both measured).
+pods (B200, RTX PRO 6000 Blackwell 96GB, RTX 4090/5090) from a prepaid
+wallet, billed in 30-minute blocks. One ``pk_live_`` API key drives every
+authenticated call (``X-API-Key`` or ``Authorization: Bearer`` — both
+blessed by the machine reference).
 
-MEASURED (ENG-562, 2026-10-15 — the vetting receipts on the ticket; the
-wrong-company Equinix receipts in the same ticket's history describe a
-different, dead product):
+V2 PORT (measured 2026-11-09): v1 is RETIRED — every ``/api/v1`` route
+answers ``HTTP 410 Gone: "The v1 API is retired. Upgrade Packet CLI, or
+move to v2 API: /docs/api-reference"`` (probed on launch-options and the
+instance routes), which killed the whole lane since 2026-10-21. The v2
+surface (llms-full.txt, updated 2026-11-02) moves the instance routes
+under ``/instances``, the key routes under ``/account``, and changes:
 
-* **Instance creation returns 501 NOT_IMPLEMENTED for API-key auth** —
-  ``"Instance creation is not yet available: the deploy engine (Stripe,
-  wallet, provisioning) has not been ported."`` — after FULL validation
-  (``name`` + ``pool_id`` required, then region resolution: a body without
-  ``region_id`` gets 400 ``"Could not determine region. Please provide
-  region_id."``). Measured on the doc-shaped body, on active-product pools,
-  on a hybrid body, under both header spellings. Creation works only through
-  the console's session path (the SPA POSTs the same route with a
-  productId-shaped body under a session Bearer token, which the API-key path
-  rejects as ``MISSING_REQUIRED_FIELD: name``). The lane bridges the seam
-  with ADOPTION of console-launched boxes by instance name (see
-  ``sky/provision/packet/instance.py``) — ``create_instance`` raises
-  :class:`PacketCreateNotImplementedError` (typed, never retried) so a
-  create attempt surfaces as the platform-capability refusal it is, not as
-  a stock hunt or an auth failure.
-* **``GET /api/v1/launch-options`` answers in ~30s cold** (measured 30.6s
-  cold, ~1.3s warm) — a 60s-class timeout reads as "the surface is absent";
-  this client sends that call with ``LAUNCH_OPTIONS_TIMEOUT_S``.
-* **``{id}`` routes need the FULL instance id** (``i-55a5e3b1-6ede-…``);
-  the short prefix (``i-55a5e3b1``) 404s ``NOT_FOUND`` — the route keys are
-  the complete ids from ``GET /instances``.
-* The OpenAPI spec at ``/api/v1/openapi`` lists phantom routes
-  (``/api/products``, ``/api/providers/gpu-types``, ``/api/banner``,
-  ``/api/branding``, ``/api/cli-config``) that 404 ``route_not_found`` live —
-  the spec is aspiration, not truth; measure, never trust it.
+* ``GET /instances/launch-options`` answers FLAT (no ``data`` wrapper, no
+  ``meta``): ``{categories, products, regions, sshKeys,
+  existingSharedVolumes, teamId, walletBalanceCents, ...}``. The v1
+  ``pools`` array is GONE — products carry ``pricePerHourCents``
+  (whole-box) directly — and products carry NO stock: availability lives
+  in ``GET /instances/category-check`` (``freeSlots`` per service per
+  region).
+* ``POST /instances`` is SERVED for API keys (the v1 501 create seam is
+  GONE): body ``{product_id, region_id, name?, ssh_key_ids?}`` + REQUIRED
+  ``Idempotency-Key`` header (fresh uuid per launch, same value to retry).
+  The launch charges the first 30 minutes up front (402 when the wallet
+  cannot cover them; a failed launch is refunded).
+* ``GET /instances/{id}`` answers the Pod FLAT (v1 wrapped it at
+  ``data.instance``) with ``state`` as the status field (v1 ``status``) —
+  enum starting | running | stopping | stopped | failed | terminating |
+  terminated | unknown (``error`` is gone; ``failed`` is terminal).
+* ``GET /instances/{id}/connection`` SURVIVES in v2 (probed: a real
+  instance-scoped 404 ``"no such instance"`` on a fake id, not a
+  route-missing 404) — the SSH/adoption seam keeps working.
+* SSH keys: ``GET /account/ssh-keys`` → ``{"keys": [...]}`` (the
+  ``fingerprint`` field survives — the material match in
+  ``ensure_ssh_key`` is unaffected); ``POST /account/ssh-keys`` wraps the
+  created key at ``.key``.
+* A STOPPED pod KEEPS its GPU and BILLS AT THE FULL RUNNING RATE —
+  only ``DELETE /instances/{id}`` ends the charges (irreversible; data on
+  the pod's own disk is lost, shared volumes survive).
 
-Wire format (https://dash.packet.ai/llms-full.txt): success is
-``{"data": ..., "meta": {"requestId", "timestamp"}}``; every 4xx/5xx is
-``{"error": {"code": UPPER_SNAKE_CASE, "message": ...}, "meta": ...}`` — the
-code is preserved verbatim into every raised error (the shadeform
-INSUFFICIENT_FUNDS lesson: a flattened status line misreads stockout as
-auth). Rate limits (per key, fixed one-minute window): reads 100/min, writes
-30/min, launch 10/min, billing reads 5/min; every response carries
-``X-RateLimit-Limit/Remaining/Reset`` headers, and a 429's
-``X-RateLimit-Reset`` (Unix seconds) IS the provider's own retry hint —
-this client backs off honoring it, bounded (the hung-call lesson: no
-unbounded sleeps either).
+``GET /instances/launch-options`` stays the slow call (measured ~30s
+cold on v1; sent with ``LAUNCH_OPTIONS_TIMEOUT_S``). Wire envelope: v2
+answers flat JSON (the v1 ``{"data": ..., "meta": ...}`` wrapper is
+gone on every route probed); 4xx/5xx carry ``{"message": ...}`` bodies.
+Rate limits ride the ``X-RateLimit-*`` headers as before — a 429's
+``X-RateLimit-Reset`` (Unix seconds) IS the provider's own retry hint;
+this client backs off honoring it, bounded.
+
+Machine reference: https://dash.packet.ai/llms-full.txt (2026-11-02) and
+the OpenAPI at /docs/api-reference (CF-gated from this network — every
+shape above was probed live instead).
 """
 
 from __future__ import annotations
@@ -59,8 +63,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
-API_BASE = 'https://dash.packet.ai/api/v1'
+# v2 (measured 2026-11-09): v1 answers HTTP 410 Gone — "The v1 API is
+# retired. Upgrade Packet CLI, or move to v2 API: /docs/api-reference"
+# on every v1 route (lane-dead since the provider retired it). The v2
+# surface (llms-full.txt, updated 2026-11-02) nests the instance routes
+# under /instances and the key routes under /account.
+API_BASE = 'https://dash.packet.ai/api/v2'
 
 # Identifies the integration to the provider's logs.
 USER_AGENT = 'urun-skypilot-packet/0.1 (+https://urun.sh)'
@@ -88,14 +98,19 @@ MAX_RETRY_AFTER_S = 60.0
 PAGE_LIMIT = 100
 MAX_PAGES = 100
 
-# Instance status steady states (llms-full.txt). starting/stopping/
-# restarting are transitional (map to None = keep waiting); pending and
-# other transitional values are logged verbatim, never guessed at (the
-# Latitude open-set lesson).
+# Instance status steady states (llms-full.txt, v2 measured 2026-11-09).
+# v2 names the field ``state`` (v1 ``status``) and the enum is starting |
+# running | stopping | stopped | failed | terminating | terminated |
+# unknown. Transitional values map to None = keep waiting; unknown and
+# other open values are logged verbatim, never guessed at (the Latitude
+# open-set lesson). v1's ``error`` is gone: ``failed`` is the terminal
+# value, and terminating/terminated mean the pod died under the wait —
+# raise, never auto-retry.
 STATUS_RUNNING = 'running'
 STATUS_STOPPED = 'stopped'
-STATUS_ERROR = 'error'
 STATUS_FAILED = 'failed'
+STATUS_TERMINATING = 'terminating'
+STATUS_TERMINATED = 'terminated'
 
 # Environment variable the callers read the key from (the task secret
 # channel's spelling). NOTE: packet-gpu-cli documents PACKET_API_KEY but
@@ -272,6 +287,7 @@ class PacketClient:
         params: Optional[Dict[str, Any]] = None,
         body: Optional[Dict[str, Any]] = None,
         timeout_s: Optional[int] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> Any:
         url = f'{self._base_url}{path}'
         if params:
@@ -287,6 +303,10 @@ class PacketClient:
         if body is not None:
             payload = json.dumps(body).encode('utf-8')
             headers['Content-Type'] = 'application/json'
+        if extra_headers:
+            # Per-call headers (e.g. the REQUIRED Idempotency-Key on
+            # POST /instances in v2) ride the same retries.
+            headers.update(extra_headers)
 
         for attempt in range(RATE_LIMIT_RETRIES + 1):
             if self._transport is not None:
@@ -415,25 +435,58 @@ class PacketClient:
     # -- launch options (the price/stock surface) ---------------------------
 
     def get_launch_options(self) -> Dict[str, Any]:
-        """Products (the deployable surface) + pools + regions.
+        """Products (the deployable surface) + regions.
 
-        SLOW: ~30s cold (measured) — sent with LAUNCH_OPTIONS_TIMEOUT_S.
-        ``products`` is the canonical "what can I deploy, at what price,
-        where": a pool row with a price but no active product listing its
-        id in ``poolIds`` is a PRICING fact, not a deployability fact (the
-        ENG-562 lesson) — callers that need rentability filter products.
+        SLOW: ~30s cold (measured on v1) — sent with
+        LAUNCH_OPTIONS_TIMEOUT_S. v2 (measured 2026-11-09): the response
+        is flat ``{categories, products, regions, sshKeys,
+        existingSharedVolumes, teamId, walletBalanceCents, …}`` — the
+        v1 ``pools`` array is GONE (products carry their whole-box
+        ``pricePerHourCents`` directly), and products carry NO stock:
+        rentability lives in ``category_check`` (``freeSlots``).
+        ``products`` stays the canonical "what can I deploy, at what
+        price": callers that need rentability must consult the
+        category-check.
         """
-        payload = self._call(
-            'GET', '/launch-options', timeout_s=LAUNCH_OPTIONS_TIMEOUT_S) or {}
+        payload = self._call('GET',
+                             '/instances/launch-options',
+                             timeout_s=LAUNCH_OPTIONS_TIMEOUT_S) or {}
         if not isinstance(payload, dict):
-            raise PacketError('GET /launch-options: expected an object, '
-                              f'got {type(payload).__name__}')
-        for key in ('products', 'pools', 'regions'):
+            raise PacketError('GET /instances/launch-options: expected an '
+                              f'object, got {type(payload).__name__}')
+        for key in ('products', 'regions'):
             if not isinstance(payload.get(key), list):
                 raise PacketError(
-                    f'GET /launch-options: expected a list at .{key}, got '
-                    f'{type(payload.get(key)).__name__} — refusing to '
-                    'silently treat the surface as empty')
+                    f'GET /instances/launch-options: expected a list at '
+                    f'.{key}, got {type(payload.get(key)).__name__} — '
+                    'refusing to silently treat the surface as empty')
+        return payload
+
+    def category_check(self,
+                       service_id: str,
+                       *,
+                       category_id: Optional[str] = None) -> Dict[str, Any]:
+        """Which regions a service can launch in NOW, with free slot
+        counts (``GET /instances/category-check``).
+
+        v2's stock surface (measured 2026-11-09): the launch-options
+        product rows carry no availability; the answer is
+        ``{compatibleServiceIds, serviceRegions: {serviceId: [regionId]},
+        freeSlots: {serviceId: {regionId: N}}, maintenance, checkFailed}``.
+        A sold-out service stays listed with 0 slots; ``checkFailed``
+        true means the answer may be incomplete — refuse, never guess.
+        """
+        params = ({
+            'categoryId': category_id
+        } if category_id else {
+            'serviceId': service_id
+        })
+        payload = self._call('GET', '/instances/category-check',
+                             params=params) or {}
+        if not isinstance(payload, dict):
+            raise PacketError(
+                'GET /instances/category-check: expected an object, got '
+                f'{type(payload).__name__}')
         return payload
 
     # -- instances ---------------------------------------------------------
@@ -472,9 +525,10 @@ class PacketClient:
             'silently truncate')
 
     def get_instance(self, instance_id: str) -> Dict[str, Any]:
-        """One instance by its FULL id; returns the ``data`` object
-        (``instance`` + metadata when present — the {id} route wraps the
-        instance at ``data.instance``)."""
+        """One instance by its FULL id; returns the Pod object
+        (v2 answers the Pod flat at the top level; the v1
+        ``data.instance`` wrapper is gone — wait_until_running unwraps
+        either shape)."""
         payload = self._call('GET', f'/instances/{instance_id}') or {}
         if not isinstance(payload, dict):
             raise PacketError(
@@ -505,34 +559,37 @@ class PacketClient:
     def create_instance(
         self,
         *,
-        name: str,
-        pool_id: str,
+        product_id: str,
         region_id: int,
-        vgpus: int = 1,
-        ssh_key_name: Optional[str] = None,
-        public_key: Optional[str] = None,
+        name: Optional[str] = None,
+        ssh_key_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Create an instance (POST /instances).
+        """Create a pod (POST /instances) — v2 serves it for API KEYS.
 
-        MEASURED (ENG-562, 2026-10-15): raises
-        :class:`PacketCreateNotImplementedError` today for API-key auth —
-        instance creation is console-session-path only; this method exists
-        so the day the engine is ported for API keys, the lane provisions
-        with ZERO changes (the body is the validated doc shape:
-        ``{name, pool_id, region_id, vgpus}``; keys install at launch, so
-        the account carries the key material first).
+        v2 (measured 2026-11-09): the v1 501 seam is GONE — the machine
+        reference's own launch example authenticates with X-API-Key.
+        The body is ``{product_id, region_id, name?, ssh_key_ids?}``
+        (v1's ``{pool_id, vgpus}`` shape is retired with the pool
+        surface). REQUIRED ``Idempotency-Key`` header: a fresh uuid4
+        per launch, the same value to retry one launch safely —
+        generated HERE so no caller can forget it. The launch charges
+        the first 30 minutes up front: a wallet that cannot cover them
+        402s, and a failed launch is refunded.
         """
-        if ssh_key_name and public_key:
-            # Keys install at LAUNCH only: ensure the account carries the
-            # key material before creating (console launches do the same).
-            self.ensure_ssh_key(ssh_key_name, public_key)
         body: Dict[str, Any] = {
-            'name': name,
-            'pool_id': str(pool_id),
+            'product_id': str(product_id),
             'region_id': int(region_id),
-            'vgpus': int(vgpus),
         }
-        payload = self._call('POST', '/instances', body=body) or {}
+        if name:
+            body['name'] = name
+        if ssh_key_ids:
+            body['ssh_key_ids'] = [str(k) for k in ssh_key_ids]
+        payload = self._call(
+            'POST',
+            '/instances',
+            body=body,
+            extra_headers={'Idempotency-Key': str(uuid.uuid4())},
+        ) or {}
         if not isinstance(payload, dict):
             raise PacketError(
                 f'POST /instances returned {type(payload).__name__}, '
@@ -550,7 +607,9 @@ class PacketClient:
             pass
 
     def stop_instance(self, instance_id: str) -> None:
-        """Stop an instance (billing stops; the box and disk persist)."""
+        """Stop a pod (v2: billing does NOT stop — a stopped pod keeps
+        the GPU and bills at the FULL running rate; only terminating it
+        ends the charges. Never stop as a cost-saving measure)."""
         self._call('POST', f'/instances/{instance_id}/stop')
 
     def start_instance(self, instance_id: str) -> None:
@@ -560,26 +619,41 @@ class PacketClient:
     # -- ssh keys ----------------------------------------------------------
 
     def list_ssh_keys(self) -> List[Dict[str, Any]]:
-        payload = self._call('GET', '/ssh-keys') or {}
-        rows = payload if isinstance(payload, list) else payload.get('data')
+        """The account's SSH keys (``GET /account/ssh-keys``).
+
+        v2 (measured 2026-11-09): the payload is
+        ``{"keys": [{"id", "name", "fingerprint", "createdAt",
+        "keyPreview"}]}`` — the fingerprint survives (the
+        ``ensure_ssh_key`` material match still works).
+        """
+        payload = self._call('GET', '/account/ssh-keys') or {}
+        rows = payload.get('keys') if isinstance(payload, dict) else payload
         if not isinstance(rows, list):
-            raise PacketError('GET /ssh-keys: expected a list, got '
+            raise PacketError('GET /account/ssh-keys: expected a list, got '
                               f'{type(rows).__name__}')
         return [row for row in rows if isinstance(row, dict)]
 
     def create_ssh_key(self, name: str, public_key: str) -> Dict[str, Any]:
+        """Add a key (``POST /account/ssh-keys``).
+
+        v2 wraps the created key at ``.key`` (v1 answered the object
+        directly); the same material added twice 400s — ``ensure_ssh_key``
+        matches material first, so this path only runs for genuinely new
+        keys.
+        """
         payload = self._call(
             'POST',
-            '/ssh-keys',
+            '/account/ssh-keys',
             body={
                 'name': name,
                 'publicKey': public_key,
             },
         ) or {}
-        if not isinstance(payload, dict) or not payload.get('id'):
+        key = (payload.get('key') if isinstance(payload, dict) else payload)
+        if not isinstance(key, dict) or not key.get('id'):
             raise PacketError(
-                f'POST /ssh-keys returned no id: {sorted(payload)}')
-        return payload
+                f'POST /account/ssh-keys returned no id: {sorted(payload)}')
+        return key
 
     def ensure_ssh_key(self, name: str, public_key: str) -> str:
         """The id of the key matching ``public_key``, adding it if absent.
@@ -605,7 +679,10 @@ class PacketClient:
 
     @staticmethod
     def instance_status(instance: Dict[str, Any]) -> str:
-        return str(instance.get('status') or '').strip().lower()
+        # v2 (measured 2026-11-09): the Pod object names it ``state``
+        # (v1 ``status``); the enum and its steady states are documented
+        # at the STATUS_* constants.
+        return str(instance.get('state') or '').strip().lower()
 
     @staticmethod
     def instance_name(instance: Dict[str, Any]) -> str:
@@ -655,7 +732,7 @@ class PacketClient:
                 last_status = status
             if status == STATUS_RUNNING:
                 return instance
-            if status in (STATUS_ERROR, STATUS_FAILED):
+            if status in (STATUS_FAILED, STATUS_TERMINATING, STATUS_TERMINATED):
                 raise PacketError(
                     f'instance {instance_id} entered {status} while waiting '
                     'for running; not auto-retrying (report and decide)',

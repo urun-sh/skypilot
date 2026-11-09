@@ -3,11 +3,12 @@ catalog fetcher (sky/catalog/data_fetchers/fetch_packet.py), the
 provisioner (sky/provision/packet/instance.py), and the registration
 points an in-tree carry must not miss.
 
-Every fixture shape is captured from the LIVE API (ENG-562, 2026-10-15):
-the launch-options products/pools/regions surface (including the RTX PRO
-6000 product that flipped in mid-session), the 501 create refusal, the
-console-launched adoption bridge, the connection endpoint's public-ip +
-ubuntu + port-30356 shape.
+Every fixture shape is captured from the LIVE v2 API (measured
+2026-11-09): the FLAT launch-options surface (no pools, no per-product
+stock — availability lives in the category-check freeSlots), the served
+POST /instances create (the v1 501 refusal is gone), the console-launched
+adoption bridge, the connection endpoint's public-ip + ubuntu +
+port-30356 shape, and the Pod objects whose status field is ``state``.
 """
 
 import json
@@ -24,66 +25,83 @@ from sky.provision.packet import instance as provision
 def _product(product_id='cmkjtxmp20000asi3ermfys2t',
              name='NVIDIA RTX PRO 6000 Blackwell - Dynamic',
              cents=66,
-             stock=3,
              vram=96,
-             pool_ids=(108,),
-             regions=('us-west-2',)):
+             service_id='srv_rtxpro6000',
+             billing_type='hourly',
+             gpu_count=1):
+    # v2 (measured 2026-11-09): products carry NO stock and NO region
+    # list (v1 totalAvailableGpus/poolIds/regions are gone) — the
+    # WHOLE-BOX pricePerHourCents, the serviceId the category-check
+    # answers for, and the description prose the row parser reads.
     return {
         'id': product_id,
         'name': name,
         'description': '96GB ram',
+        'billingType': billing_type,
         'pricePerHourCents': cents,
-        'poolIds': list(pool_ids),
-        'displayOrder': 0,
+        'serviceId': service_id,
         'featured': True,
-        'badgeText': None,
         'vramGb': vram,
-        'totalAvailableGpus': stock,
-        'regions': [{
-            'id': 67,
-            'name': region,
-            'city': 'Santa Clara, CA',
-            'country': 'United States',
-        } for region in regions],
-    }
-
-
-def _pool(pool_id='108', name='rtx-w2-6000-2', price=0.66, region='us-west-2'):
-    return {
-        'id': pool_id,
-        'name': name,
-        'gpu_model': name,
-        'price_per_hour': price,
-        'region': {
-            'id': 67,
-            'name': region,
-            'city': 'Santa Clara, CA',
-            'country': 'United States',
-        },
+        'gpuCount': gpu_count,
     }
 
 
 def _region(region_id=67, name='us-west-2'):
+    # v2 (measured 2026-11-09): region rows are {id: int, name: str}.
     return {
         'id': region_id,
-        'region_name': name,
         'name': name,
-        'city': 'Santa Clara, CA',
-        'country': 'United States',
-        'country_code': 'us',
-        'accelerator_type': 'gpu',
     }
 
 
-def _launch_options(products=(), pools=(), regions=()):
+def _category_check(service_id='srv_rtxpro6000',
+                    region_id=67,
+                    free_slots=3,
+                    check_failed=False):
+    # v2 (measured 2026-11-09): GET /instances/category-check answers
+    # {categoryId, compatibleServiceIds, serviceRegions, freeSlots,
+    # maintenance, checkFailed}; freeSlots values are free POD slots
+    # keyed service id -> region id.
     return {
+        'categoryId': 'cat_1',
+        'compatibleServiceIds': [service_id],
+        'serviceRegions': {
+            service_id: [region_id]
+        },
+        'freeSlots': {
+            service_id: {
+                str(region_id): free_slots
+            }
+        },
+        'maintenance': {},
+        'checkFailed': check_failed,
+    }
+
+
+def _checks(products, region_id=67, free_slots=3, check_failed=False):
+    """{serviceId: category-check answer} for every product."""
+    return {
+        str(p.get('serviceId') or ''): _category_check(
+            str(p.get('serviceId') or ''),
+            region_id=region_id,
+            free_slots=free_slots,
+            check_failed=check_failed) for p in products
+    }
+
+
+def _launch_options(products=(), regions=()):
+    # v2 (measured 2026-11-09): the launch-options answer is FLAT — no
+    # pools key, no images/storageBlocks (the v1 arrays are gone).
+    return {
+        'can_use_premium': True,
+        'categories': [],
+        'existingSharedVolumes': [],
         'products': list(products),
-        'pools': list(pools),
         'regions': list(regions),
-        'images': [],
-        'storageBlocks': [],
-        'ephemeralStorageBlocks': [],
-        'persistentStorageBlocks': [],
+        'sshKeys': [],
+        'storagePricePerGBHourCents': 2,
+        'teamId': 'team_1',
+        'walletBalanceCents': 50000,
     }
 
 
@@ -124,15 +142,14 @@ class TestFetcherTokens(unittest.TestCase):
 class TestFetcherRows(unittest.TestCase):
 
     def test_in_stock_product_emits_token_region_wholebox_price(self):
-        # The LIVE shape (ENG-562, 2026-10-15): the RTX PRO 6000 product at
-        # 66 cents/GPU-hr, 96GB, stock 3, us-west-2 — the target the lane
-        # rents. Whole-box price for count 1 = 0.66.
-        options = _launch_options(
-            products=[_product()],
-            pools=[_pool()],
-            regions=[_region()],
-        )
-        rows = list(fetch_packet.iter_rows(options))
+        # The v2 LIVE shape (measured 2026-11-09): the RTX PRO 6000
+        # product at 66 WHOLE-BOX cents/hr, 96GB, category-check free
+        # slots in us-west-2 — the target the lane rents. Whole-box
+        # price for count 1 = 0.66.
+        product = _product()
+        options = _launch_options(products=[product], regions=[_region()])
+        checks = _checks([product])
+        rows = list(fetch_packet.iter_rows(options, checks))
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(row[0], 'rtxpro6000:1')
@@ -147,108 +164,194 @@ class TestFetcherRows(unittest.TestCase):
         self.assertEqual(gpu_info['Gpus'][0]['Count'], 1)
 
     def test_zero_stock_product_is_not_rentable(self):
-        # A featured product at totalAvailableGpus 0 appears in the list;
-        # the row must not reach the catalog (a rentable quote for a box
-        # that cannot launch).
-        options = _launch_options(products=[_product(stock=0)])
-        self.assertEqual(list(fetch_packet.iter_rows(options)), [])
+        # v2 (measured 2026-11-09): v1's totalAvailableGpus is GONE —
+        # rentability is the category-check's freeSlots. A product whose
+        # check reports 0 free slots must not reach the catalog (a
+        # rentable quote for a box that cannot launch).
+        product = _product()
+        options = _launch_options(products=[product], regions=[_region()])
+        checks = _checks([product], free_slots=0)
+        self.assertEqual(list(fetch_packet.iter_rows(options, checks)), [])
 
     def test_monthly_unpriced_product_is_not_rentable(self):
-        # Monthly plans carry pricePerHourCents 0 and never touch the
-        # wallet — quoting them as free would be a lie.
-        options = _launch_options(products=[_product(cents=0)])
-        self.assertEqual(list(fetch_packet.iter_rows(options)), [])
+        # Monthly plans never touch the wallet and carry no hourly price
+        # (pricePerHourCents 0 measured) — quoting them as free would
+        # be a lie.
+        product = _product(cents=0, billing_type='monthly')
+        options = _launch_options(products=[product], regions=[_region()])
+        checks = _checks([product])
+        self.assertEqual(list(fetch_packet.iter_rows(options, checks)), [])
 
-    def test_count_prefix_multiplies_the_wholebox_price(self):
-        options = _launch_options(
-            products=[
-                _product(name='2 x NVIDIA RTX 4090 Dedicated',
-                         cents=39,
-                         stock=1,
-                         pool_ids=(144,),
-                         regions=('Texas',)),
-            ],
-            pools=[
-                _pool(pool_id='144',
-                      name='4090PremiumPool_1',
-                      price=0.39,
-                      region='Texas')
-            ],
-            regions=[_region(region_id=78, name='Texas')],
-        )
-        rows = list(fetch_packet.iter_rows(options))
+    def test_multi_gpu_token_prices_the_whole_box(self):
+        # v2 (measured 2026-11-09): pricePerHourCents is the WHOLE-BOX
+        # price — a 2-GPU product at 78 cents/hr quotes 0.78/hr for the
+        # rtx4090:2 token (the count is inside the box price, nothing is
+        # multiplied at row time).
+        product = _product(name='2 x NVIDIA RTX 4090 Dedicated',
+                           cents=78,
+                           service_id='srv_4090',
+                           gpu_count=2)
+        options = _launch_options(products=[product],
+                                  regions=[_region(region_id=78, name='Texas')])
+        checks = _checks([product], region_id=78)
+        rows = list(fetch_packet.iter_rows(options, checks))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], 'rtx4090:2')
         self.assertEqual(rows[0][2], 2)
-        self.assertEqual(rows[0][5], 0.78)  # 2 x $0.39/GPU-hr
+        self.assertEqual(rows[0][5], 0.78)  # whole box, 2 GPUs inside
+        self.assertEqual(rows[0][6], 'Texas')
 
     def test_cheapest_per_token_region_wins(self):
-        # The same (accelerator, count, region) at two prices: the row is a
-        # rentable quote, so the cheapest wins (the provisioner
+        # The same (accelerator, count, region) at two prices: the row
+        # is a rentable quote, so the cheapest wins (the provisioner
         # re-resolves against the live surface at launch anyway).
-        options = _launch_options(
-            products=[
-                _product(product_id='p_cheap', cents=66),
-                _product(product_id='p_dear', cents=99),
-            ],
-            pools=[_pool()],
-            regions=[_region()],
-        )
-        rows = list(fetch_packet.iter_rows(options))
+        products = [
+            _product(product_id='p_cheap', cents=66),
+            _product(product_id='p_dear', cents=99),
+        ]
+        options = _launch_options(products=products, regions=[_region()])
+        checks = _checks(products)
+        rows = list(fetch_packet.iter_rows(options, checks))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][5], 0.66)
 
     def test_unmappable_family_is_skipped(self):
         # A family fragment the accelerator map does not know is skipped
         # (audit-visible via refusal), never a garbage row.
-        options = _launch_options(products=[_product(name='Mystery GPU X')])
-        self.assertEqual(list(fetch_packet.iter_rows(options)), [])
+        product = _product(name='Mystery GPU X')
+        options = _launch_options(products=[product], regions=[_region()])
+        checks = _checks([product])
+        self.assertEqual(list(fetch_packet.iter_rows(options, checks)), [])
+
+    def test_check_failed_answer_refuses(self):
+        # v2 (measured 2026-11-09): checkFailed=true means the
+        # availability answer may be INCOMPLETE — the fetch refuses
+        # rather than write a guessed-around partial catalog.
+        product = _product()
+        options = _launch_options(products=[product], regions=[_region()])
+        checks = _checks([product], check_failed=True)
+        with self.assertRaises(fetch_packet.PacketCatalogError) as ctx:
+            list(fetch_packet.iter_rows(options, checks))
+        self.assertIn('checkFailed', str(ctx.exception))
+
+    def test_blank_description_quotes_from_ramMb_field(self):
+        # v2 (measured 2026-11-09): the live 5090 Dynamic - Hourly
+        # product carries vcpuCount=6, ramMb=49152 and a BLANK
+        # description — the structured fields quote what the prose
+        # cannot. Field-first, prose fallback.
+        product = _product(name='1 x RTX 5090 Dynamic - Hourly',
+                           cents=36,
+                           service_id='srv_5090',
+                           vram=32)
+        product['description'] = ''
+        product['ramMb'] = 49152
+        product['vcpuCount'] = 6
+        options = _launch_options(
+            products=[product],
+            regions=[_region(region_id=100, name='Netherlands')])
+        checks = _checks([product], region_id=100)
+        rows = list(fetch_packet.iter_rows(options, checks))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], 'rtx5090:1')
+        self.assertEqual(rows[0][3], 6.0)  # vcpuCount field
+        self.assertEqual(rows[0][4], 48.0)  # ramMb 49152 / 1024
+        self.assertEqual(rows[0][5], 0.36)
+        self.assertEqual(rows[0][6], 'Netherlands')
+
+    def test_description_prose_still_quotes_when_fields_absent(self):
+        # The 4090 Dedicated carries ramMb=null but its prose carries
+        # '64GB ram · 16 vCPU' (measured): the fallback path.
+        product = _product(name='1 x NVIDIA RTX 4090 Dedicated',
+                           cents=39,
+                           service_id='srv_4090',
+                           vram=24)
+        product['description'] = '64GB ram · 16 vCPU · 250GB Local Storage'
+        product['ramMb'] = None
+        product['vcpuCount'] = None
+        options = _launch_options(products=[product],
+                                  regions=[_region(region_id=78, name='Texas')])
+        checks = _checks([product], region_id=78)
+        rows = list(fetch_packet.iter_rows(options, checks))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][4], 64.0)
+        self.assertEqual(rows[0][3], 16.0)
 
 
 class TestVerifyZeroStock(unittest.TestCase):
 
     def test_rows_present_passes(self):
-        options = _launch_options(products=[_product()])
-        rows = list(fetch_packet.iter_rows(options))
-        fetch_packet.verify_zero_stock(options, rows)  # no raise
+        product = _product()
+        options = _launch_options(products=[product], regions=[_region()])
+        checks = _checks([product])
+        rows = list(fetch_packet.iter_rows(options, checks))
+        fetch_packet.verify_zero_stock(options, checks, rows)  # no raise
 
     def test_honest_empty_passes(self):
-        # Every product at 0 stock: the header-only catalog is the honest
-        # write (the Latitude semantics).
-        options = _launch_options(products=[_product(stock=0)])
-        rows = list(fetch_packet.iter_rows(options))
+        # Every product's check at 0 free slots: the header-only catalog
+        # is the honest write (the Latitude semantics).
+        product = _product()
+        options = _launch_options(products=[product], regions=[_region()])
+        checks = _checks([product], free_slots=0)
+        rows = list(fetch_packet.iter_rows(options, checks))
         self.assertEqual(rows, [])
-        fetch_packet.verify_zero_stock(options, rows)  # no raise
+        fetch_packet.verify_zero_stock(options, checks, rows)  # no raise
 
     def test_contradiction_refuses(self):
-        # A product reporting stock while no row will be written is a
-        # filter bug or API drift — REFUSE, never write "no capacity".
-        options = _launch_options(
-            products=[_product(name='NVIDIA Something Unmappable', stock=5)])
-        rows = list(fetch_packet.iter_rows(options))
+        # A service reporting a free slot in a region the catalog names
+        # while no row will be written is a filter bug or API drift —
+        # REFUSE, never write "no capacity".
+        product = _product(name='NVIDIA Something Unmappable')
+        options = _launch_options(products=[product], regions=[_region()])
+        checks = _checks([product], free_slots=5)
+        rows = list(fetch_packet.iter_rows(options, checks))
         self.assertEqual(rows, [])
         with self.assertRaises(fetch_packet.PacketCatalogError) as ctx:
-            fetch_packet.verify_zero_stock(options, rows)
+            fetch_packet.verify_zero_stock(options, checks, rows)
+        self.assertIn('refusing', str(ctx.exception))
+
+    def test_stocked_product_with_no_ram_anywhere_refuses(self):
+        # Measured live 2026-11-09: a stocked product whose description
+        # is blank AND ramMb is null cannot be quoted (SkyPilot's launch
+        # validation rejects memory <= 0) — the zero-row write REFUSES
+        # rather than answer "no capacity" while real stock exists.
+        product = _product()
+        product['description'] = ''
+        product['ramMb'] = None
+        options = _launch_options(products=[product], regions=[_region()])
+        checks = _checks([product], free_slots=8)
+        rows = list(fetch_packet.iter_rows(options, checks))
+        self.assertEqual(rows, [])
+        with self.assertRaises(fetch_packet.PacketCatalogError) as ctx:
+            fetch_packet.verify_zero_stock(options, checks, rows)
         self.assertIn('refusing', str(ctx.exception))
 
 
 class _StubClient:
     """Records calls; answers from canned state."""
 
-    def __init__(self, instances=(), launch_options=None, create_error=None):
+    def __init__(self, instances=(), launch_options=None, category_checks=None):
         self.instances = {str(d['id']): d for d in instances}
+        product = _product()
         self.launch_options = launch_options or _launch_options(
-            products=[_product()], pools=[_pool()], regions=[_region()])
+            products=[product], regions=[_region()])
+        # v2 (measured 2026-11-09): rentability answers live in the
+        # category-checks, keyed by service id.
+        self.category_checks = category_checks or _checks([product])
         self.created = []
         self.stopped = []
         self.deleted = []
         self.ensure_key_calls = []
-        self.create_error = create_error
 
     # -- catalog -----------------------------------------------------
 
     def get_launch_options(self):
         return self.launch_options
+
+    def category_check(self, service_id, *, category_id=None):
+        # v2 (measured 2026-11-09): GET /instances/category-check.
+        del category_id
+        return self.category_checks.get(
+            str(service_id), _category_check(str(service_id), free_slots=0))
 
     # -- ssh keys ------------------------------------------------------
 
@@ -266,12 +369,15 @@ class _StubClient:
     # -- instances -----------------------------------------------------
 
     def list_instances(self, status=None):
+        del status
         return list(self.instances.values())
 
     def get_instance(self, instance_id):
+        # v2 (measured 2026-11-09): the {id} route answers the Pod FLAT
+        # (the v1 data.instance wrapper is gone).
         if str(instance_id) not in self.instances:
             raise provision.utils.PacketNotFoundError('gone')
-        return {'instance': self.instances[str(instance_id)]}
+        return dict(self.instances[str(instance_id)])
 
     def get_connection(self, instance_id):
         if str(instance_id) not in self.instances:
@@ -286,27 +392,26 @@ class _StubClient:
 
     def create_instance(self,
                         *,
-                        name,
-                        pool_id,
+                        product_id,
                         region_id,
-                        vgpus=1,
-                        ssh_key_name=None,
-                        public_key=None):
-        if self.create_error is not None:
-            raise self.create_error
+                        name=None,
+                        ssh_key_ids=None):
+        # v2 (measured 2026-11-09): the create body is {product_id,
+        # region_id, name?, ssh_key_ids?} (v1's pool_id/vgpus kwargs are
+        # gone) and the 201 answers {id: ...}.
         self.created.append({
-            'name': name,
-            'pool_id': pool_id,
+            'product_id': product_id,
             'region_id': region_id,
-            'vgpus': vgpus,
+            'name': name,
+            'ssh_key_ids': list(ssh_key_ids or []),
         })
         new = {
             'id': 'i-new',
             'name': name,
-            'status': 'running',
+            'state': 'running',
         }
         self.instances['i-new'] = new
-        return {'instance_id': 'i-new'}
+        return {'id': 'i-new'}
 
     def delete_instance(self, instance_id):
         self.deleted.append(str(instance_id))
@@ -316,8 +421,15 @@ class _StubClient:
         self.stopped.append(str(instance_id))
 
     def wait_until_running(self, instance_id, **kwargs):
+        # v2: the payload is the FLAT pod; the client's poll reads
+        # ``state``.
+        del kwargs
         payload = self.get_instance(instance_id)
-        return payload['instance']
+        status = provision.utils.instance_status(payload)
+        if status != 'running':
+            raise provision.utils.PacketError(
+                f'stub saw {status!r} while waiting for running')
+        return payload
 
 
 def _config(node_config=None):
@@ -340,8 +452,11 @@ def _launchable_config():
     })
 
 
-def _instance_row(instance_id, status, name='rtxpro6000blackwell-1x-dynamic'):
-    return {'id': instance_id, 'name': name, 'status': status}
+def _instance_row(instance_id, state, name='rtxpro6000blackwell-1x-dynamic'):
+    # v2 (measured 2026-11-09): the Pod names its status field ``state``
+    # (v1 ``status``); the enum is starting | running | stopping |
+    # stopped | failed | terminating | terminated | unknown.
+    return {'id': instance_id, 'name': name, 'state': state}
 
 
 class _StateIsolated(unittest.TestCase):
@@ -385,9 +500,11 @@ class TestProvisioner(_StateIsolated):
         self.assertEqual(stub.created, [])
 
     def test_adopts_console_launched_box_by_name(self):
-        # THE ENG-562 BRIDGE: creation is 501 for API keys; the operator
-        # launched the lane's box FROM THE CONSOLE with the cluster name.
-        # No mapping exists — the adoption is by EXACT NAME.
+        # THE CONSOLE BRIDGE: the operator launched the lane's box FROM
+        # THE CONSOLE with the cluster name. No mapping exists — the
+        # adoption is by EXACT NAME. (v2 serves API-key creates now,
+        # measured 2026-11-09, but a console-launched box still adopts
+        # here rather than minting a second box.)
         stub = _StubClient(instances=[
             _instance_row('i-console', 'running', name='sky-test-cluster'),
         ])
@@ -409,21 +526,26 @@ class TestProvisioner(_StateIsolated):
         self.assertIn('refusing to guess', str(ctx.exception))
         self.assertIn('console', str(ctx.exception))
 
-    def test_create_refusal_is_typed_and_names_the_console_path(self):
-        # No mapping, no name-match, no foreign boxes: the create path
-        # raises the MEASURED typed 501 today — never a retry loop, never
-        # a silent "no capacity".
-        stub = _StubClient(
-            instances=[],
-            create_error=provision.utils.PacketCreateNotImplementedError(
-                'POST /instances: NOT_IMPLEMENTED: Instance creation is '
-                'not yet available: the deploy engine (Stripe, wallet, '
-                'provisioning) has not been ported.'),
-        )
-        with self.assertRaises(
-                provision.utils.PacketCreateNotImplementedError) as ctx:
-            self._run(stub)
-        self.assertIn('NOT_IMPLEMENTED', str(ctx.exception))
+    def test_create_path_provisions_with_live_resolved_ids(self):
+        # v2 (measured 2026-11-09): the v1 501 create refusal is GONE —
+        # POST /instances SERVES creates for API keys. No mapping, no
+        # name-match, no foreign boxes: the create path provisions, and
+        # the recorded body proves the launch-time re-resolution RAN —
+        # the LIVE product id and the NUMERIC region id (67), the
+        # cluster name, and the ensured key's id (never a guess, never a
+        # frozen id from catalog time).
+        stub = _StubClient(instances=[])
+        record = self._run(stub)
+        self.assertEqual(record.head_instance_id, 'i-new')
+        self.assertEqual(record.created_instance_ids, ['i-new'])
+        self.assertEqual(stub.created, [{
+            'product_id': 'cmkjtxmp20000asi3ermfys2t',
+            'region_id': 67,
+            'name': 'sky-test-cluster',
+            'ssh_key_ids': ['key_1'],
+        }])
+        self.assertEqual(stub.ensure_key_calls,
+                         [('skypilot', 'ssh-rsa AAAAcanned test@host')])
 
     def test_missing_instance_type_token_refuses(self):
         stub = _StubClient(instances=[])
@@ -448,8 +570,10 @@ class TestProvisioner(_StateIsolated):
                       }))
         self.assertIn('placeholder', str(ctx.exception))
 
-    def test_error_state_box_refuses_with_report(self):
-        # A mapped box in error/failed must not be silently retried.
+    def test_failed_state_box_refuses_with_report(self):
+        # v2 (measured 2026-11-09): v1's ``error`` is GONE — a mapped
+        # box in ``failed`` (or terminating/terminated) must not be
+        # silently retried.
         provision._save_state({
             'sky-test-cluster': {
                 'instance_id': 'i-err',
@@ -459,11 +583,11 @@ class TestProvisioner(_StateIsolated):
             }
         })
         stub = _StubClient(instances=[
-            _instance_row('i-err', 'error', name='sky-test-cluster'),
+            _instance_row('i-err', 'failed', name='sky-test-cluster'),
         ])
         with self.assertRaises(provision.utils.PacketError) as ctx:
             self._run(stub)
-        self.assertIn('error', str(ctx.exception))
+        self.assertIn('failed', str(ctx.exception))
         self.assertIn('not auto-retried', str(ctx.exception))
 
     def test_corrupt_state_file_raises(self):
@@ -483,7 +607,7 @@ class TestProvisioner(_StateIsolated):
             }
         })
         stub = _StubClient(instances=[
-            _instance_row('i-1', 'running', name='sky-test-cluster'),
+            _instance_row('i-1', 'running'),
         ])
         with mock.patch.object(provision.utils,
                                'client_from_env',
@@ -516,8 +640,10 @@ class TestProvisioner(_StateIsolated):
         self.assertEqual(stub.deleted, [])
 
     def test_stop_is_a_real_stop_not_destroy(self):
-        # MEASURED Packet semantics: POST stop stops billing, box+disk
-        # persist — unlike QuantaCloud whose stop destroys.
+        # v2 (measured 2026-11-09): a REAL stop persists the box+disk
+        # (start resumes) — but it does NOT pause the bill: a stopped pod
+        # KEEPS its GPU and bills at the FULL running rate, so only
+        # terminating ends the charges. Stop is still not a destroy.
         provision._save_state({
             'sky-test-cluster': {
                 'instance_id': 'i-1',
@@ -527,7 +653,7 @@ class TestProvisioner(_StateIsolated):
             }
         })
         stub = _StubClient(instances=[
-            _instance_row('i-1', 'running', name='sky-test-cluster'),
+            _instance_row('i-1', 'running'),
         ])
         with mock.patch.object(provision.utils,
                                'client_from_env',
@@ -535,6 +661,7 @@ class TestProvisioner(_StateIsolated):
             provision.stop_instances('sky-test-cluster')
         self.assertEqual(stub.stopped, ['i-1'])
         self.assertEqual(stub.deleted, [])  # stop is NOT terminate
+        self.assertIn('i-1', stub.instances)  # the box+disk persist
 
     def test_get_cluster_info_reads_public_connection(self):
         provision._save_state({
@@ -546,7 +673,7 @@ class TestProvisioner(_StateIsolated):
             }
         })
         stub = _StubClient(instances=[
-            _instance_row('i-1', 'running', name='sky-test-cluster'),
+            _instance_row('i-1', 'running'),
         ])
         with mock.patch.object(provision.utils,
                                'client_from_env',
@@ -568,7 +695,7 @@ class TestProvisioner(_StateIsolated):
             }
         })
         stub = _StubClient(instances=[
-            _instance_row('i-1', 'running', name='sky-test-cluster'),
+            _instance_row('i-1', 'running'),
         ])
         with mock.patch.object(provision.utils,
                                'client_from_env',
@@ -595,41 +722,46 @@ class TestProvisioner(_StateIsolated):
 
 
 class TestLaunchResolution(_StateIsolated):
-    """The launch-time product/pool/region re-resolution."""
-
-    def test_resolves_product_pool_region_from_live_options(self):
-        options = _launch_options(
-            products=[_product()],
-            pools=[_pool()],
-            regions=[_region()],
-        )
-        stub = _StubClient(
-            launch_options=options,
-            create_error=provision.utils.PacketCreateNotImplementedError(
-                'POST /instances: NOT_IMPLEMENTED: not '
-                'ported'))
-        with mock.patch.object(provision.utils,
-                               'client_from_env',
-                               return_value=stub):
-            with self.assertRaises(
-                    provision.utils.PacketCreateNotImplementedError):
-                self._run_create(stub)
-        # The re-resolution DID happen before the refusal: the create body
-        # carries the pool id and the NUMERIC region id (67), proving the
-        # re-resolution ran — the refusal is the provider's, not ours.
-        self.assertEqual(stub.created, [])
+    """The launch-time product/region re-resolution (v2: pools GONE)."""
 
     def _run_create(self, stub):
         return provision.run_instances('us-west-2', 'cluster',
                                        'sky-test-cluster', _launchable_config())
 
+    def test_resolves_product_region_from_live_options(self):
+        # v2 (measured 2026-11-09): pools are GONE — the create body
+        # carries the LIVE product id and the NUMERIC region id from the
+        # re-resolution (the ids are ephemeral; a frozen one from
+        # catalog time would be silent rot), and the category-check must
+        # answer free slots in the region before the create runs.
+        product = _product()
+        options = _launch_options(products=[product], regions=[_region()])
+        stub = _StubClient(
+            launch_options=options,
+            category_checks=_checks([product]),
+            instances=[],
+        )
+        with mock.patch.object(provision.utils,
+                               'client_from_env',
+                               return_value=stub):
+            record = self._run_create(stub)
+        self.assertEqual(record.created_instance_ids, ['i-new'])
+        self.assertEqual(stub.created, [{
+            'product_id': 'cmkjtxmp20000asi3ermfys2t',
+            'region_id': 67,
+            'name': 'sky-test-cluster',
+            'ssh_key_ids': ['key_1'],
+        }])
+
     def test_unknown_region_fails_closed(self):
+        product = _product()
         options = _launch_options(
-            products=[_product()],
-            pools=[_pool()],
+            products=[product],
             regions=[],  # no regions served at all
         )
-        stub = _StubClient(launch_options=options, instances=[])
+        stub = _StubClient(launch_options=options,
+                           category_checks=_checks([product]),
+                           instances=[])
         with mock.patch.object(provision.utils,
                                'client_from_env',
                                return_value=stub):
@@ -638,12 +770,15 @@ class TestLaunchResolution(_StateIsolated):
         self.assertIn('fail closed', str(ctx.exception))
 
     def test_no_in_stock_product_fails_closed(self):
-        options = _launch_options(
-            products=[_product(stock=0)],
-            pools=[_pool()],
-            regions=[_region()],
-        )
-        stub = _StubClient(launch_options=options, instances=[])
+        # v2 (measured 2026-11-09): stock is the category-check's
+        # freeSlots — 0 free slots behind the catalog row means the
+        # offer went out of stock; fail closed rather than rent a
+        # different shape.
+        product = _product()
+        options = _launch_options(products=[product], regions=[_region()])
+        stub = _StubClient(launch_options=options,
+                           category_checks=_checks([product], free_slots=0),
+                           instances=[])
         with mock.patch.object(provision.utils,
                                'client_from_env',
                                return_value=stub):
