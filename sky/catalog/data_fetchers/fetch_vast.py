@@ -116,6 +116,21 @@ if __name__ == '__main__':
         limit=10000,
         no_default=True)
 
+    # CLIENT-SIDE Secure-Cloud re-check (measured 2026-11-09): Vast's
+    # search API now answers "Unrecognized field: type, hosting_type" —
+    # the server no longer enforces two of the launch-surface terms
+    # above, so the guarantee must live here: an offer that is not
+    # datacenter-hosted Secure-Cloud (hosting_type >= 1) with KVM VMs
+    # enabled is NOT rentable by the lane, and the catalog must not
+    # quote it (the 2026-09-29 Australia container-rows class, re-armed).
+    # All six live offers passed this check on 2026-11-09; the guard
+    # exists for the offer that does not.
+    offerList = [
+        offer for offer in offerList
+        if (offer.get('datacenter') is True and
+            int(offer.get('hosting_type') or 0) >= 1 and
+            offer.get('vms_enabled') is True)
+    ]
     # With georegion = true the API's geolocation is a full
     # "Country, CC, GEO" string. Region MUST be the trailing georegion
     # token (EU/NA/...) alone: the controller's residency filter
@@ -182,7 +197,12 @@ if __name__ == '__main__':
                 instance['Price'] = '{:.2f}'.format(priceTarget)
                 toList.append(instance)
 
-        maxBid = max([x.get('SpotPrice') for x in toList])
+        # Vast's min_bid is the INTERRUPTIBLE bid floor; Secure-Cloud
+        # on-demand offers carry 0 = unset, never a $0.00 price. Writing
+        # the raw 0 read as a free spot tier on the dashboard
+        # (measured 2026-11-09: every live row showed spot $0.0) — a
+        # non-positive bid means NO spot price, written as empty.
+        maxBid = max([x.get('SpotPrice') or 0 for x in toList])
         # LIVE STOCK: the dedup below collapses sibling offers into one
         # row per (InstanceType, Region, HostingType) stub, so the CSV
         # would otherwise read as ONE machine where N are rentable.
@@ -204,7 +224,8 @@ if __name__ == '__main__':
                 # in csvList; subsequent ones update spot price in place.
                 printstub = f'{stub}#print'
                 if printstub not in seen:
-                    instance['SpotPrice'] = f'{maxBid:.2f}'
+                    instance['SpotPrice'] = (f'{maxBid:.2f}'
+                                             if maxBid > 0 else '')
                     # A spot-price marker for the SAME machines the
                     # first row already counted: 0 keeps
                     # sum(AvailableUnits) equal to the real machine
@@ -226,6 +247,11 @@ if __name__ == '__main__':
                 # second occurrence was needed to emit the first stub's
                 # row).
                 seen.add(stub)
+                # min_bid 0 = unset (see the maxBid note): the first
+                # row's raw mapped value must not read as a $0.00
+                # spot price either.
+                if not instance.get('SpotPrice') or instance['SpotPrice'] <= 0:
+                    instance['SpotPrice'] = ''
                 instance['AvailableUnits'] = stub_units[stub]
                 csvList.append(instance)
 
