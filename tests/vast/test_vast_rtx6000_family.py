@@ -24,7 +24,7 @@ from sky.adaptors import vast
 from sky.provision.vast import utils
 
 
-def _offer(gpu_name, cpu_cores=96, cpu_ram=96690, price=1.74):
+def _offer(gpu_name, cpu_cores=96, cpu_ram=96690, price=1.74, min_bid=None):
     return {
         'gpu_name': gpu_name,
         'num_gpus': 1,
@@ -34,10 +34,22 @@ def _offer(gpu_name, cpu_cores=96, cpu_ram=96690, price=1.74):
         'search': {
             'totalHour': price
         },
-        'min_bid': price,
+        'min_bid': price if min_bid is None else min_bid,
         'geolocation': 'Czechia, CZ, EU',
         'hosting_type': 1,
+        'datacenter': True,
+        'vms_enabled': True,
     }
+
+
+def _offer_unsecure(**overrides):
+    """A community/container-class offer: the Secure-Cloud fields the
+    client-side guard must refuse (the search server stopped enforcing
+    'type'/'hosting_type' on 2026-11-09 — this is the re-armed
+    2026-09-29 Australia guarantee)."""
+    offer = _offer('RTX 4090')
+    offer.update(overrides)
+    return offer
 
 
 def _fetch(offers):
@@ -168,6 +180,77 @@ class TestSearchDropsTheSdkVerifiedDefault(unittest.TestCase):
         self.assertTrue(
             call.kwargs['query'].startswith(utils.SEARCH_BASE_TERMS),
             call.kwargs['query'])
+
+
+class TestSecureCloudGuardAndSpotPrice(unittest.TestCase):
+    """2026-11-09 audit findings: the search server stopped enforcing the
+    'type'/'hosting_type' query terms (measured: 'Unrecognized field'
+    warnings on every fetch), so the client must refuse non-Secure-Cloud
+    offers itself; and Vast's min_bid 0 means 'unset', never a $0.00
+    spot price — the raw 0 read as a free spot tier on the dashboard."""
+
+    def test_unsecure_offers_are_dropped_client_side(self):
+        rows = _fetch([
+            _offer('RTX 4090', cpu_cores=32, cpu_ram=65536, price=0.4),
+            _offer_unsecure(hosting_type=0),
+            _offer_unsecure(datacenter=False),
+            _offer_unsecure(vms_enabled=False),
+        ])
+        # Only the Secure-Cloud offer survives; the community/container
+        # ones must never reach the quote surface.
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['InstanceType'], '1x-RTX_4090-32-65536')
+
+    def test_zero_min_bid_writes_no_spot_price(self):
+        # min_bid 0 = unset interruptible bid: no spot tier exists, so
+        # neither the first row nor the duplicate-stub row may quote one.
+        rows = _fetch([
+            _offer('RTX 4090',
+                   cpu_cores=32,
+                   cpu_ram=65536,
+                   price=0.4,
+                   min_bid=0),
+            _offer('RTX 4090',
+                   cpu_cores=32,
+                   cpu_ram=65536,
+                   price=0.4,
+                   min_bid=0),
+        ])
+        # The zero-bid path must not pass vacuously: both rows (the
+        # first row AND the duplicate-stub marker) must exist and be
+        # checked, or an empty catalog would slip through.
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(row['SpotPrice'], '')
+            # The on-demand price and the live unit count are unaffected.
+            self.assertEqual(row['Price'], '0.40')
+            self.assertNotEqual(row['AvailableUnits'], '')
+
+    def test_positive_min_bid_is_suppressed_until_spot_launches(self):
+        # The RAW API bids are REAL (the adaptor shim restores them from
+        # under the SDK stomp — see test_vast_min_bid_shim.py), but the
+        # LAUNCH path cannot serve an interruptible rental yet (the ray
+        # template's use_spot variable renders null; create_instance
+        # sends no client_max_price), so the catalog must not quote a
+        # spot tier a claim could price while the lane would rent
+        # on-demand capacity at the on-demand price (CodeRabbit #92:
+        # both write paths emit '' by design until that lands).
+        rows = _fetch([
+            _offer('RTX 4090',
+                   cpu_cores=32,
+                   cpu_ram=65536,
+                   price=0.4,
+                   min_bid=0.38),
+            _offer('RTX 4090',
+                   cpu_cores=32,
+                   cpu_ram=65536,
+                   price=0.4,
+                   min_bid=0.39),
+        ])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r['SpotPrice'] for r in rows], ['', ''])
+        # The on-demand price still quotes the real ask.
+        self.assertEqual([r['Price'] for r in rows], ['0.40', '0.40'])
 
 
 if __name__ == '__main__':

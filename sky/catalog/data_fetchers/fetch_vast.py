@@ -116,6 +116,21 @@ if __name__ == '__main__':
         limit=10000,
         no_default=True)
 
+    # CLIENT-SIDE Secure-Cloud re-check (measured 2026-11-09): Vast's
+    # search API now answers "Unrecognized field: type, hosting_type" —
+    # the server no longer enforces two of the launch-surface terms
+    # above, so the guarantee must live here: an offer that is not
+    # datacenter-hosted Secure-Cloud (hosting_type >= 1) with KVM VMs
+    # enabled is NOT rentable by the lane, and the catalog must not
+    # quote it (the 2026-09-29 Australia container-rows class, re-armed).
+    # All six live offers passed this check on 2026-11-09; the guard
+    # exists for the offer that does not.
+    offerList = [
+        offer for offer in offerList
+        if (offer.get('datacenter') is True and
+            int(offer.get('hosting_type') or 0) >= 1 and
+            offer.get('vms_enabled') is True)
+    ]
     # With georegion = true the API's geolocation is a full
     # "Country, CC, GEO" string. Region MUST be the trailing georegion
     # token (EU/NA/...) alone: the controller's residency filter
@@ -182,7 +197,18 @@ if __name__ == '__main__':
                 instance['Price'] = '{:.2f}'.format(priceTarget)
                 toList.append(instance)
 
-        maxBid = max([x.get('SpotPrice') for x in toList])
+        # SPOT QUOTES SUPPRESSED (CodeRabbit #92, 2026-11-09): the bids
+        # mapped above ARE real — restored from under the SDK's
+        # queryFormatter stomp by sky/adaptors/vast.py:_patch_sdk_min_bid
+        # — but Vast's LAUNCH path cannot serve an interruptible rental
+        # yet: the ray template renders `Preemptible: {{use_spot}}` and
+        # the deploy-resources variables never carry use_spot (renders
+        # null), and create_instance sends no client_max_price — a
+        # spot-priced claim would rent ON-DEMAND capacity at the
+        # on-demand price (the mis-quote class the audit hunted). The
+        # catalog quotes only what the lane can launch: SpotPrice stays
+        # EMPTY until the launch path grows interruptible support; both
+        # write paths below emit '' by design, never a bid.
         # LIVE STOCK: the dedup below collapses sibling offers into one
         # row per (InstanceType, Region, HostingType) stub, so the CSV
         # would otherwise read as ONE machine where N are rentable.
@@ -199,18 +225,18 @@ if __name__ == '__main__':
             stub = (f'{instance["InstanceType"]} '
                     f'{instance["Region"][-2:]} {hosting_type}')
             if stub in seen:
-                # DUPLICATE stub: update the spot price to the max bid
-                # across the group. Only the FIRST row for this stub is
-                # in csvList; subsequent ones update spot price in place.
+                # DUPLICATE stub: an availability marker row for the
+                # SAME machines the first row already counted. Only the
+                # FIRST row for this stub is in csvList.
                 printstub = f'{stub}#print'
                 if printstub not in seen:
-                    instance['SpotPrice'] = f'{maxBid:.2f}'
-                    # A spot-price marker for the SAME machines the
-                    # first row already counted: 0 keeps
-                    # sum(AvailableUnits) equal to the real machine
-                    # count (this row adds no stock; it re-emits the
-                    # group's max bid under the group's cheapest
-                    # instance type).
+                    instance['SpotPrice'] = ''
+                    # A marker row for the SAME machines the first row
+                    # already counted: 0 keeps sum(AvailableUnits)
+                    # equal to the real machine count (this row adds
+                    # no stock; it re-emits the stub under the group's
+                    # cheapest instance type). No spot tier — see the
+                    # suppression note above.
                     instance['AvailableUnits'] = 0
                     csvList.append(instance)
                     seen.add(printstub)
@@ -226,6 +252,10 @@ if __name__ == '__main__':
                 # second occurrence was needed to emit the first stub's
                 # row).
                 seen.add(stub)
+                # min_bid is real (the shim restored it) but the lane
+                # cannot serve spot yet — see the suppression note above:
+                # the first row quotes no spot tier either.
+                instance['SpotPrice'] = ''
                 instance['AvailableUnits'] = stub_units[stub]
                 csvList.append(instance)
 

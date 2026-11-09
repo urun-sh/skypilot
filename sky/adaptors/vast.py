@@ -162,8 +162,70 @@ def _patch_sdk_instances_endpoint():
             return url.replace('/api/v0/instances?', '/api/v1/instances/?', 1)
         return url
 
-    apiurl._skypilot_v1_instances = True
+    setattr(apiurl, '_skypilot_v1_instances', True)
     _vast_cli.apiurl = apiurl
+
+
+def _patch_sdk_min_bid():
+    """Restore the API's real interruptible bid from under the SDK's stomp.
+
+    Measured live 2026-11-09: vastai-sdk 0.2.5's ``queryFormatter`` runs a
+    chunked cutoff pass (``{'cpu_ram': 64*1024, 'cpu_cores': 32,
+    'min_bid': 0}``); for every cutoff field whose value is NOT below the
+    cutoff it executes ``res[k] = cutoff[k]`` — so every non-negative
+    ``min_bid`` (and every absent one) is overwritten with 0 before
+    ``search_offers`` returns. The RAW API (captured through the hook,
+    pre-formatter) carries positive per-offer bid floors on live Secure
+    Cloud listings (measured: 0.39-1.07 $/hr); the SDK's stomped 0 read
+    as a $0.00 spot price in the catalog.
+
+    The patch wraps the SDK's ``_hooks['search__offers']`` formatter
+    (consulted at call time, so wrapping works post-import): stash each
+    offer's raw bid before the original formatter runs, restore it on the
+    returned offers afterwards. The formatter MUTATES the offer dicts in
+    place and returns the same objects (filtered), so ``id()`` keys the
+    stash to its restoree. The cutoff FILTER (cpu_ram/cpu_cores floors)
+    and the georegion enrichment still run unchanged; only the stomped
+    field is restored. The launch path (sky/provision/vast/utils.py)
+    prices from ``dph_total`` and never reads ``min_bid`` — restoring it
+    is inert there.
+
+    VERSION-GUARDED, NOT SILENT: same contract as the other two patches —
+    if the hook table moves or renames, raise rather than let the catalog
+    silently regress to $0.00 spot prices.
+    """
+    from vastai import vastai_sdk
+
+    hook_name = 'search__offers'
+    if hook_name not in vastai_sdk._hooks:
+        raise RuntimeError(
+            'vastai-sdk internal _hooks lacks a search__offers entry — the '
+            'SDK has changed shape. The min_bid restoration shim needs '
+            'review. Expected vastai-sdk 0.2.x (pinned 0.2.5 in '
+            'skypilot-controller).')
+    formatter = vastai_sdk._hooks[hook_name][1]
+    if getattr(formatter, '_skypilot_raw_min_bid', False):
+        return  # already patched — idempotent
+
+    def query_formatter(state, obj, instance):
+        """Wrap queryFormatter; restore the API's real bid after it."""
+        # Stash BEFORE the stomp: the cutoff pass overwrites min_bid.
+        # A raw bid of None is preserved as None — an offer that carries
+        # no bid is not a $0.00 one.
+        raw_bids = {
+            id(res): res.get('min_bid') for res in obj if isinstance(res, dict)
+        }
+        out = formatter(state, obj, instance)
+        for res in out:
+            if isinstance(res, dict) and id(res) in raw_bids:
+                res['min_bid'] = raw_bids[id(res)]
+        return out
+
+    # setattr/getattr, not attribute-on-function: mypy's attr-defined
+    # rejects the marker on a function object (the endpoint shim's
+    # apiurl._skypilot_v1_instances carries the same red).
+    setattr(query_formatter, '_skypilot_raw_min_bid', True)
+    vastai_sdk._hooks[hook_name][1] = query_formatter
 
 
 def import_package(func):
@@ -178,6 +240,7 @@ def import_package(func):
                 _vast_sdk = _vast.VastAI()
                 _patch_sdk_regions()
                 _patch_sdk_instances_endpoint()
+                _patch_sdk_min_bid()
             except ImportError as e:
                 raise ImportError(f'Fail to import dependencies for vast: {e}\n'
                                   'Try pip install "skypilot[vast]"') from None

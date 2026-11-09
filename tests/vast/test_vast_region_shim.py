@@ -169,7 +169,13 @@ def _mock_offer(geolocation='Dublin, IE', price=1.27):
         },
         'min_bid': price,
         'geolocation': geolocation,
-        'hosting_type': 0,
+        # Realistic Secure-Cloud shape: the fetcher's search query
+        # demands hosting_type >= 1 with datacenter + vms_enabled, so
+        # a genuine API response always carries these fields (the
+        # 2026-11-09 client-side guard drops anything else).
+        'hosting_type': 1,
+        'datacenter': True,
+        'vms_enabled': True,
         'bundle_id': 'test-bundle',
         'inet_down': 500,
         'disk_space': 512,
