@@ -400,7 +400,8 @@ def verify_zero_stock(launch_options: Dict[str, Any],
                 continue
             if (region_id in region_ids and isinstance(slots, int) and
                     not isinstance(slots, bool) and slots > 0):
-                stocked.append(f"{product.get('name') or '?'}@{service_id}")
+                label = str(product.get('name') or '?') + '@' + service_id
+                stocked.append(label)
                 break
     if stocked:
         raise PacketCatalogError(
