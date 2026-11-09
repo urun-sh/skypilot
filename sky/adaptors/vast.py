@@ -163,6 +163,7 @@ def _patch_sdk_instances_endpoint():
         return url
 
     setattr(apiurl, '_skypilot_v1_instances', True)
+    _vast_cli.apiurl = apiurl
 
 
 def _patch_sdk_min_bid():
