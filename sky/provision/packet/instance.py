@@ -191,13 +191,18 @@ def _resolve_launch_target(
     gpu_count: int,
     region_name: str,
     max_price_per_gpu: Optional[float] = None,
-) -> Tuple[str, str, int]:
-    """Re-resolve (product id, pool id, numeric region id) from the LIVE
-    launch-options for the token's (accelerator, count, region).
+) -> Tuple[str, int]:
+    """Re-resolve (product id, numeric region id) from the LIVE surfaces.
 
-    Pool/product/region ids are ephemeral (the surface flipped its product
+    v2 (measured 2026-11-09): pools are GONE — the product IS the box, so
+    the create body takes ``product_id`` + numeric ``region_id`` only, and
+    the product's GPU count must EQUAL the token's (whole-box rentals).
+    Product/region ids are ephemeral (the v1 surface flipped its product
     list mid-session on 2026-10-15) — a frozen id from catalog time is
-    silent rot. Fails closed on no match (the offer behind the catalog row
+    silent rot. Rentability is the LIVE category-check: the product's
+    service must report a free slot in the region. ``pricePerHourCents``
+    is the WHOLE-BOX price; the per-GPU cap divides by the product's GPU
+    count. Fails closed on no match (the offer behind the catalog row
     went out of stock), never rents a different shape.
     """
     # pylint: disable=import-outside-toplevel
@@ -205,7 +210,6 @@ def _resolve_launch_target(
 
     options = client.get_launch_options()
     products = [p for p in options['products'] if isinstance(p, dict)]
-    pools = [p for p in options['pools'] if isinstance(p, dict)]
     regions = [r for r in options['regions'] if isinstance(r, dict)]
 
     region_id = None
@@ -225,42 +229,40 @@ def _resolve_launch_target(
         name = str(product.get('name') or '')
         if fetch_packet.normalise_accelerator(name) != accelerator.upper():
             continue
-        try:
-            available = int(product.get('totalAvailableGpus') or 0)
-        except (TypeError, ValueError):
-            continue
-        if available < gpu_count:
+        product_gpu_count = fetch_packet.parse_product_gpu_count(name)
+        if product_gpu_count != gpu_count:
+            # v2 rents WHOLE boxes: the product's count must be the
+            # token's count, not merely cover it.
             continue
         try:
             cents = int(product.get('pricePerHourCents') or 0)
         except (TypeError, ValueError):
             continue
-        per_gpu = cents / 100.0
+        per_gpu = (cents / 100.0) / product_gpu_count
         if max_price_per_gpu is not None and per_gpu > max_price_per_gpu:
             continue
-        product_regions = {
-            str(r.get('name') or '')
-            for r in (product.get('regions') or [])
-            if isinstance(r, dict)
-        }
-        if region_name not in product_regions:
+        service_id = str(product.get('serviceId') or '')
+        if not service_id:
             continue
-        pool_ids = {
-            str(p.get('id'))
-            for p in pools
-            if isinstance(p.get('id'), (int, str)) and str(
-                (p.get('region') or {}).get('name') or '') == region_name
-        }
-        for raw_pool_id in (product.get('poolIds') or []):
-            pool_id = str(raw_pool_id)
-            if pool_id in pool_ids:
-                return str(product.get('id')), pool_id, region_id
+        check = client.category_check(service_id)
+        if check.get('checkFailed'):
+            # An incomplete answer is not a rentability fact: skip, so
+            # no-match fails closed rather than launch on a guess.
+            continue
+        free_slots = check.get('freeSlots')
+        by_region = (free_slots.get(service_id)
+                     if isinstance(free_slots, dict) else None)
+        slots = (by_region.get(str(region_id))
+                 if isinstance(by_region, dict) else None)
+        if (not isinstance(slots, int) or isinstance(slots, bool) or slots < 1):
+            continue
+        return str(product.get('id')), region_id
     raise utils.PacketError(
-        f'no in-stock Packet.ai product for {accelerator!r} x {gpu_count} in '
-        f'region {region_name!r}' +
+        f'no rentable Packet.ai product for {accelerator!r} x {gpu_count} '
+        f'in region {region_name!r}' +
         (f' at <= ${max_price_per_gpu}/GPU-hr' if max_price_per_gpu else '') +
         '; the offer behind the catalog row went out of stock '
-        '(pool/product/region ids are ephemeral) — fail closed rather than '
+        '(product/region ids are ephemeral) — fail closed rather than '
         'rent a different shape')
 
 
@@ -305,7 +307,10 @@ def run_instances(
                 instance_id = None
             else:
                 status = utils.instance_status(instance)
-                if status in (utils.STATUS_ERROR, utils.STATUS_FAILED):
+                # v2: ``error`` is gone; ``failed`` is terminal and
+                # terminating/terminated mean the pod died under us.
+                if status in (utils.STATUS_FAILED, utils.STATUS_TERMINATING,
+                              utils.STATUS_TERMINATED):
                     raise utils.PacketError(
                         f'instance {instance_id} for cluster '
                         f'{cluster_name_on_cloud!r} is {status}; terminate '
@@ -380,25 +385,25 @@ def run_instances(
                 'unreachable')
 
         # Launch-time re-resolution: the token names the (accelerator,
-        # count) pair; the concrete product/pool/region ids come from the
-        # LIVE launch-options (ids are ephemeral — a frozen one is silent
-        # rot). Keys install at LAUNCH only: ensure the account carries the
-        # key material before creating.
-        product_id, pool_id, region_id = _resolve_launch_target(
-            client, accelerator, gpu_count, region)
-        client.ensure_ssh_key(utils.SSH_KEY_NAME, public_key)
-        # NOTE: create_instance raises PacketCreateNotImplementedError
-        # today (API-key path); the body below is the validated doc shape
-        # so the ported engine is a drop-in.
+        # count) pair; the concrete product/region ids come from the LIVE
+        # surfaces (ids are ephemeral — a frozen one is silent rot).
+        # Keys install at LAUNCH only: ensure the account carries the
+        # key material, then pass its id (v2 create takes ssh_key_ids).
+        product_id, region_id = _resolve_launch_target(client, accelerator,
+                                                       gpu_count, region)
+        key_id = client.ensure_ssh_key(utils.SSH_KEY_NAME, public_key)
+        # v2 serves POST /instances for API keys (the v1 501 seam is
+        # GONE, measured 2026-11-09): the body is {product_id, region_id,
+        # name, ssh_key_ids} and the client generates the REQUIRED
+        # Idempotency-Key. The launch charges the first 30 minutes up
+        # front — the wallet must cover them (402s otherwise; a failed
+        # launch is refunded).
         payload = client.create_instance(
-            name=cluster_name_on_cloud,
-            pool_id=pool_id,
+            product_id=product_id,
             region_id=region_id,
-            vgpus=gpu_count,
-            ssh_key_name=utils.SSH_KEY_NAME,
-            public_key=public_key,
+            name=cluster_name_on_cloud,
+            ssh_key_ids=[key_id],
         )
-        del product_id  # pool_id is what the create body takes
         instance_id = str(payload.get('instance_id') or payload.get('id') or '')
         if not instance_id:
             raise utils.PacketError(f'POST /instances returned no instance id: '
