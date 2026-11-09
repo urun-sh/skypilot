@@ -216,11 +216,34 @@ class TestSecureCloudGuardAndSpotPrice(unittest.TestCase):
                    price=0.4,
                    min_bid=0),
         ])
+        # The zero-bid path must not pass vacuously: both rows (the
+        # first row AND the duplicate-stub marker) must exist and be
+        # checked, or an empty catalog would slip through.
+        self.assertEqual(len(rows), 2)
         for row in rows:
             self.assertEqual(row['SpotPrice'], '')
             # The on-demand price and the live unit count are unaffected.
             self.assertEqual(row['Price'], '0.40')
             self.assertNotEqual(row['AvailableUnits'], '')
+
+    def test_positive_min_bid_writes_spot_price(self):
+        # The RAW API bids (restored from under the SDK stomp by the
+        # adaptor shim) must reach the CSV as real spot prices — the
+        # CodeRabbit #92 case: a stomped-to-0 bid hid the real tier.
+        rows = _fetch([
+            _offer('RTX 4090',
+                   cpu_cores=32,
+                   cpu_ram=65536,
+                   price=0.4,
+                   min_bid=0.38),
+            _offer('RTX 4090',
+                   cpu_cores=32,
+                   cpu_ram=65536,
+                   price=0.4,
+                   min_bid=0.39),
+        ])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sorted(r['SpotPrice'] for r in rows), ['0.38', '0.39'])
 
 
 if __name__ == '__main__':

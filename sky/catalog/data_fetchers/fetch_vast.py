@@ -197,11 +197,14 @@ if __name__ == '__main__':
                 instance['Price'] = '{:.2f}'.format(priceTarget)
                 toList.append(instance)
 
-        # Vast's min_bid is the INTERRUPTIBLE bid floor; Secure-Cloud
-        # on-demand offers carry 0 = unset, never a $0.00 price. Writing
-        # the raw 0 read as a free spot tier on the dashboard
-        # (measured 2026-11-09: every live row showed spot $0.0) — a
-        # non-positive bid means NO spot price, written as empty.
+        # Vast's min_bid is the INTERRUPTIBLE bid floor. vastai-sdk 0.2.5
+        # STOMPS it to 0 inside queryFormatter (measured 2026-11-09) —
+        # the adaptor shim (_patch_sdk_min_bid, sky/adaptors/vast.py)
+        # restores the API's real bids before this code sees them, so
+        # SpotPrice is the honest ask. A bid of 0 or ABSENT (raw or
+        # post-shim) still means unset: no spot tier exists, and writing
+        # a raw 0 read as a free $0.00 spot tier on the dashboard
+        # (measured 2026-11-09: every live row showed spot $0.0) —
         maxBid = max([x.get('SpotPrice') or 0 for x in toList])
         # LIVE STOCK: the dedup below collapses sibling offers into one
         # row per (InstanceType, Region, HostingType) stub, so the CSV
@@ -249,9 +252,14 @@ if __name__ == '__main__':
                 seen.add(stub)
                 # min_bid 0 = unset (see the maxBid note): the first
                 # row's raw mapped value must not read as a $0.00
-                # spot price either.
-                if not instance.get('SpotPrice') or instance['SpotPrice'] <= 0:
+                # spot price either. A real bid is formatted to the
+                # same 2-decimal string the duplicate-stub row writes.
+                if (not instance.get('SpotPrice') or
+                        instance['SpotPrice'] <= 0):
                     instance['SpotPrice'] = ''
+                else:
+                    instance[
+                        'SpotPrice'] = f'{float(instance["SpotPrice"]):.2f}'
                 instance['AvailableUnits'] = stub_units[stub]
                 csvList.append(instance)
 
