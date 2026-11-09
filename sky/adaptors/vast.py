@@ -221,7 +221,10 @@ def _patch_sdk_min_bid():
                 res['min_bid'] = raw_bids[id(res)]
         return out
 
-    query_formatter._skypilot_raw_min_bid = True
+    # setattr/getattr, not attribute-on-function: mypy's attr-defined
+    # rejects the marker on a function object (the endpoint shim's
+    # apiurl._skypilot_v1_instances carries the same red).
+    setattr(query_formatter, '_skypilot_raw_min_bid', True)
     vastai_sdk._hooks[hook_name][1] = query_formatter
 
 
