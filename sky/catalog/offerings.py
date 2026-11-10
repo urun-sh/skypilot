@@ -213,6 +213,7 @@ _GCP_FRACTIONAL_GPU_INSTANCE_TYPES = frozenset({
     'g4-standard-24',
 })
 
+
 # The GCP host↔accelerator JOIN (#91's deferred follow-up, ENG-581):
 # GCP prices a GPU machine as HOST VM + per-GPU SKUs, and the catalog
 # carries the two in SEPARATE rows — GPU rows with an empty
@@ -226,22 +227,29 @@ _GCP_FRACTIONAL_GPU_INSTANCE_TYPES = frozenset({
 #
 # The join: a bare-SKU GPU row of accelerator A at count N in a
 # (region, zone) takes the same-place host row for A's family shape at
-# count N and adds its per-GPU slice (host price / N). No host row →
-# the row keeps its SKU-only price (never a fabricated host). Families
-# WITHOUT a fixed count↔shape convention stay out entirely:
+# count N and publishes the PER-GPU whole-card price,
+# (SKU total + host) / N. No host row → the row is DROPPED, not quoted
+# SKU-only (a bare GPU SKU is not a rentable card; one unjoined row
+# would win every _cheapest()). Families WITHOUT a fixed count↔shape
+# convention stay out entirely:
 #   * A4/B200: get_vm_price's special case prices the host row 0 — the
 #     B200 SKU IS the whole-box price, nothing to join.
 #   * N1 legacy attachable GPUs (V100/P100/T4/…): any n1-standard-*
 #     size can host any count — no convention; those rows stay
 #     SKU-only (documented here rather than guessed).
+def _gcp_a100_host_shape(count: int) -> str:
+    """16 A100s ride the a2-MEGAGPU-16g host, not a2-highgpu (which
+    tops out at 8g); without the mapping the count-16 rows drop even
+    though the host exists (CodeRabbit #94)."""
+    if count == 16:
+        return 'a2-megagpu-16g'
+    return f'a2-highgpu-{count}g'
+
+
 _GCP_GPU_HOST_SHAPES = {
     'RTXPRO6000': lambda count: f'g4-standard-{48 * count}',
     'L4': lambda count: f'g2-standard-{12 * count}',
-    # 16 A100s ride the a2-MEGAGPU-16g host, not a2-highgpu (which
-    # tops out at 8g); without the mapping the count-16 rows drop
-    # even though the host exists (CodeRabbit #94).
-    'A100': lambda count: ('a2-megagpu-16g'
-                           if count == 16 else f'a2-highgpu-{count}g'),
+    'A100': _gcp_a100_host_shape,
     'H100': lambda count: f'a3-highgpu-{count}g',
 }
 
@@ -259,12 +267,13 @@ def _join_gcp_host_prices(df: 'pd.DataFrame') -> 'pd.DataFrame':
     if df.empty or 'InstanceType' not in df.columns:
         return df
     host_rows = df[df['AcceleratorName'].isna() & df['InstanceType'].notna()]
-    host_price = {
-        # AvailabilityZone is optional (not every offerings CSV
-        # carries it); the key degrades to region-only matching.
-        (row.InstanceType, row.Region, getattr(row, 'AvailabilityZone', '')):
-            (row.Price, row.SpotPrice) for row in host_rows.itertuples()
-    }
+    host_price = {}
+    for row in host_rows.itertuples():
+        # AvailabilityZone is optional (not every offerings CSV carries
+        # it); the key degrades to region-only matching.
+        key = (row.InstanceType, row.Region, getattr(row, 'AvailabilityZone',
+                                                     ''))
+        host_price[key] = (row.Price, row.SpotPrice)
     gpu_mask = (df['AcceleratorName'].notna() & df['InstanceType'].isna() &
                 df['AcceleratorName'].isin(_GCP_GPU_HOST_SHAPES))
     if not gpu_mask.any():
