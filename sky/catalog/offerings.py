@@ -213,19 +213,97 @@ _GCP_FRACTIONAL_GPU_INSTANCE_TYPES = frozenset({
     'g4-standard-24',
 })
 
+# The GCP host↔accelerator JOIN (#91's deferred follow-up, ENG-581):
+# GCP prices a GPU machine as HOST VM + per-GPU SKUs, and the catalog
+# carries the two in SEPARATE rows — GPU rows with an empty
+# InstanceType (bare SKU price) and host rows with an empty
+# AcceleratorName (host cost). Quoting the bare SKU as the card's
+# price underquotes by the whole host: measured live 2026-11-09, the
+# us-central1 RTXPRO6000 SKU $1.09565 + the g4-standard-48 host
+# $3.40428 = $4.49993/GPU-hr — the runner's pinned truth ($4.4999)
+# exactly, while the SKU-only row read $1.10 on-demand / $0.45 spot
+# (host spot $1.27068 joins to $1.71778).
+#
+# The join: a bare-SKU GPU row of accelerator A at count N in a
+# (region, zone) takes the same-place host row for A's family shape at
+# count N and adds its per-GPU slice (host price / N). No host row →
+# the row keeps its SKU-only price (never a fabricated host). Families
+# WITHOUT a fixed count↔shape convention stay out entirely:
+#   * A4/B200: get_vm_price's special case prices the host row 0 — the
+#     B200 SKU IS the whole-box price, nothing to join.
+#   * N1 legacy attachable GPUs (V100/P100/T4/…): any n1-standard-*
+#     size can host any count — no convention; those rows stay
+#     SKU-only (documented here rather than guessed).
+_GCP_GPU_HOST_SHAPES = {
+    'RTXPRO6000': lambda count: f'g4-standard-{48 * count}',
+    'L4': lambda count: f'g2-standard-{12 * count}',
+    'A100': lambda count: f'a2-highgpu-{count}g',
+    'H100': lambda count: f'a3-highgpu-{count}g',
+}
+
+
+def _join_gcp_host_prices(df: 'pd.DataFrame') -> 'pd.DataFrame':
+    """Whole-card prices for GCP bare-SKU GPU rows: add the host slice."""
+    if df.empty or 'InstanceType' not in df.columns:
+        return df
+    host_rows = df[df['AcceleratorName'].isna() & df['InstanceType'].notna()]
+    if host_rows.empty:
+        return df
+    host_price = {
+        # AvailabilityZone is optional (not every offerings CSV carries
+        # it); the key degrades to region-only matching.
+        (row.InstanceType, row.Region, getattr(row, 'AvailabilityZone', '')):
+            (row.Price, row.SpotPrice) for row in host_rows.itertuples()
+    }
+    gpu_mask = (df['AcceleratorName'].notna() & df['InstanceType'].isna() &
+                df['AcceleratorName'].isin(_GCP_GPU_HOST_SHAPES))
+    if not gpu_mask.any():
+        return df
+    df = df.copy()
+    unjoinable = []
+    for idx, row in df[gpu_mask].iterrows():
+        count = int(row['AcceleratorCount'])
+        if count < 1:
+            continue
+        shape = _GCP_GPU_HOST_SHAPES[row['AcceleratorName']](count)
+        host = host_price.get(
+            (shape, row['Region'], row.get('AvailabilityZone', '')))
+        if host is None:
+            # No same-place host row: a bare GPU SKU is not a
+            # rentable card (the GPU cannot be bought without its
+            # host), so the row is DROPPED, not quoted SKU-only —
+            # one unjoined row would win every _cheapest() and
+            # re-create the underquote this join exists to fix.
+            unjoinable.append(idx)
+            continue
+        if host[0] == host[0]:  # not NaN
+            df.loc[idx, 'Price'] = row['Price'] + host[0] / count
+        if host[1] == host[1]:  # not NaN
+            df.loc[idx, 'SpotPrice'] = row['SpotPrice'] + host[1] / count
+    if unjoinable:
+        df = df.drop(index=unjoinable)
+    return df
+
 
 def _gpu_offerings(df: 'pd.DataFrame', cloud: str) -> List[Dict[str, Any]]:
     """Per-accelerator aggregation, gpus_only convention of
     common.list_accelerators_impl.
     """
+    if (cloud == 'gcp' and 'InstanceType' in df.columns and not df.empty):
+        # The host↔accelerator join (#91's follow-up) runs FIRST: the
+        # GpuInfo filter below drops the bare host rows (empty GpuInfo),
+        # and the join reads them — bare-SKU GPU rows gain their host
+        # slice so the dashboard quotes the WHOLE card (measured:
+        # SKU $1.09565 + g4-standard-48 host $3.40428 = $4.49993 = the
+        # runner's pinned truth).
+        df = _join_gcp_host_prices(df)
     if 'GpuInfo' in df.columns:
         df = df[~df['GpuInfo'].isna()]
     if (cloud == 'gcp' and 'InstanceType' in df.columns and not df.empty):
         # Never quote a fractional G4 slice as a GPU price (see
         # _GCP_FRACTIONAL_GPU_INSTANCE_TYPES); the whole-card rows
         # price the GPU the dashboard actually sells.
-        df = df[~df['InstanceType'].isin(
-            _GCP_FRACTIONAL_GPU_INSTANCE_TYPES)]
+        df = df[~df['InstanceType'].isin(_GCP_FRACTIONAL_GPU_INSTANCE_TYPES)]
     if 'AcceleratorName' not in df.columns:
         return []
     df = df[df['AcceleratorName'].notna()]
