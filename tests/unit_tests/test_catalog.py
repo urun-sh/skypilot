@@ -950,8 +950,7 @@ def test_provider_gpu_offerings_mtime_passthrough(tmp_path, monkeypatch):
     assert result['providers']['shadeform']['updated_at'] == 1000000.0
 
 
-def test_gcp_offerings_never_quote_fractional_g4_slices(tmp_path,
-                                                        monkeypatch):
+def test_gcp_offerings_never_quote_fractional_g4_slices(tmp_path, monkeypatch):
     """The G4 family prices FRACTIONAL vGPU slices (g4-standard-6 = 1/8
     card, -12 = 1/4, -24 = 1/2) as count-1 catalog rows; only
     g4-standard-48 is a whole card. The offerings aggregation excludes
@@ -962,16 +961,13 @@ def test_gcp_offerings_never_quote_fractional_g4_slices(tmp_path,
     _patch_catalog_dir(monkeypatch, tmp_path)
     # Live G4 prices (us-central1): the slices are cheaper per ROW and
     # would win every min() without the exclusion.
-    _write_offerings_csv(
-        tmp_path,
-        'gcp',
-        [
-            'g4-standard-6,RTXPRO6000,1,6,22,"{}",0.64688,0.2416,us-central1',
-            'g4-standard-12,RTXPRO6000,1,12,45,"{}",1.29376,0.4832,us-central1',
-            'g4-standard-24,RTXPRO6000,1,24,90,"{}",2.58752,0.9664,us-central1',
-            'g4-standard-48,RTXPRO6000,1,48,180,"{}",4.49993,1.6808,us-central1',
-            'g4-standard-96,RTXPRO6000,2,96,360,"{}",8.99986,3.3616,us-central1',
-        ])
+    _write_offerings_csv(tmp_path, 'gcp', [
+        'g4-standard-6,RTXPRO6000,1,6,22,"{}",0.64688,0.2416,us-central1',
+        'g4-standard-12,RTXPRO6000,1,12,45,"{}",1.29376,0.4832,us-central1',
+        'g4-standard-24,RTXPRO6000,1,24,90,"{}",2.58752,0.9664,us-central1',
+        'g4-standard-48,RTXPRO6000,1,48,180,"{}",4.49993,1.6808,us-central1',
+        'g4-standard-96,RTXPRO6000,2,96,360,"{}",8.99986,3.3616,us-central1',
+    ])
     result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
     gpus = result['providers']['gcp']['gpus']
     rtx = next(g for g in gpus if g['name'] == 'RTXPRO6000')
@@ -982,6 +978,174 @@ def test_gcp_offerings_never_quote_fractional_g4_slices(tmp_path,
     assert rtx['counts'] == [1, 2]
     assert [d['price'] for d in rtx['region_details']] == [4.49993]
     assert [d['spot_price'] for d in rtx['region_details']] == [1.6808]
+
+
+def test_gcp_offerings_join_host_and_sku_whole_card_prices(
+        tmp_path, monkeypatch):
+    """The REAL GCP catalog splits a GPU machine across two row kinds:
+    bare SKU rows (empty InstanceType, GPU-SKU-only price) and host
+    rows (empty AcceleratorName, host cost) — GCP prices a machine as
+    HOST + GPU SKUs. The offerings join adds the same-place host slice
+    so the dashboard quotes the WHOLE card: live 2026-11-09, the
+    us-central1 RTXPRO6000 SKU $1.09565 + the g4-standard-48 host
+    $3.40428 = $4.49993/GPU-hr = the runner's pinned truth ($4.4999)
+    exactly, where the SKU-only row underquoted $1.10 on-demand /
+    $0.45 spot (join: $1.71778)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(
+        tmp_path,
+        'gcp',
+        [
+            # Host rows (empty AcceleratorName): the g4-standard-48
+            # (1-GPU) and -96 (2-GPU) hosts, us-central1.
+            'g4-standard-48,,,48,180,,3.40428,1.27068,us-central1',
+            'g4-standard-96,,,96,360,,6.80856,2.54136,us-central1',
+            # Bare SKU rows (empty InstanceType): per-GPU SKU price.
+            ',RTXPRO6000,1,0,0,"{}",1.09565,0.4471,us-central1',
+            ',RTXPRO6000,2,0,0,"{}",2.1913,0.8942,us-central1',
+        ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    rtx = next(g for g in gpus if g['name'] == 'RTXPRO6000')
+    assert rtx['price'] == pytest.approx(4.49993)
+    assert rtx['spot_price'] == pytest.approx(1.71778)
+    assert rtx['counts'] == [1, 2]
+    # Per-GPU slice: the 2-GPU host ($6.80856) splits over 2 GPUs.
+    assert rtx['region_details'][0]['price'] == pytest.approx(4.49993)
+    assert rtx['region_details'][0]['spot_price'] == pytest.approx(1.71778)
+
+
+def test_gcp_offerings_unjoinable_bare_sku_rows_drop_not_underquote(
+        tmp_path, monkeypatch):
+    """A bare SKU row whose (region, zone) has NO host row is not a
+    rentable card — the GPU cannot be bought without its host — so the
+    row DROPS instead of keeping its SKU-only price: one unjoined row
+    would win every _cheapest() and re-create the underquote the join
+    exists to fix (live 2026-11-09: 47/48 zones join; the one that
+    doesn't carried the cheapest SKU price)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(
+        tmp_path,
+        'gcp',
+        [
+            # Host only in us-central1; europe-west1 has a CHEAPER SKU
+            # but no host row.
+            'g4-standard-48,,,48,180,,3.40428,1.27068,us-central1',
+            ',RTXPRO6000,1,0,0,"{}",0.50,0.20,europe-west1',
+            ',RTXPRO6000,1,0,0,"{}",1.09565,0.4471,us-central1',
+        ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    rtx = next(g for g in gpus if g['name'] == 'RTXPRO6000')
+    # The unjoinable cheap SKU is gone; the only quotable card is the
+    # joined us-central1 one.
+    assert rtx['price'] == pytest.approx(4.49993)
+    assert [d['region'] for d in rtx['region_details']] == ['us-central1']
+
+
+def test_gcp_offerings_families_without_host_convention_stay_sku_only(
+        tmp_path, monkeypatch):
+    """Families WITHOUT a fixed count<->host-shape convention are not in
+    the join table and pass through unchanged: A4/B200 (the B200 SKU
+    already IS the whole-box price — get_vm_price's special case) and
+    the N1 legacy attachable GPUs (any n1-standard-* size can host any
+    count; no convention — documented gap, never guessed)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'gcp', [
+        ',B200,8,0,0,"{}",90.216,13.9192,us-central1',
+        ',V100,8,0,0,"{}",2.48,0.2476,us-central1',
+    ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    b200 = next(g for g in gpus if g['name'] == 'B200')
+    v100 = next(g for g in gpus if g['name'] == 'V100')
+    assert b200['price'] == pytest.approx(90.216)
+    assert b200['spot_price'] == pytest.approx(13.9192)
+    assert v100['price'] == pytest.approx(2.48)
+    assert v100['spot_price'] == pytest.approx(0.2476)
+    assert b200['counts'] == [8]
+    assert v100['counts'] == [8]
+
+
+def test_gcp_offerings_a100_count16_joins_the_megagpu_host(
+        tmp_path, monkeypatch):
+    """16 A100s ride the a2-MEGAGPU-16g host, not a2-highgpu (which
+    tops out at 8g); without the mapping the count-16 rows DROP even
+    though the host exists (CodeRabbit #94)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'gcp', [
+        'a2-megagpu-16g,,,96,1360,,33.27,10.0,us-central1',
+        ',A100,16,0,0,"{}",44.71,20.0,us-central1',
+    ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    a100 = next(g for g in gpus if g['name'] == 'A100')
+    assert a100['counts'] == [16]
+    assert a100['price'] == pytest.approx((44.71 + 33.27) / 16)
+
+
+def test_gcp_offerings_no_host_rows_drop_supported_keep_unsupported(
+        tmp_path, monkeypatch):
+    """A catalog whose joinable-family bare SKU rows have NO host rows
+    at all must not quote them SKU-only (the underquote this join
+    exists to fix); families WITHOUT a host convention still pass
+    through (CodeRabbit #94)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'gcp', [
+        ',RTXPRO6000,1,0,0,"{}",1.09565,0.4471,us-central1',
+        ',B200,8,0,0,"{}",90.216,13.9192,us-central1',
+    ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    names = [g['name'] for g in gpus]
+    # The unhosted RTXPRO6000 SKU vanishes (not a rentable card); the
+    # B200 SKU (whole-box A4 pricing) passes through untouched.
+    assert 'RTXPRO6000' not in names
+    b200 = next(g for g in gpus if g['name'] == 'B200')
+    assert b200['price'] == pytest.approx(90.216)
+
+
+def test_gcp_offerings_bare_sku_row_without_count_drops_not_crashes(
+        tmp_path, monkeypatch):
+    """A bare-SKU row with a missing AcceleratorCount cannot be
+    normalized to a per-GPU basis: the row DROPS instead of raising
+    ValueError — which would report the whole GCP catalog as absent
+    (CodeRabbit #94)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'gcp', [
+        'g4-standard-48,,,48,180,,3.40428,1.27068,us-central1',
+        ',RTXPRO6000,,0,0,"{}",1.09565,0.4471,us-central1',
+        ',RTXPRO6000,1,0,0,"{}",1.09565,0.4471,us-central1',
+    ])
+    # Must not raise.
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    rtx = next(g for g in gpus if g['name'] == 'RTXPRO6000')
+    # Only the countable row survives; the whole-card price is the
+    # per-GPU-normalized join.
+    assert rtx['counts'] == [1]
+    assert rtx['price'] == pytest.approx(4.49993)
+
+
+def test_gcp_offerings_multi_gpu_rows_publish_per_gpu_prices(
+        tmp_path, monkeypatch):
+    """A bare SKU row carries the price of ALL its GPUs (count-2 =
+    2x the SKU) and the host row is the whole box — both normalize to
+    a PER-GPU basis: (SKU + host) / count. Adding host/count to an
+    unnormalized total inflated every multi-GPU row (CodeRabbit #94
+    Major): the count-2-only fixture must publish 4.49993, the same
+    whole-card per-GPU price as the count-1 row, not 5.59558."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'gcp', [
+        'g4-standard-96,,,96,360,,6.80856,2.54136,us-central1',
+        ',RTXPRO6000,2,0,0,"{}",2.19130,0.8942,us-central1',
+    ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    rtx = next(g for g in gpus if g['name'] == 'RTXPRO6000')
+    assert rtx['counts'] == [2]
+    assert rtx['price'] == pytest.approx(4.49993)
+    assert rtx['spot_price'] == pytest.approx(1.71778)
 
 
 def test_provider_gpu_offerings_missing_catalog_never_fetches(
