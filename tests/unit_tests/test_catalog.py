@@ -1067,6 +1067,87 @@ def test_gcp_offerings_families_without_host_convention_stay_sku_only(
     assert v100['counts'] == [8]
 
 
+def test_gcp_offerings_a100_count16_joins_the_megagpu_host(
+        tmp_path, monkeypatch):
+    """16 A100s ride the a2-MEGAGPU-16g host, not a2-highgpu (which
+    tops out at 8g); without the mapping the count-16 rows DROP even
+    though the host exists (CodeRabbit #94)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'gcp', [
+        'a2-megagpu-16g,,,96,1360,,33.27,10.0,us-central1',
+        ',A100,16,0,0,"{}",44.71,20.0,us-central1',
+    ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    a100 = next(g for g in gpus if g['name'] == 'A100')
+    assert a100['counts'] == [16]
+    assert a100['price'] == pytest.approx((44.71 + 33.27) / 16)
+
+
+def test_gcp_offerings_no_host_rows_drop_supported_keep_unsupported(
+        tmp_path, monkeypatch):
+    """A catalog whose joinable-family bare SKU rows have NO host rows
+    at all must not quote them SKU-only (the underquote this join
+    exists to fix); families WITHOUT a host convention still pass
+    through (CodeRabbit #94)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'gcp', [
+        ',RTXPRO6000,1,0,0,"{}",1.09565,0.4471,us-central1',
+        ',B200,8,0,0,"{}",90.216,13.9192,us-central1',
+    ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    names = [g['name'] for g in gpus]
+    # The unhosted RTXPRO6000 SKU vanishes (not a rentable card); the
+    # B200 SKU (whole-box A4 pricing) passes through untouched.
+    assert 'RTXPRO6000' not in names
+    b200 = next(g for g in gpus if g['name'] == 'B200')
+    assert b200['price'] == pytest.approx(90.216)
+
+
+def test_gcp_offerings_bare_sku_row_without_count_drops_not_crashes(
+        tmp_path, monkeypatch):
+    """A bare-SKU row with a missing AcceleratorCount cannot be
+    normalized to a per-GPU basis: the row DROPS instead of raising
+    ValueError — which would report the whole GCP catalog as absent
+    (CodeRabbit #94)."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'gcp', [
+        'g4-standard-48,,,48,180,,3.40428,1.27068,us-central1',
+        ',RTXPRO6000,,0,0,"{}",1.09565,0.4471,us-central1',
+        ',RTXPRO6000,1,0,0,"{}",1.09565,0.4471,us-central1',
+    ])
+    # Must not raise.
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    rtx = next(g for g in gpus if g['name'] == 'RTXPRO6000')
+    # Only the countable row survives; the whole-card price is the
+    # per-GPU-normalized join.
+    assert rtx['counts'] == [1]
+    assert rtx['price'] == pytest.approx(4.49993)
+
+
+def test_gcp_offerings_multi_gpu_rows_publish_per_gpu_prices(
+        tmp_path, monkeypatch):
+    """A bare SKU row carries the price of ALL its GPUs (count-2 =
+    2x the SKU) and the host row is the whole box — both normalize to
+    a PER-GPU basis: (SKU + host) / count. Adding host/count to an
+    unnormalized total inflated every multi-GPU row (CodeRabbit #94
+    Major): the count-2-only fixture must publish 4.49993, the same
+    whole-card per-GPU price as the count-1 row, not 5.59558."""
+    _patch_catalog_dir(monkeypatch, tmp_path)
+    _write_offerings_csv(tmp_path, 'gcp', [
+        'g4-standard-96,,,96,360,,6.80856,2.54136,us-central1',
+        ',RTXPRO6000,2,0,0,"{}",2.19130,0.8942,us-central1',
+    ])
+    result = catalog.get_provider_gpu_offerings(clouds=['gcp'])
+    gpus = result['providers']['gcp']['gpus']
+    rtx = next(g for g in gpus if g['name'] == 'RTXPRO6000')
+    assert rtx['counts'] == [2]
+    assert rtx['price'] == pytest.approx(4.49993)
+    assert rtx['spot_price'] == pytest.approx(1.71778)
+
+
 def test_provider_gpu_offerings_missing_catalog_never_fetches(
         tmp_path, monkeypatch):
     _patch_catalog_dir(monkeypatch, tmp_path)

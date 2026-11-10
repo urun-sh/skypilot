@@ -237,21 +237,31 @@ _GCP_FRACTIONAL_GPU_INSTANCE_TYPES = frozenset({
 _GCP_GPU_HOST_SHAPES = {
     'RTXPRO6000': lambda count: f'g4-standard-{48 * count}',
     'L4': lambda count: f'g2-standard-{12 * count}',
-    'A100': lambda count: f'a2-highgpu-{count}g',
+    # 16 A100s ride the a2-MEGAGPU-16g host, not a2-highgpu (which
+    # tops out at 8g); without the mapping the count-16 rows drop
+    # even though the host exists (CodeRabbit #94).
+    'A100': lambda count: ('a2-megagpu-16g'
+                           if count == 16 else f'a2-highgpu-{count}g'),
     'H100': lambda count: f'a3-highgpu-{count}g',
 }
 
 
 def _join_gcp_host_prices(df: 'pd.DataFrame') -> 'pd.DataFrame':
-    """Whole-card prices for GCP bare-SKU GPU rows: add the host slice."""
+    """Whole-card prices for GCP bare-SKU GPU rows: add the host slice.
+
+    A bare SKU row carries the price of ALL its GPUs (a count-2 row
+    is 2x the per-GPU SKU) and the host row is the whole box, so both
+    components are normalized to a PER-GPU basis before the join
+    lands in the Price column: (row price + host price) / count —
+    adding host/count to an unnormalized total inflated every
+    multi-GPU row (CodeRabbit #94).
+    """
     if df.empty or 'InstanceType' not in df.columns:
         return df
     host_rows = df[df['AcceleratorName'].isna() & df['InstanceType'].notna()]
-    if host_rows.empty:
-        return df
     host_price = {
-        # AvailabilityZone is optional (not every offerings CSV carries
-        # it); the key degrades to region-only matching.
+        # AvailabilityZone is optional (not every offerings CSV
+        # carries it); the key degrades to region-only matching.
         (row.InstanceType, row.Region, getattr(row, 'AvailabilityZone', '')):
             (row.Price, row.SpotPrice) for row in host_rows.itertuples()
     }
@@ -262,24 +272,45 @@ def _join_gcp_host_prices(df: 'pd.DataFrame') -> 'pd.DataFrame':
     df = df.copy()
     unjoinable = []
     for idx, row in df[gpu_mask].iterrows():
-        count = int(row['AcceleratorCount'])
+        # A bare-SKU row without a parseable count cannot be
+        # normalized to a per-GPU basis: DROP it rather than crash
+        # the whole cloud's offerings (a ValueError here reported
+        # the entire GCP catalog as absent — CodeRabbit #94).
+        try:
+            count = int(row['AcceleratorCount'])
+        except (TypeError, ValueError):
+            unjoinable.append(idx)
+            continue
         if count < 1:
+            unjoinable.append(idx)
             continue
         shape = _GCP_GPU_HOST_SHAPES[row['AcceleratorName']](count)
         host = host_price.get(
             (shape, row['Region'], row.get('AvailabilityZone', '')))
         if host is None:
-            # No same-place host row: a bare GPU SKU is not a
-            # rentable card (the GPU cannot be bought without its
-            # host), so the row is DROPPED, not quoted SKU-only —
-            # one unjoined row would win every _cheapest() and
-            # re-create the underquote this join exists to fix.
+            # No same-place host row (including the no-host-rows-at-all
+            # catalog): a bare GPU SKU is not a rentable card — the GPU
+            # cannot be bought without its host — so the row is
+            # DROPPED, not quoted SKU-only; one unjoined row would win
+            # every _cheapest() and re-create the underquote this join
+            # exists to fix. Families NOT in _GCP_GPU_HOST_SHAPES pass
+            # through untouched.
             unjoinable.append(idx)
             continue
-        if host[0] == host[0]:  # not NaN
-            df.loc[idx, 'Price'] = row['Price'] + host[0] / count
-        if host[1] == host[1]:  # not NaN
-            df.loc[idx, 'SpotPrice'] = row['SpotPrice'] + host[1] / count
+        price, spot = row['Price'], row['SpotPrice']
+        # Join an axis only when BOTH sides carry it: a priced SKU
+        # whose host axis is missing is not a quotable card (drop); a
+        # NaN SKU axis simply stays NaN (no such tier exists).
+        if price == price and not host[0] == host[0]:
+            unjoinable.append(idx)
+            continue
+        if spot == spot and not host[1] == host[1]:
+            unjoinable.append(idx)
+            continue
+        if price == price:
+            df.loc[idx, 'Price'] = (price + host[0]) / count
+        if spot == spot:
+            df.loc[idx, 'SpotPrice'] = (spot + host[1]) / count
     if unjoinable:
         df = df.drop(index=unjoinable)
     return df
