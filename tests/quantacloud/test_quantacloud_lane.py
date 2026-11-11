@@ -429,6 +429,32 @@ class TestProvisioner(_StateIsolated):
         self.assertEqual(state["sky-qc-abc"]["deployment_id"], "dep_new")
         self.assertEqual(state["sky-qc-abc"]["ssh_user"], "ubuntu")
 
+    def test_failed_poll_leaves_the_create_time_mapping_for_teardown(self):
+        # Live receipt 2026-11-11 (e2e-qwen-rtx6000-quantacloud-01): the
+        # poll crashed inside the read-after-write window and the
+        # failover teardown found NO mapping — it was written only after
+        # `active` — so the teardown refused, escalated to
+        # StopFailoverError, and leaked the billing box (it activated two
+        # minutes later). The mapping must exist from the CREATE moment,
+        # exactly so a failed poll's teardown can terminate cleanly.
+        class _PollFails(_StubClient):
+
+            def wait_until_active(self, deployment_id):
+                raise provision.utils.QuantacloudError(
+                    f"deployment {deployment_id} still 'provisioning' "
+                    "after 1200s; refusing to wait longer")
+
+        stub = _PollFails(offers=[_offer()])
+        with self.assertRaises(provision.utils.QuantacloudError):
+            self._run(stub, self._config_ready())
+        self.assertEqual(stub.created[0]["offer_id"], "of_1")
+        # The teardown's terminate path resolves the id through the
+        # mapping the create moment recorded (ssh_user still the
+        # documented fallback — no live connection to measure yet).
+        state = json.load(open(provision._STATE_PATH))
+        self.assertEqual(state["sky-qc-abc"]["deployment_id"], "dep_new")
+        self.assertEqual(state["sky-qc-abc"]["ssh_user"], "ubuntu")
+
     def test_unsubstituted_public_key_placeholder_refused(self):
         stub = _StubClient(offers=[_offer()])
         config = _config({
