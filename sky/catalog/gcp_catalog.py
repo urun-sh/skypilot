@@ -4,7 +4,7 @@ For now this service catalog is manually coded. In the future it should be
 queried from GCP API.
 """
 import typing
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from sky import exceptions
 from sky import sky_logging
@@ -29,8 +29,70 @@ logger = sky_logging.init_logger(__name__)
 # every 7 hours to make sure we have the latest information.
 _PULL_FREQUENCY_HOURS = 7
 
-_df = common.read_catalog('gcp/vms.csv',
-                          pull_frequency_hours=_PULL_FREQUENCY_HOURS)
+
+def _expand_rtxpro6000_fractional_rows(df: 'pd.DataFrame') -> 'pd.DataFrame':
+    """Emit 1/8, 1/4, 1/2 vGPU-slice rows for the G4 RTX PRO 6000 SKUs.
+
+    The upstream catalog carries ONE accelerator-only row per zone per
+    accelerator count, and G4's three fractional shapes
+    (g4-standard-6/12/24 are 1/8, 1/4, 1/2 of one physical RTX PRO 6000) all
+    sit behind the single count-1 SKU row. Without slice-count rows, an
+    explicit ``RTXPRO6000:0.125`` request cannot match or price its host
+    (g4-standard-6), while ``RTXPRO6000:1`` fuzzy-matches the same count-1 row
+    onto any of the four G4 hosts. Copying the whole-card row per slice keeps
+    the GPU component identical (GCP prices the GPU SKU per card); the host
+    price already differs per shape. Neutral when a future upstream catalog
+    ships the slice rows itself: any existing RTXPRO6000 row with a fractional
+    count short-circuits the expansion, so the count-1 whole-card row is left
+    as the catalog wrote it and no duplicate slice rows appear.
+    """
+    rtx = df['AcceleratorName'] == 'RTXPRO6000'
+    if (rtx & df['AcceleratorCount'].isin((0.125, 0.25, 0.5))).any():
+        return df
+    card_rows = df[rtx & (df['AcceleratorCount'] == 1) &
+                   (df['InstanceType'].isna())]
+    if card_rows.empty:
+        return df
+    slices = []
+    for slice_count in (0.125, 0.25, 0.5):
+        rows = card_rows.copy()
+        rows['AcceleratorCount'] = slice_count
+        slices.append(rows)
+    return pd.concat([df] + slices, ignore_index=True)
+
+
+class _FractionalGpuCatalog:
+    """LazyDataFrame view with the RTXPRO6000 slice rows expanded in memory.
+
+    The expansion runs per catalog load, not once at import: LazyDataFrame
+    re-reads the CSV when the 7-hour refresh fires, and an eagerly-expanded
+    frame would pin pre-refresh prices for the life of the process.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._cached: Optional['pd.DataFrame'] = None
+        self._cached_source: Optional[int] = None
+
+    def _expand(self) -> 'pd.DataFrame':
+        # _load_df is LazyDataFrame's own loader; there is no public accessor,
+        # and the lru_cache makes repeat calls free.
+        df = self._inner._load_df()  # pylint: disable=protected-access
+        if self._cached_source is not id(df):
+            self._cached = _expand_rtxpro6000_fractional_rows(df)
+            self._cached_source = id(df)
+        return self._cached
+
+    def __getattr__(self, name):
+        return getattr(self._expand(), name)
+
+    def __getitem__(self, key):
+        return self._expand()[key]
+
+
+_df = _FractionalGpuCatalog(
+    common.read_catalog('gcp/vms.csv',
+                        pull_frequency_hours=_PULL_FREQUENCY_HOURS))
 _image_df = common.read_catalog('gcp/images.csv',
                                 pull_frequency_hours=_PULL_FREQUENCY_HOURS)
 
@@ -86,8 +148,10 @@ _DEFAULT_GPU_MEMORY_CPU_RATIO = 4
 # If A100 is used, host VM type must be A2; if L4 is used, VM type must be G2.
 # Conversely, A2 can only be used with A100, and G2 only with L4.
 # https://cloud.google.com/compute/docs/gpus
-# acc_type -> count -> vm types
-_ACC_INSTANCE_TYPE_DICTS = {
+# acc_type -> count -> vm types. Counts are int OR float: the G4 RTX PRO
+# 6000 slices (g4-standard-6/12/24) are keyed at their true fractional
+# counts 0.125/0.25/0.5 (see the RTXPRO6000 entry below).
+_ACC_INSTANCE_TYPE_DICTS: Dict[str, Dict[Union[int, float], List[str]]] = {
     'A100': {
         1: ['a2-highgpu-1g'],
         2: ['a2-highgpu-2g'],
@@ -129,29 +193,25 @@ _ACC_INSTANCE_TYPE_DICTS = {
         8: ['a4-highgpu-8g'],
     },
     'RTXPRO6000': {
-        # All four G4 shapes stay at count 1 DELIBERATELY. g4-standard-6/12/24
-        # are 1/8, 1/4 and 1/2 fractional vGPU slices of one physical RTX PRO
-        # 6000 and only g4-standard-48 is the whole card -- but this mapping is
-        # the CATALOG's pricing view, not a launchability claim. uRun's runner
-        # is what refuses the fractional three: it pins count 1 to
-        # g4-standard-48 and denylists -6/-12/-24 in _CATALOG_UNTRUSTED_SKUS
-        # (urun-sh/skypilot-controller runner/skypilot_runner.py).
-        #
-        # Do NOT "fix" this to fractional keys. Doing so moves enforcement into
-        # the catalog, duplicating the runner's denylist, and leaves the
-        # fractional shapes unpriceable. It also trips the controller's
-        # build-time FORK PIN CHECK, which exists because
-        # skypilot-controller#342 pinned count 1 to g4-standard-6 on exactly
-        # the belief that the four are interchangeable: the fractional shape
-        # needs Google's vGPU/GRID guest driver, SkyPilot's GCP GPU image ships
-        # the passthrough driver, and three VMs burned PAID time dying at
-        # "NVRM: ... not supported by open nvidia.ko" before it was caught.
-        1: [
-            'g4-standard-6',
-            'g4-standard-12',
-            'g4-standard-24',
-            'g4-standard-48',
-        ],
+        # g4-standard-6/12/24 are 1/8, 1/4 and 1/2 FRACTIONAL vGPU slices of
+        # one physical RTX PRO 6000 (Google's G4 machine-series table,
+        # https://cloud.google.com/compute/docs/gpus); only g4-standard-48 is
+        # the whole card. Each shape therefore maps at its true slice count,
+        # so `RTXPRO6000:1` resolves to g4-standard-48 and never silently
+        # lands on a slice -- a count-1 request priced against g4-standard-6
+        # burned paid VM time crashlooping at the driver gate (the slice needs
+        # Google's vGPU/GRID guest driver; SkyPilot's GCP GPU image ships the
+        # passthrough driver: "NVRM: ... not supported by open nvidia.ko",
+        # urun-sh/skypilot-controller#342, 2026-09-12). uRun additionally
+        # denylists the three slices for its own launches in
+        # _CATALOG_UNTRUSTED_SKUS (urun-sh/skypilot-controller
+        # runner/skypilot_runner.py); the fractional counts here are the
+        # catalog's honest view so an explicit RTXPRO6000:0.125 request
+        # resolves and prices instead of fuzzy-matching to a whole card.
+        0.125: ['g4-standard-6'],
+        0.25: ['g4-standard-12'],
+        0.5: ['g4-standard-24'],
+        1: ['g4-standard-48'],
         2: ['g4-standard-96'],
         4: ['g4-standard-192'],
         8: ['g4-standard-384'],
@@ -340,7 +400,7 @@ def get_default_instance_type(
 
 
 def get_accelerators_from_instance_type(
-        instance_type: str) -> Optional[Dict[str, int]]:
+        instance_type: str) -> Optional[Dict[str, Union[int, float]]]:
     """Infer the GPU type from the instance type.
 
     This inference logic is GCP-specific. Unlike other clouds, we don't call
@@ -529,8 +589,10 @@ def list_accelerators(
         if region_filter is not None:
             acc_host_df = acc_host_df[acc_host_df['Region'].str.contains(
                 region_filter, case=case_sensitive, regex=True)]
-        acc_host_df['AcceleratorCount'] = acc_host_df[
-            'AcceleratorCount'].astype(int)
+        # No astype(int): the RTXPRO6000 slice SKUs carry fractional counts
+        # (0.125/0.25/0.5), and truncating them would break the per-count
+        # host lookup below (a count of 0 matches no _ACC_INSTANCE_TYPE_DICTS
+        # key and crashes). Whole-GPU rows keep integer counts either way.
         if quantity_filter is not None:
             acc_host_df = acc_host_df[acc_host_df['AcceleratorCount'] ==
                                       quantity_filter]
@@ -610,7 +672,8 @@ def get_region_zones_for_accelerators(
 
 
 def check_accelerator_attachable_to_host(instance_type: str,
-                                         accelerators: Optional[Dict[str, int]],
+                                         accelerators: Optional[Dict[str, Union[
+                                             int, float]]],
                                          zone: Optional[str] = None) -> None:
     """Check if the accelerators can be attached to the host.
 
@@ -685,8 +748,11 @@ def check_accelerator_attachable_to_host(instance_type: str,
     if acc_name in _ACC_INSTANCE_TYPE_DICTS:
         max_cpus, max_memory = get_vcpus_mem_from_instance_type(instance_type)
     else:
+        # Non-mapped accelerators are int-keyed by construction; a fractional
+        # count truncates to 0 and the valid_counts check above refuses it
+        # first, so int() here never silently downsize.
         max_cpus, max_memory = _NUM_ACC_TO_MAX_CPU_AND_MEMORY[acc_name][
-            acc_count]
+            int(acc_count)]
         if acc_name == 'K80' and acc_count == 8:
             if zone in ['asia-east1-a', 'us-east1-d']:
                 max_memory = 416
