@@ -4,7 +4,7 @@ For now this service catalog is manually coded. In the future it should be
 queried from GCP API.
 """
 import typing
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from sky import exceptions
 from sky import sky_logging
@@ -47,8 +47,7 @@ def _expand_rtxpro6000_fractional_rows(df: 'pd.DataFrame') -> 'pd.DataFrame':
     as the catalog wrote it and no duplicate slice rows appear.
     """
     rtx = df['AcceleratorName'] == 'RTXPRO6000'
-    if (rtx & df['AcceleratorCount'].isin(
-            (0.125, 0.25, 0.5))).any():
+    if (rtx & df['AcceleratorCount'].isin((0.125, 0.25, 0.5))).any():
         return df
     card_rows = df[rtx & (df['AcceleratorCount'] == 1) &
                    (df['InstanceType'].isna())]
@@ -147,8 +146,10 @@ _DEFAULT_GPU_MEMORY_CPU_RATIO = 4
 # If A100 is used, host VM type must be A2; if L4 is used, VM type must be G2.
 # Conversely, A2 can only be used with A100, and G2 only with L4.
 # https://cloud.google.com/compute/docs/gpus
-# acc_type -> count -> vm types
-_ACC_INSTANCE_TYPE_DICTS = {
+# acc_type -> count -> vm types. Counts are int OR float: the G4 RTX PRO
+# 6000 slices (g4-standard-6/12/24) are keyed at their true fractional
+# counts 0.125/0.25/0.5 (see the RTXPRO6000 entry below).
+_ACC_INSTANCE_TYPE_DICTS: Dict[str, Dict[Union[int, float], List[str]]] = {
     'A100': {
         1: ['a2-highgpu-1g'],
         2: ['a2-highgpu-2g'],
