@@ -398,7 +398,7 @@ def get_default_instance_type(
 
 
 def get_accelerators_from_instance_type(
-        instance_type: str) -> Optional[Dict[str, int]]:
+        instance_type: str) -> Optional[Dict[str, Union[int, float]]]:
     """Infer the GPU type from the instance type.
 
     This inference logic is GCP-specific. Unlike other clouds, we don't call
@@ -670,7 +670,8 @@ def get_region_zones_for_accelerators(
 
 
 def check_accelerator_attachable_to_host(instance_type: str,
-                                         accelerators: Optional[Dict[str, int]],
+                                         accelerators: Optional[Dict[str, Union[
+                                             int, float]]],
                                          zone: Optional[str] = None) -> None:
     """Check if the accelerators can be attached to the host.
 
