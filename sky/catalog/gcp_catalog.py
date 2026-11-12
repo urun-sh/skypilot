@@ -75,7 +75,9 @@ class _FractionalGpuCatalog:
         self._cached_source: Optional[int] = None
 
     def _expand(self) -> 'pd.DataFrame':
-        df = self._inner._load_df()
+        # _load_df is LazyDataFrame's own loader; there is no public accessor,
+        # and the lru_cache makes repeat calls free.
+        df = self._inner._load_df()  # pylint: disable=protected-access
         if self._cached_source is not id(df):
             self._cached = _expand_rtxpro6000_fractional_rows(df)
             self._cached_source = id(df)
