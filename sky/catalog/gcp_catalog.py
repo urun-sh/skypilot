@@ -748,8 +748,11 @@ def check_accelerator_attachable_to_host(instance_type: str,
     if acc_name in _ACC_INSTANCE_TYPE_DICTS:
         max_cpus, max_memory = get_vcpus_mem_from_instance_type(instance_type)
     else:
+        # Non-mapped accelerators are int-keyed by construction; a fractional
+        # count truncates to 0 and the valid_counts check above refuses it
+        # first, so int() here never silently downsize.
         max_cpus, max_memory = _NUM_ACC_TO_MAX_CPU_AND_MEMORY[acc_name][
-            acc_count]
+            int(acc_count)]
         if acc_name == 'K80' and acc_count == 8:
             if zone in ['asia-east1-a', 'us-east1-d']:
                 max_memory = 416
