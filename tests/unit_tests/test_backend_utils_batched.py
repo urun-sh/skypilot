@@ -202,3 +202,38 @@ def test_in_scope_absent_cluster_gets_authoritative_empty_status():
     assert precomputed['up-oc'] == {'i-1': ('UP', None)}
     assert precomputed['gone-oc'] == {}
     assert 'elsewhere-oc' not in precomputed
+
+
+def test_gcp_compute_filter_follows_next_page_token():
+    """A zone-wide batched listing can exceed one 500-instance page; every
+    page must be read or clusters on later pages would look terminated."""
+    from sky.provision.gcp import instance_utils
+    pages = [
+        {
+            'items': [{
+                'name': 'a'
+            }, {
+                'name': 'b'
+            }],
+            'nextPageToken': 't1'
+        },
+        {
+            'items': [{
+                'name': 'c'
+            }]
+        },
+    ]
+    list_call = mock.MagicMock()
+    list_call.return_value.execute.side_effect = pages
+    resource = mock.MagicMock()
+    resource.instances.return_value.list = list_call
+    with mock.patch.object(instance_utils.GCPComputeInstance,
+                           'load_resource',
+                           return_value=resource):
+        got = instance_utils.GCPComputeInstance.filter(
+            'p', 'z', {'ray-cluster-name': '*'}, status_filters=None)
+    assert sorted(got) == ['a', 'b', 'c']
+    assert [c.kwargs['pageToken'] for c in list_call.call_args_list
+           ] == [None, 't1']
+    assert list_call.call_args_list[0].kwargs['filter'] == (
+        '((labels.ray-cluster-name:*))')

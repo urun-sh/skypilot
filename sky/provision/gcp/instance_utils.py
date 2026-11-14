@@ -412,13 +412,14 @@ class GCPComputeInstance(GCPInstance):
         excluded_instances: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         if label_filters:
-            label_filter_expr = ('(' + ' AND '.join([
-                # A value of '*' means "label exists", expressed as
-                # `labels.key:*` in GCP filter syntax.
-                '(labels.{key}:*)'.format(key=key) if value == '*' else
-                '(labels.{key} = {value})'.format(key=key, value=value)
-                for key, value in label_filters.items()
-            ]) + ')')
+            label_filter_expr = (
+                '(' + ' AND '.join([
+                    # A value of '*' means "label exists", expressed as
+                    # `labels.key:*` in GCP filter syntax.
+                    '(labels.{key}:*)'.format(key=key) if value == '*' else
+                    '(labels.{key} = {value})'.format(key=key, value=value)
+                    for key, value in label_filters.items()
+                ]) + ')')
         else:
             label_filter_expr = ''
 
@@ -439,13 +440,22 @@ class GCPComputeInstance(GCPInstance):
 
         filter_expr = ' AND '.join(not_empty_filters)
 
-        response = (cls.load_resource().instances().list(
-            project=project_id,
-            filter=filter_expr,
-            zone=zone,
-        ).execute(num_retries=GCP_MAX_RETRIES))
-        instances = response.get('items', [])
-        instances = {i['name']: i for i in instances}
+        # Follow nextPageToken: a page holds at most 500 instances, and the
+        # batched status refresh lists a whole zone's labelled fleet at once.
+        instances = {}
+        page_token = None
+        while True:
+            response = (cls.load_resource().instances().list(
+                project=project_id,
+                filter=filter_expr,
+                zone=zone,
+                pageToken=page_token,
+            ).execute(num_retries=GCP_MAX_RETRIES))
+            for item in response.get('items', []):
+                instances[item['name']] = item
+            page_token = response.get('nextPageToken')
+            if not page_token:
+                break
         if included_instances:
             instances = {
                 k: v for k, v in instances.items() if k in included_instances
@@ -1349,9 +1359,18 @@ class GCPTPUVMInstance(GCPInstance):
         excluded_instances: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         path = f'projects/{project_id}/locations/{zone}'
+        instances: List[Dict[str, Any]] = []
+        page_token = None
         try:
-            response = (cls.load_resource().projects().locations().nodes().list(
-                parent=path).execute(num_retries=GCP_MAX_RETRIES))
+            while True:
+                response = (
+                    cls.load_resource().projects().locations().nodes().list(
+                        parent=path, pageToken=page_token).execute(
+                            num_retries=GCP_MAX_RETRIES))
+                instances.extend(response.get('nodes', []))
+                page_token = response.get('nextPageToken')
+                if not page_token:
+                    break
         except gcp.http_error_exception() as e:
             # SKY: Catch HttpError when accessing unauthorized region.
             # Return empty dict instead of raising exception to not break.
@@ -1361,8 +1380,6 @@ class GCPTPUVMInstance(GCPInstance):
                 return {}
             logger.debug(f'filter: googleapiclient.errors.HttpError: {e}')
             raise
-
-        instances = response.get('nodes', [])
 
         # filter_expr cannot be passed directly to API
         # so we need to filter the results ourselves
