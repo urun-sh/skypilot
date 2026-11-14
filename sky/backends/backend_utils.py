@@ -4154,6 +4154,11 @@ def _refresh_cluster_records_batched(
         _refresh_cluster_records_in_parallel(names, cloud, region, zone)
 
 
+# Public alias: the batched entry point is the contract for scale-step 2
+# (controller contract test test_cluster_refresh_scrapes_one_list_call_per_group).
+refresh_cluster_records_batched = _refresh_cluster_records_batched
+
+
 def _get_records_with_handle(
         records: List[Optional[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     """Filter for records that have a handle"""
