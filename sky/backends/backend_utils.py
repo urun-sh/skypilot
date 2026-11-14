@@ -2441,7 +2441,7 @@ def _query_cluster_status_via_cloud_api(
     handle: 'cloud_vm_ray_backend.CloudVmRayResourceHandle',
     retry_if_missing: bool,
     precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
-        Optional[status_lib.ClusterStatus], Optional[str]]]]] = None,
+        status_lib.ClusterStatus, Optional[str]]]]] = None,
 ) -> Dict[str, Tuple[status_lib.ClusterStatus, Optional[str]]]:
     """Returns a dict mapping instance/pod name to (status, reason).
 
@@ -2677,7 +2677,7 @@ def _update_cluster_status(
         include_user_info: bool = True,
         summary_response: bool = False,
         precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
-            Optional[status_lib.ClusterStatus], Optional[str]]]]] = None,
+            status_lib.ClusterStatus, Optional[str]]]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Update the cluster status.
 
@@ -3409,7 +3409,7 @@ def refresh_cluster_record(
         summary_response: bool = False,
         retry_if_missing: bool = True,
         precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
-            Optional[status_lib.ClusterStatus], Optional[str]]]]] = None
+            status_lib.ClusterStatus, Optional[str]]]]] = None
 ) -> Optional[Dict[str, Any]]:
     """Refresh the cluster, and return the possibly updated record.
 
@@ -3966,7 +3966,7 @@ def _refresh_cluster(
         include_user_info: bool = True,
         summary_response: bool = False,
         precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
-            Optional[status_lib.ClusterStatus], Optional[str]]]]] = None
+            status_lib.ClusterStatus, Optional[str]]]]] = None
 ) -> Optional[Dict[str, Any]]:
     try:
         record = refresh_cluster_record(
@@ -4134,14 +4134,17 @@ def _refresh_cluster_records_batched(
     }
     groups = defaultdict(list)
     for name in sorted(cluster_names_without_launch_request):
-        groups[locations.get(name)].append(name)
+        groups[locations.get(name, (None, None, None))].append(name)
 
     # pylint: disable=import-outside-toplevel
     from sky.server import constants as server_constants
     interval = server_constants.CLUSTER_REFRESH_DAEMON_INTERVAL_SECONDS
     n_groups = len(groups)
     stagger = interval / n_groups
-    for i, ((cloud, region, zone), names) in enumerate(sorted(groups.items())):
+    for i, ((cloud, region, zone), names) in enumerate(
+            sorted(groups.items(),
+                   key=lambda item: tuple(
+                       '' if v is None else v for v in item[0]))):
         if i > 0:
             time.sleep(stagger)
         if cloud is None or region is None:
