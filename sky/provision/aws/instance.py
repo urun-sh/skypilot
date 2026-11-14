@@ -712,7 +712,7 @@ def query_instances_batched(
     assert provider_config is not None, provider_config
     region = provider_config['region']
     ec2 = _default_ec2_resource(region)
-    filters = [{
+    filters: List['ec2_type_defs.FilterTypeDef'] = [{
         'Name': f'tag:{constants.TAG_RAY_CLUSTER_NAME}',
         'Values': ['*'],
     }]

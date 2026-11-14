@@ -1359,7 +1359,7 @@ class GCPTPUVMInstance(GCPInstance):
         excluded_instances: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         path = f'projects/{project_id}/locations/{zone}'
-        instances: List[Dict[str, Any]] = []
+        nodes: List[Dict[str, Any]] = []
         page_token = None
         try:
             while True:
@@ -1367,7 +1367,7 @@ class GCPTPUVMInstance(GCPInstance):
                     cls.load_resource().projects().locations().nodes().list(
                         parent=path, pageToken=page_token).execute(
                             num_retries=GCP_MAX_RETRIES))
-                instances.extend(response.get('nodes', []))
+                nodes.extend(response.get('nodes', []))
                 page_token = response.get('nextPageToken')
                 if not page_token:
                     break
@@ -1404,8 +1404,8 @@ class GCPTPUVMInstance(GCPInstance):
 
             return True
 
-        instances = list(filter(filter_instance, instances))
-        instances = {i['name']: i for i in instances}
+        matched = list(filter(filter_instance, nodes))
+        instances = {i['name']: i for i in matched}
 
         if included_instances:
             instances = {
