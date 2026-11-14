@@ -23,6 +23,10 @@ def fresh_request_store(monkeypatch, tmp_path):
 
 
 def _roundtrip_sync(db):
+    # Idempotent against leftovers from earlier runs against the same DB.
+    with db.conn:
+        cursor = db.conn.cursor()
+        cursor.execute("DELETE FROM requests WHERE request_id LIKE 'test-%'")
     with db.conn:
         cursor = db.conn.cursor()
         cursor.execute(
@@ -49,12 +53,12 @@ async def _roundtrip_async(db):
     row = await db.execute_get_returning_value_async(
         'INSERT INTO requests (request_id, status, created_at) '
         'VALUES (?, ?, ?) ON CONFLICT(request_id) DO NOTHING '
-        'RETURNING ROWID', ('test-returning-id', 'PENDING', 3.0))
+        'RETURNING request_id', ('test-returning-id', 'PENDING', 3.0))
     assert row is not None
     row = await db.execute_get_returning_value_async(
         'INSERT INTO requests (request_id, status, created_at) '
         'VALUES (?, ?, ?) ON CONFLICT(request_id) DO NOTHING '
-        'RETURNING ROWID', ('test-returning-id', 'PENDING', 3.0))
+        'RETURNING request_id', ('test-returning-id', 'PENDING', 3.0))
     assert row is None
 
 
@@ -94,20 +98,23 @@ def test_sqlite_dialect_translation():
             'status = EXCLUDED.status, '
             'should_retry = EXCLUDED.should_retry') in out
     assert params == ('r1', 1, 1)
-    # No parameters: literal % passes through untouched (psycopg only
-    # interpolates when variables are passed).
+    # Literal % is always escaped and params always passed (possibly empty):
+    # psycopg v3 parses % placeholders even without binds.
     out, params = db_utils._translate_sql_for_pg_driver(
         "SELECT request_id FROM requests WHERE request_id LIKE '%-daemon'",
         None)
-    assert out == "SELECT request_id FROM requests WHERE request_id LIKE '%-daemon'"
+    assert out == ("SELECT request_id FROM requests "
+                   "WHERE request_id LIKE '%%-daemon'")
     assert params == ()
 
 
 @pytest.mark.skipif(
     not os.environ.get('SKYPILOT_TEST_PG_DB_URI'),
     reason='SKYPILOT_TEST_PG_DB_URI not set; the live proof covers this path')
-async def test_postgres_backend_roundtrip(fresh_request_store, monkeypatch):
+def test_postgres_backend_roundtrip(fresh_request_store, monkeypatch):
     """Full sync+async roundtrip against a live Postgres."""
+    import asyncio
+
     monkeypatch.setenv('IS_SKYPILOT_SERVER', '1')
     monkeypatch.setenv('SKYPILOT_DB_CONNECTION_URI',
                        os.environ['SKYPILOT_TEST_PG_DB_URI'])
@@ -115,5 +122,5 @@ async def test_postgres_backend_roundtrip(fresh_request_store, monkeypatch):
     assert isinstance(requests_module._DB, db_utils.PostgresConn)
     db = requests_module._DB
     _roundtrip_sync(db)
-    await _roundtrip_async(db)
-    await db.close()
+    asyncio.run(_roundtrip_async(db))
+    asyncio.run(db.close())

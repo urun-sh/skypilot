@@ -446,10 +446,12 @@ def _translate_sql_for_pg_driver(
       all columns, so the semantics match. ponytail: the conflict target is
       hardcoded to request_id — the only table routed through this backend
       is the request store; generalize if a second table ever lands here.
-    - ?-placeholders become %s. Literal % must be escaped (%%) whenever
-      parameters are passed, because the driver then interpolates the
-      statement; with no parameters psycopg leaves the statement untouched,
-      so % passes through verbatim (e.g. LIKE '%-daemon').
+    - ?-placeholders become %s and literal % is ALWAYS escaped to %% — and
+      the params tuple is ALWAYS passed to the driver, even when empty:
+      psycopg v3 parses the statement for % placeholders whether or not
+      parameters are supplied (only %s/%b/%t are legal), so an unescaped
+      LIKE '%-daemon' fails even with no binds, and psycopg2 only converts
+      %% back to % when interpolation runs (which passing the tuple forces).
     - Python bools become ints: SQLite stores them as INTEGER, and the
       drivers would otherwise send a boolean that Postgres rejects for an
       INTEGER column (e.g. should_retry).
@@ -463,9 +465,8 @@ def _translate_sql_for_pg_driver(
                        f'({", ".join(["?"] * len(col_names))}) '
                        f'ON CONFLICT (request_id) DO UPDATE SET {assignments}')
         sql = sql[:match.start()] + replacement + sql[match.end():]
-    if not parameters:
-        return sql, ()
-    params = tuple(int(v) if isinstance(v, bool) else v for v in parameters)
+    params = tuple(int(v) if isinstance(v, bool) else v
+                   for v in (parameters or ()))
     return sql.replace('%', '%%').replace('?', '%s'), params
 
 
@@ -480,10 +481,7 @@ class _PostgresCursor:
                 sql: str,
                 parameters: Optional[Iterable[Any]] = None) -> '_PostgresCursor':
         sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
-        if params:
-            self._result = self._conn.exec_driver_sql(sql_t, params)
-        else:
-            self._result = self._conn.exec_driver_sql(sql_t)
+        self._result = self._conn.exec_driver_sql(sql_t, params)
         return self
 
     def fetchone(self) -> Optional[Tuple]:
@@ -541,13 +539,17 @@ class PostgresConn:
 
     def __init__(self, create_table: Callable):
         self._engine = get_engine(None)
+        self._conn_proxy = _PostgresConnProxy(self._engine)
         with self._engine.connect() as conn:
             create_table(_PostgresCursor(conn), conn)
             conn.commit()
 
     @property
     def conn(self) -> _PostgresConnProxy:
-        return _PostgresConnProxy(self._engine)
+        # Stable proxy object (sqlite3.Connection semantics: `with db.conn:`
+        # and `db.conn.cursor()` must observe the SAME object); each
+        # with-block checks out its own pooled connection.
+        return self._conn_proxy
 
     async def execute_and_commit_async(self,
                                        sql: str,
@@ -556,10 +558,7 @@ class PostgresConn:
         def _run() -> None:
             sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
             with self._engine.begin() as conn:
-                if params:
-                    conn.exec_driver_sql(sql_t, params)
-                else:
-                    conn.exec_driver_sql(sql_t)
+                conn.exec_driver_sql(sql_t, params)
 
         await asyncio.to_thread(_run)
 
@@ -571,10 +570,7 @@ class PostgresConn:
         def _run() -> List[Tuple]:
             sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
             with self._engine.connect() as conn:
-                if params:
-                    result = conn.exec_driver_sql(sql_t, params)
-                else:
-                    result = conn.exec_driver_sql(sql_t)
+                result = conn.exec_driver_sql(sql_t, params)
                 return result.fetchall()
 
         yield await asyncio.to_thread(_run)
@@ -587,10 +583,7 @@ class PostgresConn:
         def _run() -> Optional[Tuple]:
             sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
             with self._engine.begin() as conn:
-                if params:
-                    result = conn.exec_driver_sql(sql_t, params)
-                else:
-                    result = conn.exec_driver_sql(sql_t)
+                result = conn.exec_driver_sql(sql_t, params)
                 return result.fetchone()
 
         return await asyncio.to_thread(_run)
