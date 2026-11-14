@@ -479,11 +479,11 @@ class _PostgresCursor:
     def execute(self,
                 sql: str,
                 parameters: Optional[Iterable[Any]] = None) -> '_PostgresCursor':
-        sql, params = _translate_sql_for_pg_driver(sql, parameters)
+        sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
         if params:
-            self._result = self._conn.exec_driver_sql(sql, params)
+            self._result = self._conn.exec_driver_sql(sql_t, params)
         else:
-            self._result = self._conn.exec_driver_sql(sql)
+            self._result = self._conn.exec_driver_sql(sql_t)
         return self
 
     def fetchone(self) -> Optional[Tuple]:
@@ -554,12 +554,12 @@ class PostgresConn:
                                        parameters: Optional[
                                            Iterable[Any]] = None) -> None:
         def _run() -> None:
-            sql, params = _translate_sql_for_pg_driver(sql, parameters)
+            sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
             with self._engine.begin() as conn:
                 if params:
-                    conn.exec_driver_sql(sql, params)
+                    conn.exec_driver_sql(sql_t, params)
                 else:
-                    conn.exec_driver_sql(sql)
+                    conn.exec_driver_sql(sql_t)
 
         await asyncio.to_thread(_run)
 
@@ -569,12 +569,12 @@ class PostgresConn:
             parameters: Optional[Iterable[Any]] = None
     ) -> AsyncGenerator[List[Tuple], None]:
         def _run() -> List[Tuple]:
-            sql, params = _translate_sql_for_pg_driver(sql, parameters)
+            sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
             with self._engine.connect() as conn:
                 if params:
-                    result = conn.exec_driver_sql(sql, params)
+                    result = conn.exec_driver_sql(sql_t, params)
                 else:
-                    result = conn.exec_driver_sql(sql)
+                    result = conn.exec_driver_sql(sql_t)
                 return result.fetchall()
 
         yield await asyncio.to_thread(_run)
@@ -585,12 +585,12 @@ class PostgresConn:
             parameters: Optional[Iterable[Any]] = None
     ) -> Optional[Tuple]:
         def _run() -> Optional[Tuple]:
-            sql, params = _translate_sql_for_pg_driver(sql, parameters)
+            sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
             with self._engine.begin() as conn:
                 if params:
-                    result = conn.exec_driver_sql(sql, params)
+                    result = conn.exec_driver_sql(sql_t, params)
                 else:
-                    result = conn.exec_driver_sql(sql)
+                    result = conn.exec_driver_sql(sql_t)
                 return result.fetchone()
 
         return await asyncio.to_thread(_run)
