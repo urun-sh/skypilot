@@ -2361,6 +2361,10 @@ def get_clusters(
             'is_managed': False
                           if exclude_managed_clusters else bool(row.is_managed),
             'node_names': common_utils.get_display_node_names(row.node_names),
+            # Infra columns: the batched status refresh groups by these.
+            'cloud': row.cloud,
+            'region': row.region,
+            'zone': row.zone,
         }
         # init_kind / init_status_reason are populated outside the
         # summary_response gate so both the list page (summary_response=True)

@@ -148,9 +148,10 @@ def query_instances_batched(
         status_filters=None,
     )
 
-    statuses: Dict[str, Dict[str, Tuple[Optional['status_lib.ClusterStatus'],
-                                        Optional[str]]]] = collections.defaultdict(
-                                            dict)
+    statuses: Dict[str,
+                   Dict[str,
+                        Tuple[Optional['status_lib.ClusterStatus'],
+                              Optional[str]]]] = collections.defaultdict(dict)
     for inst_id, instance in instances.items():
         raw_status = instance[handler.STATUS_FIELD]
         if raw_status in handler.PENDING_STATES:

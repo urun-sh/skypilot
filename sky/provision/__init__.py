@@ -227,7 +227,7 @@ def query_instances_batched(
     provider_config: Optional[Dict[str, Any]] = None,
     non_terminated_only: bool = True,
 ) -> Dict[str, Dict[str, Tuple[Optional['status_lib.ClusterStatus'],
-                                Optional[str]]]]:
+                               Optional[str]]]]:
     """Query instances for all clusters in a region/zone in ONE list call.
 
     Returns a dictionary mapping each cluster's name-on-cloud to a dict of

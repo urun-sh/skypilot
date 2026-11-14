@@ -95,8 +95,7 @@ def test_batched_refresh_fan_out_precomputed_dict(mock_get_clusters):
     ) as mock_refresh:
         backend_utils._refresh_cluster_records_batched(
             ['cluster-gcp-w1', 'cluster-gcp-w2'])
-        (names, cloud, region,
-         zone), _ = mock_refresh.call_args
+        (names, cloud, region, zone), _ = mock_refresh.call_args
         assert cloud == 'GCP'
         assert region == 'us-west1'
         assert zone == 'us-west1-a'
@@ -112,16 +111,14 @@ def test_batched_refresh_fallback_no_location(mock_get_clusters):
             'sky.backends.backend_utils._refresh_cluster_records_in_parallel',
     ) as mock_refresh:
         backend_utils._refresh_cluster_records_batched(['cluster-k8s'])
-        (names, cloud, region,
-         zone), _ = mock_refresh.call_args
+        (names, cloud, region, zone), _ = mock_refresh.call_args
         assert cloud is None
         assert region is None
         assert zone is None
 
 
 @mock.patch('sky.global_user_state.get_clusters')
-def test_batched_refresh_fallback_not_implemented(
-        mock_get_clusters):
+def test_batched_refresh_fallback_not_implemented(mock_get_clusters):
     """Clouds that do not implement a batched list fall back to the
     per-cluster query path."""
     mock_get_clusters.return_value = _fake_clusters()
@@ -130,8 +127,7 @@ def test_batched_refresh_fallback_not_implemented(
             side_effect=NotImplementedError):
         with mock.patch(
                 'sky.backends.backend_utils.'
-                '_refresh_cluster_records_in_parallel',
-        ) as mock_refresh:
+                '_refresh_cluster_records_in_parallel',) as mock_refresh:
             backend_utils._refresh_cluster_records_batched(
                 ['cluster-aws-e1', 'cluster-aws-e2'])
             assert mock_refresh.call_count == 1
@@ -144,9 +140,65 @@ def test_batched_refresh_wave_spreading(mock_get_clusters):
     mock_get_clusters.return_value = _fake_clusters()
     with mock.patch(
             'sky.backends.backend_utils._refresh_cluster_records_in_parallel',
-    ) as mock_refresh:
+    ) as mock_refresh, mock.patch(
+            'sky.backends.backend_utils.time.sleep') as mock_sleep:
         backend_utils._refresh_cluster_records_batched([
             'cluster-gcp-w1', 'cluster-gcp-w2', 'cluster-gcp-w3',
             'cluster-aws-e1', 'cluster-aws-e2', 'cluster-k8s'
         ])
         assert mock_refresh.call_count == 3
+        # 3 groups over the 60s daemon interval: one group every 20s, the
+        # first one immediately.
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [20.0, 20.0]
+
+
+def test_batched_list_is_routable_for_gcp_and_aws():
+    """provision_lib routes through the provider package; without the
+    re-export every group silently falls back to per-cluster queries."""
+    from sky.provision import aws as aws_provision
+    from sky.provision import gcp as gcp_provision
+    assert callable(gcp_provision.query_instances_batched)
+    assert callable(aws_provision.query_instances_batched)
+
+
+def _handle(name_on_cloud):
+    handle = mock.MagicMock()
+    handle.cluster_name_on_cloud = name_on_cloud
+    handle.cluster_yaml = f'{name_on_cloud}.yml'
+    return handle
+
+
+def test_in_scope_absent_cluster_gets_authoritative_empty_status():
+    """A cluster in the batch's (project, zone, region, handler) scope that the
+    listing did not return has no live instances: it must get {} (what its
+    per-cluster query returns) instead of paying its own list call. A cluster
+    in another project stays absent and falls back to its own query."""
+    cfg = {'project_id': 'p', 'availability_zone': 'z-a', 'region': 'r'}
+    other = dict(cfg, project_id='other')
+    handles = {
+        'up': _handle('up-oc'),
+        'gone': _handle('gone-oc'),
+        'elsewhere': _handle('elsewhere-oc')
+    }
+    cfgs = {'up-oc.yml': cfg, 'gone-oc.yml': cfg, 'elsewhere-oc.yml': other}
+    seen = {}
+
+    def fake_refresh(name, **kwargs):
+        seen[name] = kwargs['precomputed_node_status_dict']
+
+    with mock.patch('sky.global_user_state.get_cluster_from_name',
+                    side_effect=lambda n: {'handle': handles[n]}), \
+         mock.patch('sky.global_user_state.get_cluster_yaml_dict',
+                    side_effect=lambda y: {'provider': cfgs[y]}), \
+         mock.patch('sky.backends.backend_utils.provision_lib.'
+                    'query_instances_batched',
+                    return_value={'up-oc': {'i-1': ('UP', None)}}) as listed, \
+         mock.patch('sky.backends.backend_utils._refresh_cluster',
+                    side_effect=fake_refresh):
+        backend_utils._refresh_cluster_records_in_parallel(
+            ['up', 'gone', 'elsewhere'], 'GCP', 'r', 'z-a')
+    assert listed.call_count == 1
+    precomputed = seen['up']
+    assert precomputed['up-oc'] == {'i-1': ('UP', None)}
+    assert precomputed['gone-oc'] == {}
+    assert 'elsewhere-oc' not in precomputed

@@ -2671,13 +2671,13 @@ def check_can_clone_disk_and_override_task(
 
 
 def _update_cluster_status(
-        cluster_name: str,
-        record: Dict[str, Any],
-        retry_if_missing: bool,
-        include_user_info: bool = True,
-        summary_response: bool = False,
-        precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
-            status_lib.ClusterStatus, Optional[str]]]]] = None,
+    cluster_name: str,
+    record: Dict[str, Any],
+    retry_if_missing: bool,
+    include_user_info: bool = True,
+    summary_response: bool = False,
+    precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
+        status_lib.ClusterStatus, Optional[str]]]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Update the cluster status.
 
@@ -3400,16 +3400,16 @@ def _must_refresh_cluster_status(
 
 
 def refresh_cluster_record(
-        cluster_name: str,
-        *,
-        force_refresh_statuses: Optional[Set[status_lib.ClusterStatus]] = None,
-        cluster_lock_already_held: bool = False,
-        cluster_status_lock_timeout: int = CLUSTER_STATUS_LOCK_TIMEOUT_SECONDS,
-        include_user_info: bool = True,
-        summary_response: bool = False,
-        retry_if_missing: bool = True,
-        precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
-            status_lib.ClusterStatus, Optional[str]]]]] = None
+    cluster_name: str,
+    *,
+    force_refresh_statuses: Optional[Set[status_lib.ClusterStatus]] = None,
+    cluster_lock_already_held: bool = False,
+    cluster_status_lock_timeout: int = CLUSTER_STATUS_LOCK_TIMEOUT_SECONDS,
+    include_user_info: bool = True,
+    summary_response: bool = False,
+    retry_if_missing: bool = True,
+    precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
+        status_lib.ClusterStatus, Optional[str]]]]] = None
 ) -> Optional[Dict[str, Any]]:
     """Refresh the cluster, and return the possibly updated record.
 
@@ -3961,12 +3961,12 @@ def _summarize_pod_reasons(
 
 
 def _refresh_cluster(
-        cluster_name: str,
-        force_refresh_statuses: Optional[Set[status_lib.ClusterStatus]],
-        include_user_info: bool = True,
-        summary_response: bool = False,
-        precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
-            status_lib.ClusterStatus, Optional[str]]]]] = None
+    cluster_name: str,
+    force_refresh_statuses: Optional[Set[status_lib.ClusterStatus]],
+    include_user_info: bool = True,
+    summary_response: bool = False,
+    precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
+        status_lib.ClusterStatus, Optional[str]]]]] = None
 ) -> Optional[Dict[str, Any]]:
     try:
         record = refresh_cluster_record(
@@ -4061,7 +4061,14 @@ def _refresh_cluster_records_in_parallel(
                                          cluster_names_without_launch_request)
         return
 
-    # Get the provider config for the group from the first cluster's yaml.
+    # Read every cluster's provider config once: the first one seeds the
+    # batched list call, and each one decides whether that listing is
+    # authoritative for the cluster (same project/zone/region/handler).
+    def _scope(cfg: Dict[str, Any]) -> Tuple[Any, ...]:
+        return (cfg.get('project_id'), cfg.get('availability_zone'),
+                cfg.get('region'), bool(cfg.get('_has_tpus', False)))
+
+    name_on_cloud_scopes: Dict[str, Tuple[Any, ...]] = {}
     provider_config = None
     for name in cluster_names_without_launch_request:
         record = global_user_state.get_cluster_from_name(name)
@@ -4075,9 +4082,12 @@ def _refresh_cluster_records_in_parallel(
                 handle.cluster_yaml)
         except Exception:  # pylint: disable=broad-except
             continue
-        provider_config = ray_config.get('provider')
-        if provider_config:
-            break
+        cfg = ray_config.get('provider')
+        if not cfg:
+            continue
+        if provider_config is None:
+            provider_config = cfg
+        name_on_cloud_scopes[handle.cluster_name_on_cloud] = _scope(cfg)
 
     if not provider_config:
         # Fall back to the per-cluster path.
@@ -4102,6 +4112,15 @@ def _refresh_cluster_records_in_parallel(
                                          cluster_names_without_launch_request)
         return
 
+    # The listing covered every labelled instance in the batch's scope, so a
+    # cluster in that scope that is absent from it has no non-terminated
+    # instances: exactly the empty result its per-cluster query would return.
+    # Clusters outside the scope stay absent and fall back to their own query.
+    batch_scope = _scope(provider_config)
+    for name_on_cloud, scope in name_on_cloud_scopes.items():
+        if scope == batch_scope:
+            batched.setdefault(name_on_cloud, {})
+
     def _refresh_cluster_record_with_precomputed(cluster_name):
         return _refresh_cluster(cluster_name,
                                 force_refresh_statuses=force_refresh_statuses,
@@ -4109,9 +4128,8 @@ def _refresh_cluster_records_in_parallel(
                                 summary_response=summary_response,
                                 precomputed_node_status_dict=batched)
 
-    subprocess_utils.run_in_parallel(
-        _refresh_cluster_record_with_precomputed,
-        cluster_names_without_launch_request)
+    subprocess_utils.run_in_parallel(_refresh_cluster_record_with_precomputed,
+                                     cluster_names_without_launch_request)
 
 
 def _refresh_cluster_records_batched(
@@ -4143,8 +4161,8 @@ def _refresh_cluster_records_batched(
     stagger = interval / n_groups
     for i, ((cloud, region, zone), names) in enumerate(
             sorted(groups.items(),
-                   key=lambda item: tuple(
-                       '' if v is None else v for v in item[0]))):
+                   key=lambda item: tuple('' if v is None else v
+                                          for v in item[0]))):
         if i > 0:
             time.sleep(stagger)
         if cloud is None or region is None:
@@ -4154,8 +4172,8 @@ def _refresh_cluster_records_batched(
         _refresh_cluster_records_in_parallel(names, cloud, region, zone)
 
 
-# Public alias: the batched entry point is the contract for scale-step 2
-# (controller contract test test_cluster_refresh_scrapes_one_list_call_per_group).
+# Public alias: the batched entry point is the scale-step-2 contract
+# (skypilot-controller runner/test_scale_1000vm_contracts.py, test 2).
 refresh_cluster_records_batched = _refresh_cluster_records_batched
 
 
