@@ -4028,11 +4028,12 @@ def refresh_cluster_records() -> None:
 
     if len(cluster_names_without_launch_request) > 0:
         # Do not refresh the clusters that have an active launch request.
-        _refresh_cluster_records_batched(cluster_names_without_launch_request)
+        _refresh_cluster_records_batched(
+            sorted(cluster_names_without_launch_request))
 
 
 def _refresh_cluster_records_in_parallel(
-        cluster_names_without_launch_request: Set[str],
+        cluster_names_without_launch_request: List[str],
         cloud: Optional[str] = None,
         region: Optional[str] = None,
         zone: Optional[str] = None) -> None:
@@ -4114,7 +4115,7 @@ def _refresh_cluster_records_in_parallel(
 
 
 def _refresh_cluster_records_batched(
-        cluster_names_without_launch_request: Set[str]) -> None:
+        cluster_names_without_launch_request: List[str]) -> None:
     """Refreshes the status of the given clusters in waves, grouped by cloud,
     region, and zone.
 
@@ -4127,7 +4128,10 @@ def _refresh_cluster_records_batched(
     interval so that the wave does not hit a cloud's rate limit with a burst
     of list calls.
     """
-    locations = global_user_state.get_cluster_locations()
+    locations = {
+        cluster['name']: (cluster['cloud'], cluster['region'], cluster['zone'])
+        for cluster in global_user_state.get_clusters()
+    }
     groups = defaultdict(list)
     for name in sorted(cluster_names_without_launch_request):
         groups[locations.get(name)].append(name)

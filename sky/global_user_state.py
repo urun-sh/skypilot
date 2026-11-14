@@ -2254,6 +2254,9 @@ def get_clusters(
         cluster_table.c.user_hash,
         cluster_table.c.workspace,
         cluster_table.c.node_names,
+        cluster_table.c.cloud,
+        cluster_table.c.region,
+        cluster_table.c.zone,
         user_table.c.name.label('user_name'),
     ]
     if not summary_response:
