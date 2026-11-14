@@ -4149,10 +4149,9 @@ def _refresh_cluster_records_batched(
             time.sleep(stagger)
         if cloud is None or region is None:
             # No cloud/region/zone info: fall back to the per-cluster path.
-            _refresh_cluster_records_in_parallel(names)
+            _refresh_cluster_records_in_parallel(names, None, None, None)
             continue
-        _refresh_cluster_records_in_parallel(names, cloud=cloud, region=region,
-                                             zone=zone)
+        _refresh_cluster_records_in_parallel(names, cloud, region, zone)
 
 
 def _get_records_with_handle(

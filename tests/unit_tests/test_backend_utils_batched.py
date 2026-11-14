@@ -126,7 +126,7 @@ def test_batched_refresh_fallback_not_implemented(
     per-cluster query path."""
     mock_get_clusters.return_value = _fake_clusters()
     with mock.patch(
-            'sky.provision.provision_lib.query_instances_batched',
+            'sky.backends.backend_utils.provision_lib.query_instances_batched',
             side_effect=NotImplementedError):
         with mock.patch(
                 'sky.backends.backend_utils.'
