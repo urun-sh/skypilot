@@ -558,22 +558,52 @@ def _update_request_row_fields(
 
 
 def create_table(cursor, conn):
-    # Enable WAL mode to avoid locking issues.
-    # See: issue #1441 and PR #1509
-    # https://github.com/microsoft/WSL/issues/2395
-    # TODO(romilb): We do not enable WAL for WSL because of known issue in WSL.
-    #  This may cause the database locked problem from WSL issue #1441.
-    if not common_utils.is_wsl():
-        try:
-            cursor.execute('PRAGMA journal_mode=WAL')
-        except sqlite3.OperationalError as e:
-            if 'database is locked' not in str(e):
-                raise
-            # If the database is locked, it is OK to continue, as the WAL mode
-            # is not critical and is likely to be enabled by other processes.
+    # When the backend is Postgres (db_utils.PostgresConn passes a SQLAlchemy
+    # connection), use Postgres types and create the full schema in one shot.
+    # SQLite gets the historical column-add migration flow below.
+    is_postgres = (getattr(conn, 'dialect', None) is not None and
+                   conn.dialect.name == 'postgresql')
+    if is_postgres:
+        # REAL on Postgres is float4, which cannot hold epoch timestamps
+        # precisely; use DOUBLE PRECISION. BLOB does not exist; `error` holds
+        # JSON text.
+        cursor.execute(f"""\
+        CREATE TABLE IF NOT EXISTS {REQUEST_TABLE} (
+        request_id TEXT PRIMARY KEY,
+        name TEXT,
+        entrypoint TEXT,
+        request_body TEXT,
+        status TEXT,
+        created_at DOUBLE PRECISION,
+        return_value TEXT,
+        error TEXT,
+        pid INTEGER,
+        {COL_CLUSTER_NAME} TEXT,
+        schedule_type TEXT,
+        {COL_USER_ID} TEXT,
+        {COL_STATUS_MSG} TEXT,
+        {COL_SHOULD_RETRY} INTEGER,
+        {COL_FINISHED_AT} DOUBLE PRECISION,
+        {COL_FILE_MOUNTS_BLOB_ID} TEXT
+        )""")
+    else:
+        # Enable WAL mode to avoid locking issues.
+        # See: issue #1441 and PR #1509
+        # https://github.com/microsoft/WSL/issues/2395
+        # TODO(romilb): We do not enable WAL for WSL because of known issue in WSL.
+        #  This may cause the database locked problem from WSL issue #1441.
+        if not common_utils.is_wsl():
+            try:
+                cursor.execute('PRAGMA journal_mode=WAL')
+            except sqlite3.OperationalError as e:
+                if 'database is locked' not in str(e):
+                    raise
+                # If the database is locked, it is OK to continue, as the WAL
+                # mode is not critical and is likely to be enabled by other
+                # processes.
 
-    # Table for Requests
-    cursor.execute(f"""\
+        # Table for Requests
+        cursor.execute(f"""\
         CREATE TABLE IF NOT EXISTS {REQUEST_TABLE} (
         request_id TEXT PRIMARY KEY,
         name TEXT,
@@ -592,14 +622,14 @@ def create_table(cursor, conn):
         {COL_FINISHED_AT} REAL
         )""")
 
-    db_utils.add_column_to_table(cursor, conn, REQUEST_TABLE, COL_STATUS_MSG,
-                                 'TEXT')
-    db_utils.add_column_to_table(cursor, conn, REQUEST_TABLE, COL_SHOULD_RETRY,
-                                 'INTEGER')
-    db_utils.add_column_to_table(cursor, conn, REQUEST_TABLE, COL_FINISHED_AT,
-                                 'REAL')
-    db_utils.add_column_to_table(cursor, conn, REQUEST_TABLE,
-                                 COL_FILE_MOUNTS_BLOB_ID, 'TEXT')
+        db_utils.add_column_to_table(cursor, conn, REQUEST_TABLE,
+                                     COL_STATUS_MSG, 'TEXT')
+        db_utils.add_column_to_table(cursor, conn, REQUEST_TABLE,
+                                     COL_SHOULD_RETRY, 'INTEGER')
+        db_utils.add_column_to_table(cursor, conn, REQUEST_TABLE,
+                                     COL_FINISHED_AT, 'REAL')
+        db_utils.add_column_to_table(cursor, conn, REQUEST_TABLE,
+                                     COL_FILE_MOUNTS_BLOB_ID, 'TEXT')
 
     # Add an index on (status, name) to speed up queries
     # that filter on these columns.
@@ -624,6 +654,10 @@ _init_db_lock = threading.Lock()
 def _init_db_within_lock():
     global _DB
     if _DB is None:
+        if db_utils.is_postgres_state_configured():
+            _DB = db_utils.PostgresConn(create_table)
+            logger.debug('Request store using the Postgres backend.')
+            return
         db_path = os.path.expanduser(
             server_constants.API_SERVER_REQUEST_DB_PATH)
         pathlib.Path(db_path).parents[0].mkdir(parents=True, exist_ok=True)
@@ -1435,7 +1469,8 @@ class SqliteRequestBackend(request_storage.RequestBackend):
         sql_statement = (f'INSERT INTO {REQUEST_TABLE} '
                          f'({request_columns}) VALUES '
                          f'({values_str}) ON CONFLICT(request_id) DO NOTHING '
-                         f'RETURNING ROWID')
+                         f'RETURNING '
+                         f'{"ROWID" if isinstance(_DB, db_utils.SQLiteConn) else "request_id"}')
         request_row = request.to_row()
         if sky_logging.logging_enabled(logger, sky_logging.DEBUG):
             logger.debug(f'Start creating request {request.request_id}')
@@ -1736,6 +1771,10 @@ class SqliteRequestBackend(request_storage.RequestBackend):
         with _init_db_lock:
             _init_db_within_lock()
         assert _DB is not None
+        if isinstance(_DB, db_utils.PostgresConn):
+            logger.debug('Request store on Postgres; skipping SQLite '
+                         'version check.')
+            return
         with _DB.conn:
             cursor = _DB.conn.cursor()
             cursor.execute('SELECT sqlite_version()')

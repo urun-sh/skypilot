@@ -7,7 +7,8 @@ import pathlib
 import sqlite3
 import threading
 import typing
-from typing import Any, Callable, Dict, Iterable, Literal, Optional, Union
+from typing import (Any, AsyncGenerator, Callable, Dict, Iterable, List,
+                    Literal, Optional, Tuple, Union)
 import urllib.parse
 
 import aiosqlite
@@ -415,6 +416,164 @@ class SQLiteConn(threading.local):
         if self._async_conn is not None:
             await self._async_conn.close()
         self.conn.close()
+
+
+def is_postgres_state_configured() -> bool:
+    """Whether the API server should keep its state in Postgres.
+
+    True when server mode is enabled (IS_SKYPILOT_SERVER) and a Postgres
+    connection URI is set (SKYPILOT_DB_CONNECTION_URI). The request store
+    uses this to pick its backend; other state DBs already route through
+    get_engine().
+    """
+    return bool(_resolve_conn_string(direct=False))
+
+
+def _translate_sql_for_pg_driver(
+        sql: str, parameters: Optional[Iterable[Any]]
+) -> Tuple[str, Tuple[Any, ...]]:
+    """Translate a SQLite-style SQL statement for the psycopg2 driver.
+
+    ?-placeholders become %s. Literal % must be escaped (%%) whenever
+    parameters are passed, because psycopg2 then interpolates the statement;
+    with no parameters psycopg2 leaves the statement untouched, so % passes
+    through verbatim (e.g. LIKE '%-daemon').
+    """
+    if not parameters:
+        return sql, ()
+    return sql.replace('%', '%%').replace('?', '%s'), tuple(parameters)
+
+
+class _PostgresCursor:
+    """Minimal cursor-like adapter over a SQLAlchemy connection."""
+
+    def __init__(self, conn: 'sqlalchemy.engine.Connection'):
+        self._conn = conn
+        self._result: Optional[sqlalchemy.engine.CursorResult] = None
+
+    def execute(self,
+                sql: str,
+                parameters: Optional[Iterable[Any]] = None) -> '_PostgresCursor':
+        sql, params = _translate_sql_for_pg_driver(sql, parameters)
+        if params:
+            self._result = self._conn.exec_driver_sql(sql, params)
+        else:
+            self._result = self._conn.exec_driver_sql(sql)
+        return self
+
+    def fetchone(self) -> Optional[Tuple]:
+        assert self._result is not None, 'execute() must be called first'
+        return self._result.fetchone()
+
+    def fetchall(self) -> List[Tuple]:
+        assert self._result is not None, 'execute() must be called first'
+        return self._result.fetchall()
+
+
+class _PostgresConnProxy:
+    """Mimics sqlite3.Connection's transactional context-manager surface.
+
+    ``with conn:`` commits on success and rolls back on exception, without
+    closing the pooled connection.
+    """
+
+    def __init__(self, engine: sqlalchemy.engine.Engine):
+        self._engine = engine
+        self._conn: Optional[sqlalchemy.engine.Connection] = None
+
+    def __enter__(self) -> '_PostgresConnProxy':
+        self._conn = self._engine.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> Literal[False]:
+        assert self._conn is not None
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+            self._conn = None
+        return False
+
+    def cursor(self) -> _PostgresCursor:
+        assert self._conn is not None, 'cursor() is only valid inside "with conn:"'
+        return _PostgresCursor(self._conn)
+
+
+class PostgresConn:
+    """SQLiteConn-compatible backend backed by Postgres.
+
+    Implements the surface the API-server request store (requests.py) uses:
+    a transactional ``.conn`` context manager with a cursor, plus the
+    ``*_async`` methods. Async operations run the pooled sync engine in a
+    worker thread; each operation is a single transaction on its own pooled
+    connection, so read-after-write consistency cannot be interleaved (the
+    reason the aiosqlite path needs a shared per-thread connection does not
+    apply here).
+    """
+
+    def __init__(self, create_table: Callable):
+        self._engine = get_engine(None)
+        with self._engine.connect() as conn:
+            create_table(_PostgresCursor(conn), conn)
+            conn.commit()
+
+    @property
+    def conn(self) -> _PostgresConnProxy:
+        return _PostgresConnProxy(self._engine)
+
+    async def execute_and_commit_async(self,
+                                       sql: str,
+                                       parameters: Optional[
+                                           Iterable[Any]] = None) -> None:
+        def _run() -> None:
+            sql, params = _translate_sql_for_pg_driver(sql, parameters)
+            with self._engine.begin() as conn:
+                if params:
+                    conn.exec_driver_sql(sql, params)
+                else:
+                    conn.exec_driver_sql(sql)
+
+        await asyncio.to_thread(_run)
+
+    @contextlib.asynccontextmanager
+    async def execute_fetchall_async(
+            self, sql: str,
+            parameters: Optional[Iterable[Any]] = None
+    ) -> AsyncGenerator[List[Tuple], None]:
+        def _run() -> List[Tuple]:
+            sql, params = _translate_sql_for_pg_driver(sql, parameters)
+            with self._engine.connect() as conn:
+                if params:
+                    result = conn.exec_driver_sql(sql, params)
+                else:
+                    result = conn.exec_driver_sql(sql)
+                return result.fetchall()
+
+        yield await asyncio.to_thread(_run)
+
+    async def execute_get_returning_value_async(
+            self,
+            sql: str,
+            parameters: Optional[Iterable[Any]] = None
+    ) -> Optional[Tuple]:
+        def _run() -> Optional[Tuple]:
+            sql, params = _translate_sql_for_pg_driver(sql, parameters)
+            with self._engine.begin() as conn:
+                if params:
+                    result = conn.exec_driver_sql(sql, params)
+                else:
+                    result = conn.exec_driver_sql(sql)
+                return result.fetchone()
+
+        return await asyncio.to_thread(_run)
+
+    async def close(self):
+        # dispose() only drops pooled connections; the cached engine stays
+        # usable (other state DBs share it via get_engine's cache).
+        await asyncio.to_thread(self._engine.dispose)
 
 
 class DatabaseManager:
