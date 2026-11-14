@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import enum
 import os
+import re
 import pathlib
 import sqlite3
 import threading
@@ -429,19 +430,43 @@ def is_postgres_state_configured() -> bool:
     return bool(_resolve_conn_string(direct=False))
 
 
+_INSERT_OR_REPLACE_RE = re.compile(
+    r'INSERT\s+OR\s+REPLACE\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)'
+    r'\s*\(([^)]*)\)\s*VALUES\s*\([^)]*\)', re.IGNORECASE)
+
+
 def _translate_sql_for_pg_driver(
         sql: str, parameters: Optional[Iterable[Any]]
 ) -> Tuple[str, Tuple[Any, ...]]:
-    """Translate a SQLite-style SQL statement for the psycopg2 driver.
+    """Translate a SQLite-style SQL statement for the Postgres driver.
 
-    ?-placeholders become %s. Literal % must be escaped (%%) whenever
-    parameters are passed, because psycopg2 then interpolates the statement;
-    with no parameters psycopg2 leaves the statement untouched, so % passes
-    through verbatim (e.g. LIKE '%-daemon').
+    - `INSERT OR REPLACE INTO t (cols) VALUES (...)` becomes a full upsert
+      (`ON CONFLICT (request_id) DO UPDATE SET col=EXCLUDED.col, ...`);
+      SQLite's OR REPLACE overwrites the whole row and every caller passes
+      all columns, so the semantics match. ponytail: the conflict target is
+      hardcoded to request_id — the only table routed through this backend
+      is the request store; generalize if a second table ever lands here.
+    - ?-placeholders become %s. Literal % must be escaped (%%) whenever
+      parameters are passed, because the driver then interpolates the
+      statement; with no parameters psycopg leaves the statement untouched,
+      so % passes through verbatim (e.g. LIKE '%-daemon').
+    - Python bools become ints: SQLite stores them as INTEGER, and the
+      drivers would otherwise send a boolean that Postgres rejects for an
+      INTEGER column (e.g. should_retry).
     """
+    match = _INSERT_OR_REPLACE_RE.search(sql)
+    if match:
+        table, columns = match.group(1), match.group(2)
+        col_names = [c.strip() for c in columns.split(',')]
+        assignments = ', '.join(f'{c} = EXCLUDED.{c}' for c in col_names)
+        replacement = (f'INSERT INTO {table} ({columns}) VALUES '
+                       f'({", ".join(["?"] * len(col_names))}) '
+                       f'ON CONFLICT (request_id) DO UPDATE SET {assignments}')
+        sql = sql[:match.start()] + replacement + sql[match.end():]
     if not parameters:
         return sql, ()
-    return sql.replace('%', '%%').replace('?', '%s'), tuple(parameters)
+    params = tuple(int(v) if isinstance(v, bool) else v for v in parameters)
+    return sql.replace('%', '%%').replace('?', '%s'), params
 
 
 class _PostgresCursor:

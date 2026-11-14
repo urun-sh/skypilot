@@ -83,6 +83,26 @@ def test_not_configured_without_server_mode(fresh_request_store,
     assert not db_utils.is_postgres_state_configured()
 
 
+def test_sqlite_dialect_translation():
+    """INSERT OR REPLACE becomes a Postgres upsert; bools become ints."""
+    sql = ('INSERT OR REPLACE INTO requests '
+           '(request_id, status, should_retry) VALUES (?, ?, ?)')
+    out, params = db_utils._translate_sql_for_pg_driver(sql, ('r1', True, True))
+    assert 'INSERT OR REPLACE' not in out
+    assert ('ON CONFLICT (request_id) DO UPDATE SET '
+            'request_id = EXCLUDED.request_id, '
+            'status = EXCLUDED.status, '
+            'should_retry = EXCLUDED.should_retry') in out
+    assert params == ('r1', 1, 1)
+    # No parameters: literal % passes through untouched (psycopg only
+    # interpolates when variables are passed).
+    out, params = db_utils._translate_sql_for_pg_driver(
+        "SELECT request_id FROM requests WHERE request_id LIKE '%-daemon'",
+        None)
+    assert out == "SELECT request_id FROM requests WHERE request_id LIKE '%-daemon'"
+    assert params == ()
+
+
 @pytest.mark.skipif(
     not os.environ.get('SKYPILOT_TEST_PG_DB_URI'),
     reason='SKYPILOT_TEST_PG_DB_URI not set; the live proof covers this path')
