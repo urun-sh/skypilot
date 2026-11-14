@@ -413,6 +413,9 @@ class GCPComputeInstance(GCPInstance):
     ) -> Dict[str, Any]:
         if label_filters:
             label_filter_expr = ('(' + ' AND '.join([
+                # A value of '*' means "label exists", expressed as
+                # `labels.key:*` in GCP filter syntax.
+                '(labels.{key}:*)'.format(key=key) if value == '*' else
                 '(labels.{key} = {value})'.format(key=key, value=value)
                 for key, value in label_filters.items()
             ]) + ')')
@@ -1373,6 +1376,8 @@ class GCPTPUVMInstance(GCPInstance):
                 for key, value in label_filters.items():
                     if key not in labels:
                         return False
+                    if value == '*':
+                        continue
                     if value != labels[key]:
                         return False
 

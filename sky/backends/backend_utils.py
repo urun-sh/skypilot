@@ -1,5 +1,6 @@
 """Util constants/functions for the backends."""
 import asyncio
+from collections import defaultdict
 from datetime import datetime
 import enum
 import fnmatch
@@ -2439,11 +2440,20 @@ def tag_filter_for_cluster(cluster_name: str) -> Dict[str, str]:
 def _query_cluster_status_via_cloud_api(
     handle: 'cloud_vm_ray_backend.CloudVmRayResourceHandle',
     retry_if_missing: bool,
+    precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
+        Optional[status_lib.ClusterStatus], Optional[str]]]]] = None,
 ) -> Dict[str, Tuple[status_lib.ClusterStatus, Optional[str]]]:
     """Returns a dict mapping instance/pod name to (status, reason).
 
     For the new provisioner API, keys are instance IDs (e.g., pod names
     on Kubernetes). For the legacy query_status API, keys are str(index).
+
+    Args:
+        precomputed_node_status_dict: if not None, a dict mapping
+          cluster_name_on_cloud -> {inst_id: (status, reason)} from a batched
+          cloud list call that covered this cluster's group. This cluster's
+          statuses are looked up by cluster_name_on_cloud; clusters absent
+          from the dict fall back to the per-cluster cloud query.
 
     Raises:
         exceptions.ClusterStatusFetchingError: the cluster status cannot be
@@ -2464,6 +2474,16 @@ def _query_cluster_status_via_cloud_api(
     cloud = handle.launched_resources.cloud
     assert cloud is not None, handle
     if cloud.STATUS_VERSION >= clouds.StatusVersion.SKYPILOT:
+        if precomputed_node_status_dict is not None:
+            # The batched refresh path already fetched the instance statuses
+            # for this cluster's group in one cloud list call. Reuse them if
+            # this cluster's name-on-cloud is present; otherwise fall back to
+            # the per-cluster query (e.g., the cluster's instances are all
+            # terminated, so the batched dict is empty for it).
+            precomputed = precomputed_node_status_dict.get(
+                cluster_name_on_cloud)
+            if precomputed is not None:
+                return precomputed
         cloud_name = repr(handle.launched_resources.cloud)
         try:
             node_status_dict = provision_lib.query_instances(
@@ -2655,7 +2675,10 @@ def _update_cluster_status(
         record: Dict[str, Any],
         retry_if_missing: bool,
         include_user_info: bool = True,
-        summary_response: bool = False) -> Optional[Dict[str, Any]]:
+        summary_response: bool = False,
+        precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
+            Optional[status_lib.ClusterStatus], Optional[str]]]]] = None,
+) -> Optional[Dict[str, Any]]:
     """Update the cluster status.
 
     The cluster status is updated by checking ray cluster and real status from
@@ -2664,6 +2687,12 @@ def _update_cluster_status(
     The function will update the cached cluster status in the global state. For
     the design of the cluster status and transition, please refer to the
     sky/design_docs/cluster_status.md
+
+    Args:
+        precomputed_node_status_dict: if not None, a dict mapping
+          cluster_name_on_cloud -> {inst_id: (status, reason)} from a batched
+          cloud list call that covered this cluster's group. See
+          _query_cluster_status_via_cloud_api for the details.
 
     Note: this function is only safe to be called when the caller process is
     holding the cluster lock, which means no other processes are modifying the
@@ -2702,7 +2731,9 @@ def _update_cluster_status(
     cluster_name = handle.cluster_name
 
     node_statuses = _query_cluster_status_via_cloud_api(
-        handle, retry_if_missing=retry_if_missing)
+        handle,
+        retry_if_missing=retry_if_missing,
+        precomputed_node_status_dict=precomputed_node_status_dict)
 
     all_nodes_up = (all(status[0] == status_lib.ClusterStatus.UP
                         for status in node_statuses.values()) and
@@ -3376,7 +3407,10 @@ def refresh_cluster_record(
         cluster_status_lock_timeout: int = CLUSTER_STATUS_LOCK_TIMEOUT_SECONDS,
         include_user_info: bool = True,
         summary_response: bool = False,
-        retry_if_missing: bool = True) -> Optional[Dict[str, Any]]:
+        retry_if_missing: bool = True,
+        precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
+            Optional[status_lib.ClusterStatus], Optional[str]]]]] = None
+) -> Optional[Dict[str, Any]]:
     """Refresh the cluster, and return the possibly updated record.
 
     The function will update the cached cluster status in the global state. For
@@ -3455,7 +3489,8 @@ def refresh_cluster_record(
                 return _update_cluster_status(cluster_name, record,
                                               retry_if_missing,
                                               include_user_info,
-                                              summary_response)
+                                              summary_response,
+                                              precomputed_node_status_dict)
 
             # Try to acquire the lock so we can fetch the status.
             try:
@@ -3473,7 +3508,8 @@ def refresh_cluster_record(
                     return _update_cluster_status(cluster_name, record,
                                                   retry_if_missing,
                                                   include_user_info,
-                                                  summary_response)
+                                                  summary_response,
+                                                  precomputed_node_status_dict)
 
             except locks.LockTimeout:
                 # lock.acquire() will throw a Timeout exception if the lock is not
@@ -3928,14 +3964,18 @@ def _refresh_cluster(
         cluster_name: str,
         force_refresh_statuses: Optional[Set[status_lib.ClusterStatus]],
         include_user_info: bool = True,
-        summary_response: bool = False) -> Optional[Dict[str, Any]]:
+        summary_response: bool = False,
+        precomputed_node_status_dict: Optional[Dict[str, Dict[str, Tuple[
+            Optional[status_lib.ClusterStatus], Optional[str]]]]] = None
+) -> Optional[Dict[str, Any]]:
     try:
         record = refresh_cluster_record(
             cluster_name,
             force_refresh_statuses=force_refresh_statuses,
             cluster_lock_already_held=False,
             include_user_info=include_user_info,
-            summary_response=summary_response)
+            summary_response=summary_response,
+            precomputed_node_status_dict=precomputed_node_status_dict)
     except (exceptions.ClusterStatusFetchingError,
             exceptions.CloudUserIdentityError,
             exceptions.ClusterOwnerIdentityMismatchError) as e:
@@ -3988,8 +4028,124 @@ def refresh_cluster_records() -> None:
 
     if len(cluster_names_without_launch_request) > 0:
         # Do not refresh the clusters that have an active launch request.
+        _refresh_cluster_records_batched(cluster_names_without_launch_request)
+
+
+def _refresh_cluster_records_in_parallel(
+        cluster_names_without_launch_request: Set[str],
+        cloud: Optional[str] = None,
+        region: Optional[str] = None,
+        zone: Optional[str] = None) -> None:
+    """Refreshes the status of the given clusters in parallel.
+
+    If cloud/region/zone are provided, the function makes ONE batched cloud
+    list call per group (via provision_lib.query_instances_batched) and fans
+    the returned node statuses out to every cluster record in the group. If
+    the cloud does not implement a batched list, the function falls back to
+    the per-cluster query path.
+    """
+    force_refresh_statuses = set(status_lib.ClusterStatus)
+    include_user_info = False
+    summary_response = True
+
+    def _refresh_cluster_record(cluster_name):
+        return _refresh_cluster(cluster_name,
+                                force_refresh_statuses=force_refresh_statuses,
+                                include_user_info=include_user_info,
+                                summary_response=summary_response)
+
+    if not cloud:
+        # Fall back to the per-cluster path.
         subprocess_utils.run_in_parallel(_refresh_cluster_record,
                                          cluster_names_without_launch_request)
+        return
+
+    # Get the provider config for the group from the first cluster's yaml.
+    provider_config = None
+    for name in cluster_names_without_launch_request:
+        record = global_user_state.get_cluster_from_name(name)
+        if record is None:
+            continue
+        handle = record.get('handle')
+        if handle is None:
+            continue
+        try:
+            ray_config = global_user_state.get_cluster_yaml_dict(
+                handle.cluster_yaml)
+        except Exception:  # pylint: disable=broad-except
+            continue
+        provider_config = ray_config.get('provider')
+        if provider_config:
+            break
+
+    if not provider_config:
+        # Fall back to the per-cluster path.
+        subprocess_utils.run_in_parallel(_refresh_cluster_record,
+                                         cluster_names_without_launch_request)
+        return
+
+    try:
+        batched = provision_lib.query_instances_batched(
+            cloud, provider_config=provider_config)
+    except NotImplementedError:
+        # The cloud does not implement a batched list; fall back to the
+        # per-cluster query path.
+        subprocess_utils.run_in_parallel(_refresh_cluster_record,
+                                         cluster_names_without_launch_request)
+        return
+    except Exception as e:  # pylint: disable=broad-except
+        logger.debug(
+            f'Batched refresh for {cloud} {region} {zone} failed: {e}; '
+            'falling back to the per-cluster path.')
+        subprocess_utils.run_in_parallel(_refresh_cluster_record,
+                                         cluster_names_without_launch_request)
+        return
+
+    def _refresh_cluster_record_with_precomputed(cluster_name):
+        return _refresh_cluster(cluster_name,
+                                force_refresh_statuses=force_refresh_statuses,
+                                include_user_info=include_user_info,
+                                summary_response=summary_response,
+                                precomputed_node_status_dict=batched)
+
+    subprocess_utils.run_in_parallel(
+        _refresh_cluster_record_with_precomputed,
+        cluster_names_without_launch_request)
+
+
+def _refresh_cluster_records_batched(
+        cluster_names_without_launch_request: Set[str]) -> None:
+    """Refreshes the status of the given clusters in waves, grouped by cloud,
+    region, and zone.
+
+    The batched refresh scales the number of cloud list calls with the number
+    of (cloud, region, zone) groups, not the number of clusters: one batched
+    list call per group per wave, fanning the returned node statuses out to
+    every cluster record in the group. Clouds that do not implement a batched
+    list fall back to the per-cluster query path inside the same group loop,
+    so no cluster loses its refresh. Groups are spread across the refresh
+    interval so that the wave does not hit a cloud's rate limit with a burst
+    of list calls.
+    """
+    locations = global_user_state.get_cluster_locations()
+    groups = defaultdict(list)
+    for name in sorted(cluster_names_without_launch_request):
+        groups[locations.get(name)].append(name)
+
+    # pylint: disable=import-outside-toplevel
+    from sky.server import constants as server_constants
+    interval = server_constants.CLUSTER_REFRESH_DAEMON_INTERVAL_SECONDS
+    n_groups = len(groups)
+    stagger = interval / n_groups
+    for i, ((cloud, region, zone), names) in enumerate(sorted(groups.items())):
+        if i > 0:
+            time.sleep(stagger)
+        if cloud is None or region is None:
+            # No cloud/region/zone info: fall back to the per-cluster path.
+            _refresh_cluster_records_in_parallel(names)
+            continue
+        _refresh_cluster_records_in_parallel(names, cloud=cloud, region=region,
+                                             zone=zone)
 
 
 def _get_records_with_handle(
