@@ -3,11 +3,13 @@ import asyncio
 import contextlib
 import enum
 import os
+import re
 import pathlib
 import sqlite3
 import threading
 import typing
-from typing import Any, Callable, Dict, Iterable, Literal, Optional, Union
+from typing import (Any, AsyncGenerator, Callable, Dict, Iterable, List,
+                    Literal, Optional, Tuple, Union)
 import urllib.parse
 
 import aiosqlite
@@ -415,6 +417,186 @@ class SQLiteConn(threading.local):
         if self._async_conn is not None:
             await self._async_conn.close()
         self.conn.close()
+
+
+def is_postgres_state_configured() -> bool:
+    """Whether the API server should keep its state in Postgres.
+
+    True when server mode is enabled (IS_SKYPILOT_SERVER) and a Postgres
+    connection URI is set (SKYPILOT_DB_CONNECTION_URI). The request store
+    uses this to pick its backend; other state DBs already route through
+    get_engine().
+    """
+    return bool(_resolve_conn_string(direct=False))
+
+
+_INSERT_OR_REPLACE_RE = re.compile(
+    r'INSERT\s+OR\s+REPLACE\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)'
+    r'\s*\(([^)]*)\)\s*VALUES\s*\([^)]*\)', re.IGNORECASE)
+
+
+def _translate_sql_for_pg_driver(
+        sql: str,
+        parameters: Optional[Iterable[Any]]) -> Tuple[str, Tuple[Any, ...]]:
+    """Translate a SQLite-style SQL statement for the Postgres driver.
+
+    - `INSERT OR REPLACE INTO t (cols) VALUES (...)` becomes a full upsert
+      (`ON CONFLICT (request_id) DO UPDATE SET col=EXCLUDED.col, ...`);
+      SQLite's OR REPLACE overwrites the whole row and every caller passes
+      all columns, so the semantics match. ponytail: the conflict target is
+      hardcoded to request_id — the only table routed through this backend
+      is the request store; generalize if a second table ever lands here.
+    - ?-placeholders become %s and literal % is ALWAYS escaped to %% — and
+      the params tuple is ALWAYS passed to the driver, even when empty:
+      psycopg v3 parses the statement for % placeholders whether or not
+      parameters are supplied (only %s/%b/%t are legal), so an unescaped
+      LIKE '%-daemon' fails even with no binds, and psycopg2 only converts
+      %% back to % when interpolation runs (which passing the tuple forces).
+    - Python bools become ints: SQLite stores them as INTEGER, and the
+      drivers would otherwise send a boolean that Postgres rejects for an
+      INTEGER column (e.g. should_retry).
+    """
+    match = _INSERT_OR_REPLACE_RE.search(sql)
+    if match:
+        table, columns = match.group(1), match.group(2)
+        col_names = [c.strip() for c in columns.split(',')]
+        assignments = ', '.join(f'{c} = EXCLUDED.{c}' for c in col_names)
+        replacement = (f'INSERT INTO {table} ({columns}) VALUES '
+                       f'({", ".join(["?"] * len(col_names))}) '
+                       f'ON CONFLICT (request_id) DO UPDATE SET {assignments}')
+        sql = sql[:match.start()] + replacement + sql[match.end():]
+    params = tuple(
+        int(v) if isinstance(v, bool) else v for v in (parameters or ()))
+    return sql.replace('%', '%%').replace('?', '%s'), params
+
+
+class _PostgresCursor:
+    """Minimal cursor-like adapter over a SQLAlchemy connection."""
+
+    def __init__(self, conn: 'sqlalchemy.engine.Connection'):
+        self._conn = conn
+        self._result: Optional[sqlalchemy.engine.CursorResult] = None
+
+    def execute(
+            self,
+            sql: str,
+            parameters: Optional[Iterable[Any]] = None) -> '_PostgresCursor':
+        sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
+        self._result = self._conn.exec_driver_sql(sql_t, params)
+        return self
+
+    def fetchone(self) -> Optional[Tuple]:
+        assert self._result is not None, 'execute() must be called first'
+        return self._result.fetchone()
+
+    def fetchall(self) -> List[Tuple]:
+        assert self._result is not None, 'execute() must be called first'
+        return self._result.fetchall()
+
+
+class _PostgresConnProxy:
+    """Mimics sqlite3.Connection's transactional context-manager surface.
+
+    ``with conn:`` commits on success and rolls back on exception, without
+    closing the pooled connection.
+    """
+
+    def __init__(self, engine: sqlalchemy.engine.Engine):
+        self._engine = engine
+        self._conn: Optional[sqlalchemy.engine.Connection] = None
+
+    def __enter__(self) -> '_PostgresConnProxy':
+        self._conn = self._engine.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> Literal[False]:
+        assert self._conn is not None
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+            self._conn = None
+        return False
+
+    def cursor(self) -> _PostgresCursor:
+        assert self._conn is not None, ('cursor() is only valid '
+                                        'inside "with conn:"')
+        return _PostgresCursor(self._conn)
+
+
+class PostgresConn:
+    """SQLiteConn-compatible backend backed by Postgres.
+
+    Implements the surface the API-server request store (requests.py) uses:
+    a transactional ``.conn`` context manager with a cursor, plus the
+    ``*_async`` methods. Async operations run the pooled sync engine in a
+    worker thread; each operation is a single transaction on its own pooled
+    connection, so read-after-write consistency cannot be interleaved (the
+    reason the aiosqlite path needs a shared per-thread connection does not
+    apply here).
+    """
+
+    def __init__(self, create_table: Callable):
+        self._engine = get_engine(None)
+        self._conn_proxy = _PostgresConnProxy(self._engine)
+        with self._engine.connect() as conn:
+            create_table(_PostgresCursor(conn), conn)
+            conn.commit()
+
+    @property
+    def conn(self) -> _PostgresConnProxy:
+        # Stable proxy object (sqlite3.Connection semantics: `with db.conn:`
+        # and `db.conn.cursor()` must observe the SAME object); each
+        # with-block checks out its own pooled connection.
+        return self._conn_proxy
+
+    async def execute_and_commit_async(self,
+                                       sql: str,
+                                       parameters: Optional[
+                                           Iterable[Any]] = None) -> None:
+
+        def _run() -> None:
+            sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
+            with self._engine.begin() as conn:
+                conn.exec_driver_sql(sql_t, params)
+
+        await asyncio.to_thread(_run)
+
+    @contextlib.asynccontextmanager
+    async def execute_fetchall_async(
+        self,
+        sql: str,
+        parameters: Optional[Iterable[Any]] = None
+    ) -> AsyncGenerator[List[Tuple], None]:
+
+        def _run() -> List[Tuple]:
+            sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
+            with self._engine.connect() as conn:
+                result = conn.exec_driver_sql(sql_t, params)
+                return result.fetchall()
+
+        yield await asyncio.to_thread(_run)
+
+    async def execute_get_returning_value_async(
+            self,
+            sql: str,
+            parameters: Optional[Iterable[Any]] = None) -> Optional[Tuple]:
+
+        def _run() -> Optional[Tuple]:
+            sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
+            with self._engine.begin() as conn:
+                result = conn.exec_driver_sql(sql_t, params)
+                return result.fetchone()
+
+        return await asyncio.to_thread(_run)
+
+    async def close(self):
+        # dispose() only drops pooled connections; the cached engine stays
+        # usable (other state DBs share it via get_engine's cache).
+        await asyncio.to_thread(self._engine.dispose)
 
 
 class DatabaseManager:
