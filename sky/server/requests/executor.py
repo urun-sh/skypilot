@@ -467,7 +467,10 @@ def _get_queue(schedule_type: api_requests.ScheduleType) -> RequestQueue:
     factory = _queue_factory
     if factory is None:
         factory = queue_base.get_queue_backend_factory()
-    assert factory is not None
+    if factory is None:
+        # No explicit registration and no executor.start() yet (e.g. direct
+        # schedule calls in tests): the DB backend needs no infrastructure.
+        factory = queue_base.DbQueueFactory()
     return RequestQueue(factory.create_queue(schedule_type.value))
 
 
@@ -1243,6 +1246,8 @@ def start(
         _queue_factory = factory
     elif config.queue_backend == server_config.QueueBackend.MULTIPROCESSING:
         _queue_factory = queue_base.MultiprocessingQueueFactory()
+    elif config.queue_backend == server_config.QueueBackend.DB:
+        _queue_factory = queue_base.DbQueueFactory()
     elif config.queue_backend == server_config.QueueBackend.LOCAL:
         _queue_factory = queue_base.LocalQueueFactory()
     else:

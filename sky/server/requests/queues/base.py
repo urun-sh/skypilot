@@ -2,12 +2,14 @@
 
 import abc
 import multiprocessing
+import os
 import queue as queue_lib
 import time
 from typing import List, Optional, Tuple
 
 from sky import sky_logging
 from sky.metrics import utils as metrics_utils
+from sky.server import constants as server_constants
 from sky.server.requests import requests as api_requests
 from sky.server.requests.queues import local_queue
 from sky.server.requests.queues import mp_queue
@@ -156,6 +158,100 @@ class MultiprocessingQueueBackend(QueueBackend):
         return self._queue.qsize()
 
 
+class DbQueueBackend(QueueBackend):
+    """Queue backed by a table in the requests DB (no IPC process).
+
+    Why this exists (skc#911, 2026-11-15 04:24Z twins wedge): the
+    multiprocessing backend routes every enqueue AND every dequeue through a
+    single BaseManager process over no-timeout synchronous RPCs. Under a poll
+    burst the manager GIL serves a put storm (one thread + one connection per
+    client thread; measured 1005 threads / 1013 fds at a 1000-poller burst),
+    the single dispatcher's get-RPC is starved (31 executed vs 11,230 PENDING
+    in 4 min with idle pool workers), and ANY manager stall freezes the whole
+    request plane with no recovery. The requests DB is already the durable
+    store and every writer process already has it open, so routing the queue
+    through it removes the manager (and the IPC hop) entirely: put = one
+    INSERT, get = one atomic DELETE ... RETURNING (SQLite >= 3.35, which the
+    server already asserts). FIFO by rowid. Same-instance get/put are
+    serialized by SQLite's write lock; cross-process is safe under WAL.
+    """
+
+    _TABLE = 'request_queue'
+
+    def __init__(self, queue_name: str):
+        super().__init__()
+        self._schedule_type = queue_name
+        self._db_path = os.path.expanduser(
+            server_constants.API_SERVER_REQUEST_DB_PATH)
+        self._ensure_table()
+
+    def _connect(self):
+        import sqlite3
+
+        conn = sqlite3.connect(self._db_path, timeout=60)
+        conn.execute('PRAGMA busy_timeout=60000')
+        return conn
+
+    def _ensure_table(self) -> None:
+        with self._connect() as conn:
+            conn.execute(f'''
+                CREATE TABLE IF NOT EXISTS {self._TABLE} (
+                    rowid_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    schedule_type TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    ignore_return_value INTEGER NOT NULL,
+                    retryable INTEGER NOT NULL,
+                    enqueued_at REAL NOT NULL)''')
+            conn.execute(
+                f'CREATE INDEX IF NOT EXISTS idx_request_queue_type_seq '
+                f'ON {self._TABLE} (schedule_type, rowid_seq)')
+
+    def put(self, item: Tuple[str, bool, bool]) -> None:
+        internal: _InternalItem = (item, time.time())
+        with self._connect() as conn:
+            conn.execute(
+                f'INSERT INTO {self._TABLE} (schedule_type, request_id, '
+                'ignore_return_value, retryable, enqueued_at) '
+                'VALUES (?, ?, ?, ?, ?)',
+                (self._schedule_type, internal[0][0],
+                 int(internal[0][1]), int(internal[0][2]), internal[1]))
+
+    async def put_async(self, item: Tuple[str, bool, bool]) -> None:
+        # Same rationale as the multiprocessing backend's assumption: a single
+        # WAL insert is sub-millisecond; do not force a thread hop per put.
+        self.put(item)
+
+    def get(self) -> Optional[Tuple[str, bool, bool]]:
+        # Atomic claim: DELETE ... RETURNING ensures a single consumer wins a
+        # row even with concurrent dispatchers (SQLite >= 3.35, asserted at
+        # server startup).
+        with self._connect() as conn:
+            row = conn.execute(
+                f'DELETE FROM {self._TABLE} WHERE rowid_seq = ('
+                f'  SELECT rowid_seq FROM {self._TABLE} '
+                f'  WHERE schedule_type = ? ORDER BY rowid_seq LIMIT 1) '
+                f'RETURNING request_id, ignore_return_value, retryable, '
+                f'enqueued_at', (self._schedule_type,)).fetchone()
+        if row is None:
+            return None
+        _observe_queue_wait(self._schedule_type, row[3])
+        return (row[0], bool(row[1]), bool(row[2]))
+
+    def qsize(self) -> int:
+        with self._connect() as conn:
+            (size,) = conn.execute(
+                f'SELECT COUNT(*) FROM {self._TABLE} '
+                f'WHERE schedule_type = ?', (self._schedule_type,)).fetchone()
+        return size
+
+
+class DbQueueFactory(QueueBackendFactory):
+    """Factory for DB-backed queues (no background process needed)."""
+
+    def create_queue(self, schedule_type: str) -> QueueBackend:
+        return DbQueueBackend(schedule_type)
+
+
 class LocalQueueFactory(QueueBackendFactory):
     """Factory for process-local queues."""
 
@@ -198,11 +294,13 @@ class MultiprocessingQueueFactory(QueueBackendFactory):
 _queue_backend_factory: Optional[QueueBackendFactory] = None
 
 
-def get_queue_backend_factory() -> QueueBackendFactory:
-    """Get the registered queue backend factory."""
-    if _queue_backend_factory is not None:
-        return _queue_backend_factory
-    return MultiprocessingQueueFactory()
+def get_queue_backend_factory() -> Optional[QueueBackendFactory]:
+    """Get the registered queue backend factory, or None if not registered.
+
+    Callers must fall back to the ServerConfig-selected backend; returning a
+    default here would silently dead-code `ServerConfig.queue_backend`.
+    """
+    return _queue_backend_factory
 
 
 def set_queue_backend_factory(factory: QueueBackendFactory) -> None:

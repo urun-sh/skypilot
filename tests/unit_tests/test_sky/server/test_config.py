@@ -18,7 +18,7 @@ def test_compute_server_config_on_minimal_deployment(cpu_count, mem_size_gb):
     assert c.long_worker_config.burstable_parallelism == 0
     assert c.short_worker_config.garanteed_parallelism == 9
     assert c.short_worker_config.burstable_parallelism == 0
-    assert c.queue_backend == config.QueueBackend.MULTIPROCESSING
+    assert c.queue_backend == config.QueueBackend.DB
 
 
 @mock.patch('sky.utils.common_utils.get_mem_size_gb', return_value=784)
@@ -31,7 +31,7 @@ def test_compute_server_config_on_large_deployment(cpu_count, mem_size_gb):
     assert c.long_worker_config.burstable_parallelism == 0
     assert c.short_worker_config.garanteed_parallelism == 2084
     assert c.short_worker_config.burstable_parallelism == 0
-    assert c.queue_backend == config.QueueBackend.MULTIPROCESSING
+    assert c.queue_backend == config.QueueBackend.DB
 
 
 @mock.patch('sky.utils.common_utils.get_mem_size_gb', return_value=16)
@@ -44,7 +44,7 @@ def test_compute_server_config(cpu_count, mem_size_gb):
     assert c.long_worker_config.burstable_parallelism == 0
     assert c.short_worker_config.garanteed_parallelism == 36
     assert c.short_worker_config.burstable_parallelism == 0
-    assert c.queue_backend == config.QueueBackend.MULTIPROCESSING
+    assert c.queue_backend == config.QueueBackend.DB
 
     # Test local mode with normal resources
     c = config.compute_server_config(deploy=False)
@@ -75,7 +75,7 @@ def test_compute_server_config_low_resources(cpu_count, mem_size_gb):
     assert c.long_worker_config.burstable_parallelism == 0
     assert c.short_worker_config.garanteed_parallelism == 5
     assert c.short_worker_config.burstable_parallelism == 0
-    assert c.queue_backend == config.QueueBackend.MULTIPROCESSING
+    assert c.queue_backend == config.QueueBackend.DB
 
 
 @mock.patch('sky.utils.common_utils.get_mem_size_gb', return_value=48)
@@ -95,7 +95,7 @@ def test_compute_server_config_pool(cpu_count, mem_size_gb, buildkite_mock):
     assert c.long_worker_config.burstable_parallelism == 0
     assert c.short_worker_config.garanteed_parallelism == 114
     assert c.short_worker_config.burstable_parallelism == 0
-    assert c.queue_backend == config.QueueBackend.MULTIPROCESSING
+    assert c.queue_backend == config.QueueBackend.DB
 
     assert controller_utils._get_number_of_services(pool=True) == 5
     assert controller_utils._get_request_parallelism(pool=True) == 40
