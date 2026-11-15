@@ -436,8 +436,8 @@ _INSERT_OR_REPLACE_RE = re.compile(
 
 
 def _translate_sql_for_pg_driver(
-        sql: str, parameters: Optional[Iterable[Any]]
-) -> Tuple[str, Tuple[Any, ...]]:
+        sql: str,
+        parameters: Optional[Iterable[Any]]) -> Tuple[str, Tuple[Any, ...]]:
     """Translate a SQLite-style SQL statement for the Postgres driver.
 
     - `INSERT OR REPLACE INTO t (cols) VALUES (...)` becomes a full upsert
@@ -465,8 +465,8 @@ def _translate_sql_for_pg_driver(
                        f'({", ".join(["?"] * len(col_names))}) '
                        f'ON CONFLICT (request_id) DO UPDATE SET {assignments}')
         sql = sql[:match.start()] + replacement + sql[match.end():]
-    params = tuple(int(v) if isinstance(v, bool) else v
-                   for v in (parameters or ()))
+    params = tuple(
+        int(v) if isinstance(v, bool) else v for v in (parameters or ()))
     return sql.replace('%', '%%').replace('?', '%s'), params
 
 
@@ -477,9 +477,10 @@ class _PostgresCursor:
         self._conn = conn
         self._result: Optional[sqlalchemy.engine.CursorResult] = None
 
-    def execute(self,
-                sql: str,
-                parameters: Optional[Iterable[Any]] = None) -> '_PostgresCursor':
+    def execute(
+            self,
+            sql: str,
+            parameters: Optional[Iterable[Any]] = None) -> '_PostgresCursor':
         sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
         self._result = self._conn.exec_driver_sql(sql_t, params)
         return self
@@ -521,7 +522,8 @@ class _PostgresConnProxy:
         return False
 
     def cursor(self) -> _PostgresCursor:
-        assert self._conn is not None, 'cursor() is only valid inside "with conn:"'
+        assert self._conn is not None, ('cursor() is only valid '
+                                        'inside "with conn:"')
         return _PostgresCursor(self._conn)
 
 
@@ -555,6 +557,7 @@ class PostgresConn:
                                        sql: str,
                                        parameters: Optional[
                                            Iterable[Any]] = None) -> None:
+
         def _run() -> None:
             sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
             with self._engine.begin() as conn:
@@ -564,9 +567,11 @@ class PostgresConn:
 
     @contextlib.asynccontextmanager
     async def execute_fetchall_async(
-            self, sql: str,
-            parameters: Optional[Iterable[Any]] = None
+        self,
+        sql: str,
+        parameters: Optional[Iterable[Any]] = None
     ) -> AsyncGenerator[List[Tuple], None]:
+
         def _run() -> List[Tuple]:
             sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
             with self._engine.connect() as conn:
@@ -578,8 +583,8 @@ class PostgresConn:
     async def execute_get_returning_value_async(
             self,
             sql: str,
-            parameters: Optional[Iterable[Any]] = None
-    ) -> Optional[Tuple]:
+            parameters: Optional[Iterable[Any]] = None) -> Optional[Tuple]:
+
         def _run() -> Optional[Tuple]:
             sql_t, params = _translate_sql_for_pg_driver(sql, parameters)
             with self._engine.begin() as conn:

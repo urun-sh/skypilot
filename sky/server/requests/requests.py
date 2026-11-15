@@ -14,7 +14,7 @@ import threading
 import time
 import traceback
 from typing import (Any, Callable, Dict, Generator, List, NamedTuple, NoReturn,
-                    Optional, Set, Tuple)
+                    Optional, Set, Tuple, Union)
 import uuid
 
 import anyio
@@ -590,8 +590,8 @@ def create_table(cursor, conn):
         # Enable WAL mode to avoid locking issues.
         # See: issue #1441 and PR #1509
         # https://github.com/microsoft/WSL/issues/2395
-        # TODO(romilb): We do not enable WAL for WSL because of known issue in WSL.
-        #  This may cause the database locked problem from WSL issue #1441.
+        # TODO(romilb): We do not enable WAL for WSL because of known issue
+        #  in WSL. This may cause the database locked problem from WSL #1441.
         if not common_utils.is_wsl():
             try:
                 cursor.execute('PRAGMA journal_mode=WAL')
@@ -647,7 +647,7 @@ def create_table(cursor, conn):
     """)
 
 
-_DB = None
+_DB: Optional[Union[db_utils.PostgresConn, db_utils.SQLiteConn]] = None
 _init_db_lock = threading.Lock()
 
 
@@ -1466,11 +1466,12 @@ class SqliteRequestBackend(request_storage.RequestBackend):
         assert _DB is not None
         request_columns = ', '.join(REQUEST_COLUMNS)
         values_str = ', '.join(['?'] * len(REQUEST_COLUMNS))
+        returning_col = ('ROWID' if isinstance(_DB, db_utils.SQLiteConn) else
+                         'request_id')
         sql_statement = (f'INSERT INTO {REQUEST_TABLE} '
                          f'({request_columns}) VALUES '
                          f'({values_str}) ON CONFLICT(request_id) DO NOTHING '
-                         f'RETURNING '
-                         f'{"ROWID" if isinstance(_DB, db_utils.SQLiteConn) else "request_id"}')
+                         f'RETURNING {returning_col}')
         request_row = request.to_row()
         if sky_logging.logging_enabled(logger, sky_logging.DEBUG):
             logger.debug(f'Start creating request {request.request_id}')
