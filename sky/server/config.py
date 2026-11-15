@@ -67,6 +67,11 @@ class QueueBackend(enum.Enum):
     LOCAL = 'local'
     # Multi-process queue backend starts a dedicated process for serving queues.
     MULTIPROCESSING = 'multiprocessing'
+    # DB-backed queue: the request queues live in the requests DB itself (one
+    # INSERT per enqueue, one atomic DELETE..RETURNING per claim). No IPC
+    # process, so no no-timeout manager RPC on the hot path (see
+    # queues.base.DbQueueBackend for the incident this avoids).
+    DB = 'db'
     # TODO(zhwu): we can add redis backend in the future.
 
 
@@ -134,7 +139,12 @@ def compute_server_config(
                                                        local=not deploy)
     max_parallel_for_short = _max_short_worker_parallism(
         mem_size_gb, max_parallel_for_long)
-    queue_backend = QueueBackend.MULTIPROCESSING
+    # DB-backed queue by default in deployment: the BaseManager process of
+    # the multiprocessing backend is a no-timeout synchronous RPC dependency
+    # for both dispatch and every event-loop enqueue; under a poll burst it
+    # starves the dispatcher (skc#911 repro: 1005 manager threads at a
+    # 1000-poller burst, 31 executed vs 11,230 PENDING with idle workers).
+    queue_backend = QueueBackend.DB
     burstable_parallel_for_long = 0
     burstable_parallel_for_short = 0
     # if num_db_connections_per_worker is 0, server will use NullPool
