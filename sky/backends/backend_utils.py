@@ -4019,13 +4019,6 @@ def refresh_cluster_records() -> None:
     cluster_names_without_launch_request = (cluster_names -
                                             cluster_names_with_launch_request)
 
-    def _refresh_cluster_record(cluster_name):
-        return _refresh_cluster(cluster_name,
-                                force_refresh_statuses=set(
-                                    status_lib.ClusterStatus),
-                                include_user_info=False,
-                                summary_response=True)
-
     if len(cluster_names_without_launch_request) > 0:
         # Do not refresh the clusters that have an active launch request.
         _refresh_cluster_records_batched(
