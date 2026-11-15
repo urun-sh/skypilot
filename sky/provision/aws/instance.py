@@ -4,6 +4,7 @@ Note (dev): If API changes are made to adaptors/aws.py and the new API is used
 in this or config module, please make sure to reload it as in
 _default_ec2_resource() to avoid version mismatch issues.
 """
+import collections
 import copy
 import logging
 from multiprocessing import pool
@@ -690,6 +691,60 @@ def query_instances(
             continue
         statuses[inst.id] = (status, None)
     return statuses
+
+
+@common_utils.retry
+def query_instances_batched(
+    provider_config: Optional[Dict[str, Any]] = None,
+    non_terminated_only: bool = True,
+) -> Dict[str, Dict[str, Tuple[Optional['status_lib.ClusterStatus'],
+                               Optional[str]]]]:
+    """Query instances for all clusters in a region in ONE list call.
+
+    Unlike query_instances, which filters by a single cluster's name-on-cloud
+    tag, this lists every instance in the region that carries the
+    ray-cluster-name tag and groups the result by the tag value. One
+    DescribeInstances call per region instead of one per cluster.
+
+    Returns: dict mapping each cluster_name_on_cloud to
+    {inst_id: (status, reason)}.
+    """
+    assert provider_config is not None, provider_config
+    region = provider_config['region']
+    ec2 = _default_ec2_resource(region)
+    filters: List['ec2_type_defs.FilterTypeDef'] = [{
+        'Name': f'tag:{constants.TAG_RAY_CLUSTER_NAME}',
+        'Values': ['*'],
+    }]
+    instances = _filter_instances(ec2,
+                                  filters,
+                                  included_instances=None,
+                                  excluded_instances=None)
+    status_map = {
+        'pending': status_lib.ClusterStatus.INIT,
+        'running': status_lib.ClusterStatus.UP,
+        'stopping': status_lib.ClusterStatus.STOPPED,
+        'stopped': status_lib.ClusterStatus.STOPPED,
+        'shutting-down': None,
+        'terminated': None,
+    }
+    statuses: Dict[str,
+                   Dict[str,
+                        Tuple[Optional['status_lib.ClusterStatus'],
+                              Optional[str]]]] = collections.defaultdict(dict)
+    for inst in instances:
+        status = status_map[inst.state['Name']]
+        if non_terminated_only and status is None:
+            continue
+        cluster_name_on_cloud = None
+        for tag in inst.tags or []:
+            if tag['Key'] == constants.TAG_RAY_CLUSTER_NAME:
+                cluster_name_on_cloud = tag['Value']
+                break
+        if cluster_name_on_cloud is None:
+            continue
+        statuses[cluster_name_on_cloud][inst.id] = (status, None)
+    return dict(statuses)
 
 
 def stop_instances(

@@ -115,6 +115,63 @@ def query_instances(
     return statuses
 
 
+@common_utils.retry
+def query_instances_batched(
+    provider_config: Optional[Dict[str, Any]] = None,
+    non_terminated_only: bool = True,
+) -> Dict[str, Dict[str, Tuple[Optional['status_lib.ClusterStatus'],
+                               Optional[str]]]]:
+    """Query instances for all clusters in a zone in ONE list call.
+
+    Unlike query_instances, which filters by a single cluster's name-on-cloud
+    label, this lists every instance in the zone that carries the
+    ray-cluster-name label and groups the result by the label value. One
+    aggregatedList call per (zone, project) instead of one per cluster.
+
+    Returns: dict mapping each cluster_name_on_cloud to
+    {inst_id: (status, reason)}.
+    """
+    assert provider_config is not None, provider_config
+    zone = provider_config['availability_zone']
+    project_id = provider_config['project_id']
+    handler: Type[
+        instance_utils.GCPInstance] = instance_utils.GCPComputeInstance
+    use_tpu_vms = provider_config.get('_has_tpus', False)
+    if use_tpu_vms:
+        handler = instance_utils.GCPTPUVMInstance
+
+    # '*' matches any instance that carries the label at all.
+    instances = handler.filter(
+        project_id,
+        zone,
+        {provision_constants.TAG_RAY_CLUSTER_NAME: '*'},
+        status_filters=None,
+    )
+
+    statuses: Dict[str,
+                   Dict[str,
+                        Tuple[Optional['status_lib.ClusterStatus'],
+                              Optional[str]]]] = collections.defaultdict(dict)
+    for inst_id, instance in instances.items():
+        raw_status = instance[handler.STATUS_FIELD]
+        if raw_status in handler.PENDING_STATES:
+            status = status_lib.ClusterStatus.INIT
+        elif raw_status in handler.STOPPING_STATES + handler.STOPPED_STATES:
+            status = status_lib.ClusterStatus.STOPPED
+        elif raw_status == handler.RUNNING_STATE:
+            status = status_lib.ClusterStatus.UP
+        else:
+            status = None
+        if non_terminated_only and status is None:
+            continue
+        cluster_name_on_cloud = instance.get('labels', {}).get(
+            provision_constants.TAG_RAY_CLUSTER_NAME)
+        if cluster_name_on_cloud is None:
+            continue
+        statuses[cluster_name_on_cloud][inst_id] = (status, None)
+    return dict(statuses)
+
+
 def _wait_for_operations(
     handlers_to_operations: Dict[Type[instance_utils.GCPInstance], List[dict]],
     project_id: str,

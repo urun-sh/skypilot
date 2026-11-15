@@ -222,6 +222,23 @@ def query_instances(
 
 
 @_route_to_cloud_impl
+def query_instances_batched(
+    provider_name: str,
+    provider_config: Optional[Dict[str, Any]] = None,
+    non_terminated_only: bool = True,
+) -> Dict[str, Dict[str, Tuple[Optional['status_lib.ClusterStatus'],
+                               Optional[str]]]]:
+    """Query instances for all clusters in a region/zone in ONE list call.
+
+    Returns a dictionary mapping each cluster's name-on-cloud to a dict of
+    instance IDs and (status, reason) tuples. Clouds that do not implement a
+    batched list raise NotImplementedError, which the caller treats as
+    "fall back to the per-cluster query path".
+    """
+    raise NotImplementedError
+
+
+@_route_to_cloud_impl
 def bootstrap_instances(
         provider_name: str, region: str, cluster_name_on_cloud: str,
         config: common.ProvisionConfig) -> common.ProvisionConfig:

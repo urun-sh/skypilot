@@ -2254,6 +2254,9 @@ def get_clusters(
         cluster_table.c.user_hash,
         cluster_table.c.workspace,
         cluster_table.c.node_names,
+        cluster_table.c.cloud,
+        cluster_table.c.region,
+        cluster_table.c.zone,
         user_table.c.name.label('user_name'),
     ]
     if not summary_response:
@@ -2358,6 +2361,10 @@ def get_clusters(
             'is_managed': False
                           if exclude_managed_clusters else bool(row.is_managed),
             'node_names': common_utils.get_display_node_names(row.node_names),
+            # Infra columns: the batched status refresh groups by these.
+            'cloud': row.cloud,
+            'region': row.region,
+            'zone': row.zone,
         }
         # init_kind / init_status_reason are populated outside the
         # summary_response gate so both the list page (summary_response=True)
