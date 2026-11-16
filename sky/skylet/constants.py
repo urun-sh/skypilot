@@ -308,8 +308,8 @@ CONDA_INSTALLATION_COMMANDS = (
 # provider sky launches, not just clouds with a user-data hook. Absent
 # script = no-op check; this line never runs on stock SkyPilot launches.
 _SKY_RUNTIME_ENV_MOUNT_CMD = (
-    '[ -x /usr/local/sbin/urun-sky-runtime-env-mount ] && '
-    '/usr/local/sbin/urun-sky-runtime-env-mount || true;')
+    '[ -f /usr/local/sbin/urun-sky-runtime-env-mount ] && '
+    'bash /usr/local/sbin/urun-sky-runtime-env-mount || true;')
 
 UV_INSTALLATION_COMMANDS = (
     f'{_SKY_RUNTIME_ENV_MOUNT_CMD}'

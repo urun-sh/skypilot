@@ -97,5 +97,7 @@ def test_runtime_env_mount_is_provider_independent():
 
     assert "/usr/local/sbin/urun-sky-runtime-env-mount" in (
         skylet_constants.UV_INSTALLATION_COMMANDS)
-    assert "[ -x /usr/local/sbin/urun-sky-runtime-env-mount ]" in (
+    # bash-invoked (file_mounts mode preservation is not guaranteed across
+    # clouds; a missing script is a no-op, never a setup failure).
+    assert "bash /usr/local/sbin/urun-sky-runtime-env-mount" in (
         skylet_constants.UV_INSTALLATION_COMMANDS)
