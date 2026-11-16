@@ -615,6 +615,12 @@ OVERRIDEABLE_CONFIG_KEYS_IN_TASK: List[Tuple[str, ...]] = [
     ('gcp', 'enable_gpu_direct'),
     ('gcp', 'enable_nested_virtualization'),
     ('gcp', 'placement_policy'),
+    # Per-launch startup-script injection (boot-cut 2026-11-15): appended to
+    # the VM's startup metadata by gcp.py make_deploy_resources_variables —
+    # runs at BOOT, before SSH/file_mounts/setup_commands. The provider-
+    # agnostic mount point for pre-runtime-prep content (e.g. the nydus-
+    # mounted SkyPilot runtime env).
+    ('gcp', 'custom_user_data'),
     ('vast', 'datacenter_only'),
     ('vast', 'create_instance_kwargs'),
     ('primeintellect', 'create_instance_kwargs'),

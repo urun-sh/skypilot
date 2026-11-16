@@ -55,3 +55,33 @@ def test_no_custom_user_data_keeps_startup_metadata_none():
                               region='us-west1')
     vars_out = _make_vars(resources)
     assert vars_out.get('user_data') is None
+
+
+def test_custom_user_data_is_a_task_overrideable_key():
+    """The key must ride task -> server (Resources.copy filters incoming
+    overrides to OVERRIDEABLE_CONFIG_KEYS_IN_TASK); a key missing from the
+    list is silently dropped before the server can act on it."""
+    from sky.skylet import constants as skylet_constants
+
+    assert ('gcp', 'custom_user_data') in skylet_constants.OVERRIDEABLE_CONFIG_KEYS_IN_TASK
+
+
+def test_resources_copy_preserves_custom_user_data():
+    """The full task path: resources.copy(_cluster_config_overrides=...) must
+    SURVIVE the task-override filter and still land in the deploy variables."""
+    from sky.skylet import constants as skylet_constants
+
+    resources = sky.Resources(cloud=gcp_lib.GCP(),
+                              instance_type='n2-standard-8',
+                              region='us-west1')
+    copied = resources.copy(
+        _cluster_config_overrides={
+            'gcp': {
+                'custom_user_data': 'echo bootfast-hello'
+            }
+        })
+    assert copied.cluster_config_overrides.get('gcp', {}).get(
+        'custom_user_data') == 'echo bootfast-hello'
+    del skylet_constants
+    vars_out = _make_vars(copied)
+    assert 'echo bootfast-hello' in (vars_out.get('user_data') or '')
