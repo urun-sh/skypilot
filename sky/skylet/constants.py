@@ -300,7 +300,19 @@ CONDA_INSTALLATION_COMMANDS = (
     '{ conda init && source ~/.bashrc; };'
     'fi;')
 
+# The urun boot-cut mount (2026-11-15): a launch may deliver
+# /usr/local/sbin/urun-sky-runtime-env-mount via its file_mounts (the
+# runner writes it for claims on the nydus runtime-env lane). Invoked here
+# — in the SHARED setup composition every cloud template embeds — so the
+# runtime env is mounted before the first guard below evaluates, on EVERY
+# provider sky launches, not just clouds with a user-data hook. Absent
+# script = no-op check; this line never runs on stock SkyPilot launches.
+_SKY_RUNTIME_ENV_MOUNT_CMD = (
+    '[ -f /usr/local/sbin/urun-sky-runtime-env-mount ] && '
+    'bash /usr/local/sbin/urun-sky-runtime-env-mount || true;')
+
 UV_INSTALLATION_COMMANDS = (
+    f'{_SKY_RUNTIME_ENV_MOUNT_CMD}'
     # Install uv for venv management and pip installation.
     f'{SKY_UV_INSTALL_CMD};'
     # Create a separate python environment for SkyPilot dependencies.
@@ -615,6 +627,12 @@ OVERRIDEABLE_CONFIG_KEYS_IN_TASK: List[Tuple[str, ...]] = [
     ('gcp', 'enable_gpu_direct'),
     ('gcp', 'enable_nested_virtualization'),
     ('gcp', 'placement_policy'),
+    # Per-launch startup-script injection (boot-cut 2026-11-15): appended to
+    # the VM's startup metadata by gcp.py make_deploy_resources_variables —
+    # runs at BOOT, before SSH/file_mounts/setup_commands. The provider-
+    # agnostic mount point for pre-runtime-prep content (e.g. the nydus-
+    # mounted SkyPilot runtime env).
+    ('gcp', 'custom_user_data'),
     ('vast', 'datacenter_only'),
     ('vast', 'create_instance_kwargs'),
     ('primeintellect', 'create_instance_kwargs'),

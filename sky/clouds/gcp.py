@@ -731,6 +731,23 @@ class GCP(clouds.Cloud):
             docker_run_options += constants.GPU_DIRECT_TCPX_SPECIFIC_OPTIONS
             if placement_policy is None:
                 placement_policy = constants.COMPACT_GROUP_PLACEMENT_POLICY
+        # Per-launch startup-script injection (boot-cut 2026-11-15): a launch
+        # whose cluster config declares `gcp: custom_user_data: <script>`
+        # appends the script to the VM's startup metadata. It runs at BOOT —
+        # before SSH, before file_mounts, before setup_commands — which makes
+        # it the provider-agnostic injection point for content the runtime
+        # env needs BEFORE SkyPilot's own runtime prep (e.g. mounting a
+        # lazily-streamed runtime env via nydusd). Plain cluster config: the
+        # same key is readable by every cloud template that renders
+        # user-data, so other clouds adopt it without a fork change each.
+        custom_user_data = skypilot_config.get_effective_region_config(
+            cloud='gcp',
+            region=region_name,
+            keys=('custom_user_data',),
+            default_value=None,
+            override_configs=resources.cluster_config_overrides)
+        if custom_user_data:
+            user_data += '\n' + custom_user_data
         if user_data:
             resources_vars[
                 'user_data'] = constants.BASH_SCRIPT_START + user_data
