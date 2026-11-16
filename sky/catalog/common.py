@@ -666,8 +666,8 @@ def list_instance_types_for_cpus_mem_impl(
 
 
 def get_accelerators_from_instance_type_impl(
-        df: 'pd.DataFrame',
-        instance_type: str,
+    df: 'pd.DataFrame',
+    instance_type: str,
 ) -> Optional[Dict[str, Union[int, float]]]:
     df = _get_instance_type(df, instance_type, None)
     if df.empty:

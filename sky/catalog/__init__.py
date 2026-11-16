@@ -241,16 +241,16 @@ def get_default_instance_type(cpus: Optional[str] = None,
                                use_spot, max_hourly_cost)
 
 
-def list_instance_types_for_cpus_mem(
-        cpus: Optional[str] = None,
-        memory: Optional[str] = None,
-        disk_tier: Optional[resources_utils.DiskTier] = None,
-        local_disk: Optional[str] = None,
-        region: Optional[str] = None,
-        zone: Optional[str] = None,
-        use_spot: bool = False,
-        max_hourly_cost: Optional[float] = None,
-        clouds: CloudFilter = None) -> List[str]:
+def list_instance_types_for_cpus_mem(cpus: Optional[str] = None,
+                                     memory: Optional[str] = None,
+                                     disk_tier: Optional[
+                                         resources_utils.DiskTier] = None,
+                                     local_disk: Optional[str] = None,
+                                     region: Optional[str] = None,
+                                     zone: Optional[str] = None,
+                                     use_spot: bool = False,
+                                     max_hourly_cost: Optional[float] = None,
+                                     clouds: CloudFilter = None) -> List[str]:
     """Returns EVERY instance type satisfying the shape, cheapest first.
 
     The LIST form of get_default_instance_type (same per-cloud family and
@@ -260,9 +260,9 @@ def list_instance_types_for_cpus_mem(
     zone of the pinned region was dry for the ONE family the request
     carried -- the equivalent families were never in the candidate set).
     """
-    return _map_clouds_catalog(clouds, 'list_instance_types_for_cpus_mem',
-                               cpus, memory, disk_tier, local_disk, region,
-                               zone, use_spot, max_hourly_cost)
+    return _map_clouds_catalog(clouds, 'list_instance_types_for_cpus_mem', cpus,
+                               memory, disk_tier, local_disk, region, zone,
+                               use_spot, max_hourly_cost)
 
 
 def get_accelerators_from_instance_type(
