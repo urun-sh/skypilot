@@ -49,6 +49,12 @@ _CSV_COLUMNS = [
 _cache = None
 
 
+class _MissingCatalogError(RuntimeError):
+    """The catalog CSV is absent (unconfigured provider). Subclassing
+    RuntimeError keeps every existing except-clause working while the
+    BULK-listing path below can degrade precisely on this error alone."""
+
+
 def _load_df() -> 'pd.DataFrame':
     """Read and clean the catalog CSV. Caller applies the stat stamp."""
     try:
@@ -67,7 +73,7 @@ def _load_df() -> 'pd.DataFrame':
         # "Verda has no capacity right now", so an unconfigured
         # controller would silently look like a stocked-out provider and
         # every verda claim would be refused for the wrong reason.
-        raise RuntimeError(
+        raise _MissingCatalogError(
             f'Verda catalog {_CATALOG_PATH!r} is missing. It is written '
             'by sky.catalog.data_fetchers.fetch_verda (requires '
             'VERDA_CLIENT_ID/VERDA_CLIENT_SECRET; the controller primes '
@@ -220,9 +226,24 @@ def list_accelerators(
     require_price: bool = True,
 ) -> Dict[str, List[common.InstanceTypeInfo]]:
     del require_price  # Unused: a catalog row exists only when priced.
+    # Generic bulk discovery (sky.list_accelerators with no cloud filter
+    # — the optimizer's random-DAG pipeline walks EVERY registered
+    # cloud, including unconfigured per-claim providers). Without
+    # credentials there is no verda/vms.csv and the fail-closed
+    # _MissingCatalogError would break the WHOLE enumeration
+    # (CodeRabbit #103: the optimizer test workflow failed reaching this
+    # guard). Degrade ONLY this bulk listing: an unconfigured provider
+    # contributes NO candidates. Every EXPLICIT path keeps the loud
+    # fail-closed raise so a *-verda claim still refuses "not
+    # configured" — never a silent empty catalog reading as "no
+    # capacity" for a claim that named the cloud.
+    try:
+        df = _get_df()
+    except _MissingCatalogError:
+        return {}
     return common.list_accelerators_impl(
         'Verda',
-        _get_df(),
+        df,
         gpus_only,
         name_filter,
         region_filter,
