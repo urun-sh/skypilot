@@ -26,17 +26,20 @@ def _make_vars(resources):
     cluster_name = resources_utils.ClusterName(
         'bootfast-custom-user-data-test', 'bootfast-custom-user-data-test')
     with mock.patch.object(gcp_lib.GCP, 'get_project_id', return_value='p'):
-        return cloud.make_deploy_resources_variables(
-            resources, cluster_name, region, zones, num_nodes=1)
+        return cloud.make_deploy_resources_variables(resources,
+                                                     cluster_name,
+                                                     region,
+                                                     zones,
+                                                     num_nodes=1)
 
 
-@pytest.mark.parametrize(
-    'override',
-    [
-        {'gcp': {
+@pytest.mark.parametrize('override', [
+    {
+        'gcp': {
             'custom_user_data': 'echo bootfast-hello'
-        }},
-    ])
+        }
+    },
+])
 def test_custom_user_data_appended_to_startup_metadata(override):
     resources = sky.Resources(cloud=gcp_lib.GCP(),
                               instance_type='n2-standard-8',
@@ -63,7 +66,9 @@ def test_custom_user_data_is_a_task_overrideable_key():
     list is silently dropped before the server can act on it."""
     from sky.skylet import constants as skylet_constants
 
-    assert ('gcp', 'custom_user_data') in skylet_constants.OVERRIDEABLE_CONFIG_KEYS_IN_TASK
+    assert (
+        'gcp',
+        'custom_user_data') in skylet_constants.OVERRIDEABLE_CONFIG_KEYS_IN_TASK
 
 
 def test_resources_copy_preserves_custom_user_data():
@@ -74,14 +79,13 @@ def test_resources_copy_preserves_custom_user_data():
     resources = sky.Resources(cloud=gcp_lib.GCP(),
                               instance_type='n2-standard-8',
                               region='us-west1')
-    copied = resources.copy(
-        _cluster_config_overrides={
-            'gcp': {
-                'custom_user_data': 'echo bootfast-hello'
-            }
-        })
-    assert copied.cluster_config_overrides.get('gcp', {}).get(
-        'custom_user_data') == 'echo bootfast-hello'
+    copied = resources.copy(_cluster_config_overrides={
+        'gcp': {
+            'custom_user_data': 'echo bootfast-hello'
+        }
+    })
+    assert copied.cluster_config_overrides.get(
+        'gcp', {}).get('custom_user_data') == 'echo bootfast-hello'
     del skylet_constants
     vars_out = _make_vars(copied)
     assert 'echo bootfast-hello' in (vars_out.get('user_data') or '')
@@ -110,5 +114,6 @@ def test_custom_user_data_passes_the_config_schema():
     config invalid (live: 'Found unsupported field custom_user_data')."""
     from sky.utils import schemas as schema_lib
 
-    gcp_props = schema_lib.get_config_schema()['properties']['gcp']['properties']
+    gcp_props = schema_lib.get_config_schema(
+    )['properties']['gcp']['properties']
     assert gcp_props['custom_user_data'] == {'type': 'string'}
