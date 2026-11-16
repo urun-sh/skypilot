@@ -101,3 +101,14 @@ def test_runtime_env_mount_is_provider_independent():
     # clouds; a missing script is a no-op, never a setup failure).
     assert "bash /usr/local/sbin/urun-sky-runtime-env-mount" in (
         skylet_constants.UV_INSTALLATION_COMMANDS)
+
+
+def test_custom_user_data_passes_the_config_schema():
+    """The config SCHEMA must admit the key, not just the overrideable-keys
+    list: schemas.py validates every loaded config with
+    additionalProperties=False, so a missing schema entry makes the whole
+    config invalid (live: 'Found unsupported field custom_user_data')."""
+    from sky.utils import schemas as schema_lib
+
+    gcp_props = schema_lib.get_config_schema()['properties']['gcp']['properties']
+    assert gcp_props['custom_user_data'] == {'type': 'string'}

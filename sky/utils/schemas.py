@@ -1996,6 +1996,14 @@ def get_config_schema():
                 'placement_policy': {
                     'type': 'string',
                 },
+                # Boot-cut (urun-sh/skypilot#100): per-launch startup-script
+                # injection — appended to the VM's startup metadata, runs at
+                # BOOT before SSH/file_mounts/setup_commands. The provider-
+                # agnostic mount point for the nydus-mounted SkyPilot runtime
+                # env (runner/sky_runtime_env.py in skypilot-controller).
+                'custom_user_data': {
+                    'type': 'string',
+                },
                 'vpc_name': {
                     'oneOf': [
                         {
