@@ -630,6 +630,41 @@ def get_instance_type_for_cpus_mem_impl(
     return df['InstanceType'].iloc[0]
 
 
+def list_instance_types_for_cpus_mem_impl(
+        df: 'pd.DataFrame',
+        cpus: Optional[str],
+        memory_gb_or_ratio: Optional[str],
+        region: Optional[str] = None,
+        zone: Optional[str] = None,
+        use_spot: bool = False,
+        max_hourly_cost: Optional[float] = None) -> List[str]:
+    """Returns EVERY instance type satisfying the requirements, cheapest first.
+
+    The LIST form of :func:`get_instance_type_for_cpus_mem_impl` (same
+    filters, same price sort). The runner hands the whole ordered set to
+    SkyPilot as one any_of resources list, so a stockout on the cheapest
+    family fails over to the next inside a single launch call (live r1000i
+    2026-11-16: every zone of the pinned region was dry for the ONE family
+    the request carried -- the equivalent families were never in the
+    candidate set).
+    """
+    df = _filter_region_zone(df, region, zone)
+    df = _filter_with_cpus(df, cpus)
+    df = _filter_with_mem(df, memory_gb_or_ratio)
+    if df.empty:
+        return []
+    price_str = ('SpotPrice'
+                 if use_spot and max_hourly_cost is not None else 'Price')
+    if price_str not in df.columns or pd.isna(df[price_str]).all():
+        return []
+    if max_hourly_cost is not None:
+        df = df[df[price_str] <= max_hourly_cost]
+        if df.empty:
+            return []
+    df = df.sort_values(by=[price_str], ascending=True)
+    return df['InstanceType'].tolist()
+
+
 def get_accelerators_from_instance_type_impl(
     df: 'pd.DataFrame',
     instance_type: str,
