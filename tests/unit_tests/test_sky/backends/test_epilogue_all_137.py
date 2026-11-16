@@ -29,9 +29,11 @@ def _run_epilogue(returncodes):
     """
     code = textwrap.dedent(_generate_epilogue_block())
     compile(code, '<generated-epilogue>', 'exec')
-    captured = {'exit_code': None, 'printed': []}
+    printed: list = []
+    captured = {'exit_code': None, 'printed': printed}
 
     class FakeScheduler:
+
         def schedule_step(self):
             pass
 
@@ -49,12 +51,13 @@ def _run_epilogue(returncodes):
             pass
 
     class FakeSys:
+
         def exit(self, code):
             captured['exit_code'] = code
             raise SystemExit(code)
 
     def fake_print(*args, **kwargs):
-        captured['printed'].append(args)
+        printed.append(args)
 
     ns = {
         'returncodes': returncodes,
