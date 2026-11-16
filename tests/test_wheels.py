@@ -211,3 +211,189 @@ def test_wheel_build_reproducible():
             'pip wheel subprocess environment in _build_sky_wheel().')
     finally:
         shutil.rmtree(wheel_utils.WHEEL_DIR, ignore_errors=True)
+
+
+def _counting_filelock_factory(counter):
+    import threading
+    """A filelock.FileLock stand-in that counts acquisitions of the wheel
+    lock (path-keyed, so unrelated locks in the same module stay free)."""
+
+    class _CountingLock:
+        # Real mutual exclusion, not just counting: the fake must preserve
+        # the lock's blocking semantics or the double-checked slow path
+        # runs concurrently and rebuilds N times for a reason the REAL
+        # lock would have prevented.
+        _gate = threading.Lock()
+
+        def __init__(self, lock_path):
+            self._path = str(lock_path)
+
+        def __enter__(self):
+            _CountingLock._gate.acquire()
+            if self._path == str(wheel_utils._WHEEL_LOCK_PATH):
+                counter['enter'] += 1
+            return self
+
+        def __exit__(self, *args):
+            _CountingLock._gate.release()
+            return False
+
+        def acquire(self, *args, **kwargs):
+            return self.__enter__() or True
+
+        def release(self):
+            self.__exit__()
+
+    class _FileLockModule:
+        FileLock = _CountingLock
+        Timeout = getattr(wheel_utils.filelock, 'Timeout', Exception)
+
+    return _FileLockModule
+
+
+def _hermetic_wheel_state(tmp_path, stale=False):
+    """Fake sky package + WHEEL_DIR with one wheel; returns the wheel path.
+
+    WHEEL_DIR gets a current wheel (mtime AFTER the sky package) unless
+    `stale`, in which case the package file's mtime is pushed past the
+    wheel's, making the freshness rule demand a rebuild.
+    """
+    import uuid
+
+    sky_pkg = tmp_path / 'sky_pkg'
+    (sky_pkg / 'sub').mkdir(parents=True)
+    pkg_file = sky_pkg / 'sub' / 'mod.py'
+    pkg_file.write_text('x = 1\n')
+    from sky import sky_logging  # noqa: F401 - sky import cost is shared
+    wheel_body = f'fake-wheel-{uuid.uuid4().hex}'.encode()
+    wheel_dir = tmp_path / 'wheels' / uuid.uuid4().hex
+    wheel_dir.mkdir(parents=True)
+    # The wheel name MUST match the module's own _WHEEL_PATTERN
+    # (skypilot-<sky.__version__>-*) or the freshness glob finds nothing and
+    # the wheel is judged stale.
+    wheel = wheel_dir / f'skypilot-{wheel_utils.sky.__version__}-py2.py3-none-any.whl'
+    wheel.write_bytes(wheel_body)
+    if stale:
+        # STALE = the source is NEWER than the wheel, but BOTH in the past:
+        # a freshly rebuilt wheel (mtime=now) must then read as current to
+        # the double-check, or the rebuild races itself.
+        base = time.time() - 50
+        os.utime(wheel, (base, base))
+        os.utime(wheel_dir, (base, base))
+        newer = base + 10
+        os.utime(pkg_file, (newer, newer))
+        os.utime(sky_pkg / 'sub', (newer, newer))
+        os.utime(sky_pkg, (newer, newer))
+    return wheel, wheel_body
+
+
+def test_concurrent_current_wheel_locks_at_most_once(tmp_path, monkeypatch):
+    """N threads racing build_sky_wheel on a CURRENT wheel must not
+    serialize on the global wheel lock: the freshness walk and the temp-copy
+    check run lock-free, and the copy itself is atomic. Live receipt
+    (r1000m on lax, 2026-11-16): ~920 executor processes all blocked at
+    FileLock.__enter__ inside build_sky_wheel, launching at ~10/min."""
+    import tempfile
+    import threading
+
+    wheel, _ = _hermetic_wheel_state(tmp_path)
+    monkeypatch.setattr(wheel_utils, 'SKY_PACKAGE_PATH', tmp_path / 'sky_pkg')
+    monkeypatch.setattr(wheel_utils, 'WHEEL_DIR', tmp_path / 'wheels')
+    counter = {'enter': 0}
+    monkeypatch.setattr(wheel_utils, 'filelock',
+                        _counting_filelock_factory(counter))
+    monkeypatch.setattr(wheel_utils, '_SKY_WHEEL_MEMO', None, raising=False)
+
+    temp_dir = wheel.parent.name  # /tmp/<hash> resolution below
+    n_threads = 16
+    barrier = threading.Barrier(n_threads)
+    results = []
+    errors = []
+
+    def runner():
+        try:
+            barrier.wait(timeout=30)
+            results.append(wheel_utils.build_sky_wheel())
+        except Exception as e:  # noqa: BLE001 - the assertion is the check
+            errors.append(e)
+
+    threads = [threading.Thread(target=runner) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=120)
+
+    assert not errors, errors
+    import pathlib as _pl
+    temp_root = _pl.Path(tempfile.gettempdir()) / wheel.parent.name
+    # every caller got the same served copy, and it is whole
+    for path, wheel_hash in results:
+        assert wheel_hash == wheel.parent.name
+        served = path / wheel.name
+        assert served.exists()
+    # cleanup the shared /tmp dir this test seeded
+    shutil.rmtree(temp_root, ignore_errors=True)
+    assert counter['enter'] <= 1, (
+        f'the global wheel lock was acquired {counter["enter"]} times for a '
+        'CURRENT wheel across 16 concurrent callers — build_sky_wheel is '
+        'serializing launches again')
+
+
+def test_concurrent_stale_wheel_rebuilds_exactly_once(tmp_path, monkeypatch):
+    """A stale wheel still rebuilds EXACTLY once under concurrent callers
+    (double-checked locking), and every caller ends up on the new wheel."""
+    import tempfile
+    import threading
+
+    wheel, _ = _hermetic_wheel_state(tmp_path, stale=True)
+    monkeypatch.setattr(wheel_utils, 'SKY_PACKAGE_PATH', tmp_path / 'sky_pkg')
+    monkeypatch.setattr(wheel_utils, 'WHEEL_DIR', tmp_path / 'wheels')
+    counter = {'enter': 0, 'build': 0}
+    monkeypatch.setattr(wheel_utils, 'filelock',
+                        _counting_filelock_factory(counter))
+
+    new_wheel_dir = tmp_path / 'wheels' / 'rebuilthash00'
+
+    def fake_build():
+        counter['build'] += 1
+        new_wheel_dir.mkdir(parents=True, exist_ok=True)
+        new_wheel = new_wheel_dir / f'skypilot-{wheel_utils.sky.__version__}-py2.py3-none-any.whl'
+        # mtime = now: newer than the stale package (base+10), so the
+        # double-check inside the lock reads the wheel as current.
+        new_wheel.write_bytes(b'rebuilt-wheel')
+        return new_wheel
+
+    monkeypatch.setattr(wheel_utils, '_build_sky_wheel', fake_build)
+    monkeypatch.setattr(wheel_utils, '_SKY_WHEEL_MEMO', None, raising=False)
+
+    n_threads = 16
+    barrier = threading.Barrier(n_threads)
+    results = []
+    errors = []
+
+    def runner():
+        try:
+            barrier.wait(timeout=30)
+            results.append(wheel_utils.build_sky_wheel())
+        except Exception as e:  # noqa: BLE001 - the assertion is the check
+            errors.append(e)
+
+    threads = [threading.Thread(target=runner) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=120)
+
+    assert not errors, errors
+    import pathlib as _pl
+    temp_root = _pl.Path(tempfile.gettempdir()) / 'rebuilthash00'
+    assert counter['build'] == 1, (
+        f'the wheel was rebuilt {counter["build"]} times under 16 racing '
+        'callers — double-checked locking must rebuild exactly once')
+    hashes = {h for _, h in results}
+    assert hashes == {'rebuilthash00'}, hashes
+    for path, _ in results:
+        assert (path /
+                f'skypilot-{wheel_utils.sky.__version__}-py2.py3-none-any.whl'
+               ).exists()
+    shutil.rmtree(temp_root, ignore_errors=True)

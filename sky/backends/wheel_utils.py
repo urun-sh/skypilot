@@ -43,6 +43,31 @@ _WHEEL_PATTERN = (f'{_PACKAGE_WHEEL_NAME}-'
                   f'{version.parse(sky.__version__)}-*.whl')
 
 
+def _get_latest_modification_time(path: pathlib.Path) -> Optional[float]:
+    max_time = -1.
+    if not path.exists():
+        return max_time
+    for root, dirs, files in os.walk(path):
+        # Prune __pycache__ directories to prevent walking into them and
+        # exclude them from processing
+        if '__pycache__' in dirs:
+            dirs.remove('__pycache__')
+        # Filter out .pyc files
+        filtered_files = [f for f in files if not f.endswith('.pyc')]
+        # Process remaining directories and files
+        for entry in (*dirs, *filtered_files):
+            entry_path = os.path.join(root, entry)
+            try:
+                mtime = os.path.getmtime(entry_path)
+                if mtime > max_time:
+                    max_time = mtime
+            except OSError:
+                # Handle cases where file might have been deleted after
+                # listing
+                return None
+    return max_time
+
+
 def _remove_stale_wheels(latest_wheel_dir: pathlib.Path) -> None:
     """Remove all wheels except the latest one."""
     for f in WHEEL_DIR.iterdir():
@@ -223,8 +248,34 @@ def _build_sky_wheel() -> pathlib.Path:
         return wheel_dir / wheel_path.name
 
 
+# Per-process memo of the last successful build_sky_wheel result:
+# (wheel_hash, temp_wheel_dir, wheel_name, temp_wheel_size). The SkyPilot
+# API server launches many jobs from ONE process — without the memo every
+# launch re-walks the whole sky package and re-copies the 3 MB wheel, and
+# the single global wheel lock turns ~920 concurrent launches into a
+# ~10-per-minute serial queue (live py-spy receipt, r1000m on lax,
+# 2026-11-16: every executor blocked at _poll_until_acquired ->
+# build_sky_wheel -> FileLock.__enter__). The memo is validated against the
+# temp copy's size; the trade-off (a mid-process source edit is not
+# detected until the process restarts) is the documented price of taking
+# the walk off the launch path.
+_SKY_WHEEL_MEMO: Optional[Tuple[str, pathlib.Path, str, int]] = None
+
+
 def build_sky_wheel() -> Tuple[pathlib.Path, str]:
     """Build a wheel for SkyPilot, or reuse a cached wheel.
+
+    Concurrency shape (r1000m receipt, 2026-11-16): the wheel build/copy
+    used to sit ENTIRELY inside the global wheel lock, so every launch
+    serialized behind one process's os.walk + copy. Now:
+
+    - the freshness walk and the temp-copy check run WITHOUT the lock;
+    - a current wheel whose /tmp/<hash> copy is present returns lock-free;
+    - the lock is taken only when the wheel is stale (double-checked inside
+      the lock, so exactly one concurrent process rebuilds);
+    - the temp copy is written to a unique part file and os.replace()d, so
+      a reader never observes a partial wheel;
+    - a per-process memo short-circuits repeat calls entirely.
 
     Caller is responsible for removing the wheel.
 
@@ -234,38 +285,24 @@ def build_sky_wheel() -> Tuple[pathlib.Path, str]:
         is guaranteed unique per wheel content hash.
         - wheel_hash: The wheel content hash.
     """
+    global _SKY_WHEEL_MEMO
+    # Per-process memo fast path: validated against the temp copy's size.
+    if _SKY_WHEEL_MEMO is not None:
+        memo_hash, memo_dir, memo_name, memo_size = _SKY_WHEEL_MEMO
+        try:
+            if (memo_dir / memo_name).stat().st_size == memo_size:
+                return memo_dir, memo_hash
+        except OSError:
+            pass
+        _SKY_WHEEL_MEMO = None
 
-    def _get_latest_modification_time(path: pathlib.Path) -> Optional[float]:
-        max_time = -1.
-        if not path.exists():
-            return max_time
-        for root, dirs, files in os.walk(path):
-            # Prune __pycache__ directories to prevent walking into them and
-            # exclude them from processing
-            if '__pycache__' in dirs:
-                dirs.remove('__pycache__')
-            # Filter out .pyc files
-            filtered_files = [f for f in files if not f.endswith('.pyc')]
-            # Process remaining directories and files
-            for entry in (*dirs, *filtered_files):
-                entry_path = os.path.join(root, entry)
-                try:
-                    mtime = os.path.getmtime(entry_path)
-                    if mtime > max_time:
-                        max_time = mtime
-                except OSError:
-                    # Handle cases where file might have been deleted after
-                    # listing
-                    return None
-        return max_time
+    def _freshness() -> Tuple[bool, Optional[pathlib.Path]]:
+        """The classic compare step: is WHEEL_DIR current vs the source?
 
-    # This lock prevents that the wheel is updated while being copied.
-    # Although the current caller already uses a lock, we still lock it here
-    # to guarantee inherent consistency.
-    with filelock.FileLock(_WHEEL_LOCK_PATH):  # pylint: disable=E0110
-        # This implements a classic "compare, update and clone" consistency
-        # protocol. "compare, update and clone" has to be atomic to avoid
-        # race conditions.
+        Returns (is_current, latest_wheel_or_None). Computed WITHOUT the
+        lock — the walk is read-only, and taking the global lock for it is
+        what serialized every launch in the first place.
+        """
         last_modification_time = _get_latest_modification_time(SKY_PACKAGE_PATH)
         # Also check sky_templates directory modification time
         sky_templates_path = SKY_PACKAGE_PATH.parent / 'sky_templates'
@@ -279,13 +316,62 @@ def build_sky_wheel() -> Tuple[pathlib.Path, str]:
             elif last_modification_time is None:
                 last_modification_time = sky_templates_mtime
         last_wheel_modification_time = _get_latest_modification_time(WHEEL_DIR)
-
         # Only build wheels if the wheel is outdated, wheel does not exist
         # for the requested version, or files were deleted during checking.
         if ((last_modification_time is None or
              last_wheel_modification_time is None) or
             (last_wheel_modification_time < last_modification_time) or
                 not any(WHEEL_DIR.glob(f'**/{_WHEEL_PATTERN}'))):
+            return False, None
+        return True, _get_latest_wheel()
+
+    def _atomic_copy(latest_wheel: pathlib.Path,
+                     temp_wheel_dir: pathlib.Path) -> None:
+        """Copy the wheel so a concurrent reader never sees a partial file.
+
+        The part file is mkstemp-unique: all threads in one process share a
+        pid, so a pid-suffixed part name collides (one thread's os.replace
+        consumes another's part file — live receipt, 16-thread race).
+        """
+        temp_wheel_dir.mkdir(parents=True, exist_ok=True)
+        final = temp_wheel_dir / latest_wheel.name
+        fd, part_name = tempfile.mkstemp(prefix=f'.{latest_wheel.name}.part-',
+                                         dir=str(temp_wheel_dir))
+        os.close(fd)
+        shutil.copy(str(latest_wheel), part_name)
+        os.replace(part_name, str(final))
+
+    current, latest_wheel = _freshness()
+    if current and latest_wheel is not None:
+        # Lock-free fast path: the wheel is current. Serve the /tmp/<hash>
+        # copy when it is already complete; complete it with an ATOMIC copy
+        # (lock-free — concurrent copiers write distinct part files and
+        # os.replace is atomic, so readers see only whole wheels) when not.
+        wheel_hash = latest_wheel.parent.name
+        temp_wheel_dir = pathlib.Path(tempfile.gettempdir()) / wheel_hash
+        temp_wheel = temp_wheel_dir / latest_wheel.name
+        size = latest_wheel.stat().st_size
+        try:
+            temp_size = temp_wheel.stat().st_size
+        except OSError:
+            temp_size = -1
+        if temp_size != size:
+            _atomic_copy(latest_wheel, temp_wheel_dir)
+            temp_size = size
+        _SKY_WHEEL_MEMO = (wheel_hash, temp_wheel_dir, latest_wheel.name,
+                           temp_size)
+        return temp_wheel_dir.absolute(), wheel_hash
+
+    # Slow path: the wheel is stale. The lock is held to REBUILD (build +
+    # stale-wheel GC), double-checked so exactly one racing process
+    # rebuilds; the losers re-verify under the lock, find the wheel
+    # current, and finish through the same atomic copy.
+    with filelock.FileLock(_WHEEL_LOCK_PATH):  # pylint: disable=E0110
+        # This implements a classic "compare, update and clone" consistency
+        # protocol. "compare, update and clone" has to be atomic to avoid
+        # race conditions.
+        current, latest_wheel = _freshness()
+        if not current or latest_wheel is None:
             if not WHEEL_DIR.exists():
                 WHEEL_DIR.mkdir(parents=True, exist_ok=True)
             latest_wheel = _build_sky_wheel()
@@ -305,7 +391,8 @@ def build_sky_wheel() -> Tuple[pathlib.Path, str]:
         # concurrent 'sky launch' happening.  The path should be stable if the
         # wheel content hash doesn't change.
         temp_wheel_dir = pathlib.Path(tempfile.gettempdir()) / wheel_hash
-        temp_wheel_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy(latest_wheel, temp_wheel_dir)
+        _atomic_copy(latest_wheel, temp_wheel_dir)
+        _SKY_WHEEL_MEMO = (wheel_hash, temp_wheel_dir, latest_wheel.name,
+                           latest_wheel.stat().st_size)
 
     return temp_wheel_dir.absolute(), wheel_hash
