@@ -39,6 +39,7 @@ DEFAULT_OFFERINGS_CLOUDS = [
     'packet',
     'massed',
     'ionet',
+    'verda',
 ]
 
 _CLOUDS_CSV_FILENAME = '{cloud}/vms.csv'
@@ -93,6 +94,9 @@ _STOCK_MODES: Dict[str, str] = {
     'lambda': STOCK_MODE_IN_STOCK,
     'shadeform': STOCK_MODE_IN_STOCK,
     'ionet': STOCK_MODE_IN_STOCK,
+    # Verda's fetcher emits only rows whose (type, location) pair is
+    # in the LIVE instance-availability list; no unit counts exist.
+    'verda': STOCK_MODE_IN_STOCK,
 }
 
 

@@ -1,69 +1,164 @@
-""" Verda Cloud | Catalog
+"""Verda | Catalog.
 
-This module loads the service catalog file and can be used to
-query instance types and pricing information for Verda Cloud.
+Loads instance/pricing data for the Verda provider from the catalog CSV
+emitted by ``sky.catalog.data_fetchers.fetch_verda``.
+
+Instance types are the provider's own codes (``1H100.80S.22V``); the
+CSV row exists ONLY for an in-stock (type, location) pair, so everything
+this module can price, the lane can actually rent. ``Region`` is the
+location NAME (``"Finland 1"``); prices come from the type's
+``location_prices`` entry for that location (on-demand ``Price`` +
+``SpotPrice`` — the API genuinely has a spot tier).
+
+Modeled on ``sky/catalog/quantacloud_catalog.py`` (which is modeled on
+latitude_catalog); no deliberate differences in behavior — a Verda row
+is as fixed as a QuantaCloud offer row.
 """
 
-import typing
 from typing import Dict, List, Optional, Tuple, Union
 
+from sky.adaptors import common as adaptors_common
 from sky.catalog import common
+import typing
 
 if typing.TYPE_CHECKING:
-    from sky.clouds import cloud
+    import pandas as pd
 
-# Verda Cloud has not set the update schedule for their catalog.
-# We pull the catalog every 7 hours to make sure we have the
-# latest information.
-_PULL_FREQUENCY_HOURS = 7
-_df = common.read_catalog('verda/vms.csv',
-                          pull_frequency_hours=_PULL_FREQUENCY_HOURS)
+    from sky.clouds import cloud
+else:
+    pd = adaptors_common.LazyImport('pandas')
+
+_CATALOG_PATH = 'verda/vms.csv'
+
+# Mirror of the CSV columns fetch_verda writes; order matters to
+# DictWriter/DictReader round-trips.
+_CSV_COLUMNS = [
+    'InstanceType',
+    'AcceleratorName',
+    'AcceleratorCount',
+    'vCPUs',
+    'MemoryGiB',
+    'Price',
+    'Region',
+    'GpuInfo',
+    'SpotPrice',
+]
+
+# (stat stamp of the catalog CSV, materialized frame), published in ONE
+# assignment; None until the first load.
+_cache = None
+
+
+def _load_df() -> 'pd.DataFrame':
+    """Read and clean the catalog CSV. Caller applies the stat stamp."""
+    try:
+        df = common.read_catalog(_CATALOG_PATH)
+    except FileNotFoundError as exc:
+        # FAIL LOUD. An empty frame here is indistinguishable from
+        # "Verda has no capacity right now", so an unconfigured
+        # controller would silently look like a stocked-out provider and
+        # every verda claim would be refused for the wrong reason.
+        raise RuntimeError(
+            f'Verda catalog {_CATALOG_PATH!r} is missing. It is written '
+            'by sky.catalog.data_fetchers.fetch_verda (requires '
+            'VERDA_CLIENT_ID/VERDA_CLIENT_SECRET; the controller primes '
+            'it at startup). Refusing to report an empty catalog, which '
+            "would read as 'no capacity' rather than 'not configured'."
+        ) from exc
+    df = df[df['InstanceType'].notna()]
+    if 'AcceleratorName' in df.columns:
+        df = df[df['AcceleratorName'].notna()]
+        df = df.assign(
+            AcceleratorName=df['AcceleratorName'].astype(str).str.strip())
+    return df.reset_index(drop=True)
+
+
+def _get_df() -> 'pd.DataFrame':
+    """Get the dataframe, re-reading when the CSV on disk changes."""
+    global _cache
+    stamp = common.catalog_stat(_CATALOG_PATH)
+    cache = _cache
+    if cache is None or cache[0] != stamp:
+        # ONE assignment: a concurrent same-interpreter caller must never
+        # see the new stamp beside the old frame (CodeRabbit, #48).
+        _cache = (stamp, _load_df())
+        cache = _cache
+    return cache[1]
+
+
+def _is_not_found_error(err: ValueError) -> bool:
+    msg = str(err).lower()
+    return 'not found' in msg or 'not supported' in msg
+
+
+def _call_or_default(func, default):
+    try:
+        return func()
+    except ValueError as err:
+        if _is_not_found_error(err):
+            return default
+        raise
 
 
 def instance_type_exists(instance_type: str) -> bool:
-    return common.instance_type_exists_impl(_df, instance_type)
+    return common.instance_type_exists_impl(_get_df(), instance_type)
 
 
 def validate_region_zone(
         region: Optional[str],
         zone: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    return common.validate_region_zone_impl('verda', _df, region, zone)
+    if zone is not None:
+        raise ValueError('Verda does not support zones, but got '
+                         f'zone {zone!r}.')
+    return common.validate_region_zone_impl('verda', _get_df(), region, zone)
 
 
-def get_hourly_cost(instance_type: str,
-                    use_spot: bool = False,
-                    region: Optional[str] = None,
-                    zone: Optional[str] = None) -> float:
-    """Returns the cost, or the cheapest cost among all zones for spot."""
-    return common.get_hourly_cost_impl(_df, instance_type, use_spot, region,
-                                       zone)
+def get_hourly_cost(
+    instance_type: str,
+    use_spot: bool = False,
+    region: Optional[str] = None,
+    zone: Optional[str] = None,
+) -> float:
+    return common.get_hourly_cost_impl(_get_df(), instance_type, use_spot,
+                                       region, zone)
 
 
 def get_vcpus_mem_from_instance_type(
-        instance_type: str) -> Tuple[Optional[float], Optional[float]]:
-    return common.get_vcpus_mem_from_instance_type_impl(_df, instance_type)
+    instance_type: str,) -> Tuple[Optional[float], Optional[float]]:
+    return _call_or_default(
+        lambda: common.get_vcpus_mem_from_instance_type_impl(
+            _get_df(), instance_type),
+        (None, None),
+    )
 
 
 def get_default_instance_type(
-        cpus: Optional[str] = None,
-        memory: Optional[str] = None,
-        disk_tier: Optional[str] = None,
-        local_disk: Optional[str] = None,
-        region: Optional[str] = None,
-        zone: Optional[str] = None,
-        use_spot: bool = False,
-        max_hourly_cost: Optional[float] = None) -> Optional[str]:
-    del disk_tier, local_disk  # Verda Cloud does not support disk tiers.
-    # NOTE: After expanding catalog to multiple entries, you may
-    # want to specify a default instance type or family.
-    return common.get_instance_type_for_cpus_mem_impl(_df, cpus, memory, region,
-                                                      zone, use_spot,
-                                                      max_hourly_cost)
+    cpus: Optional[str] = None,
+    memory: Optional[str] = None,
+    disk_tier: Optional[str] = None,
+    local_disk: Optional[str] = None,
+    region: Optional[str] = None,
+    zone: Optional[str] = None,
+    use_spot: bool = False,
+    max_hourly_cost: Optional[float] = None,
+) -> Optional[str]:
+    # Verda instances ship fixed included storage; disk tier is not
+    # selectable.
+    del disk_tier, local_disk
+    return _call_or_default(
+        lambda: common.get_instance_type_for_cpus_mem_impl(
+            _get_df(), cpus, memory, region, zone, use_spot, max_hourly_cost),
+        None,
+    )
 
 
 def get_accelerators_from_instance_type(
-        instance_type: str) -> Optional[Dict[str, Union[int, float]]]:
-    return common.get_accelerators_from_instance_type_impl(_df, instance_type)
+    instance_type: str,) -> Optional[Dict[str, Union[int, float]]]:
+    return _call_or_default(
+        lambda: common.get_accelerators_from_instance_type_impl(
+            _get_df(), instance_type),
+        None,
+    )
 
 
 def get_instance_type_for_accelerator(
@@ -75,38 +170,50 @@ def get_instance_type_for_accelerator(
     local_disk: Optional[str] = None,
     region: Optional[str] = None,
     zone: Optional[str] = None,
-    max_hourly_cost: Optional[float] = None
+    max_hourly_cost: Optional[float] = None,
 ) -> Tuple[Optional[List[str]], List[str]]:
-    """Returns a list of instance types that have the given accelerator."""
-    del local_disk  # Verda Cloud does not support local disk.
-    return common.get_instance_type_for_accelerator_impl(
-        df=_df,
-        acc_name=acc_name,
-        acc_count=acc_count,
-        cpus=cpus,
-        memory=memory,
-        use_spot=use_spot,
-        region=region,
-        zone=zone,
-        max_hourly_cost=max_hourly_cost)
+    del local_disk  # unused
+    return _call_or_default(
+        lambda: common.get_instance_type_for_accelerator_impl(
+            df=_get_df(),
+            acc_name=acc_name,
+            acc_count=acc_count,
+            cpus=cpus,
+            memory=memory,
+            use_spot=use_spot,
+            region=region,
+            zone=zone,
+            max_hourly_cost=max_hourly_cost,
+        ),
+        (None, []),
+    )
 
 
 def get_region_zones_for_instance_type(instance_type: str,
                                        use_spot: bool) -> List['cloud.Region']:
-    df = _df[_df['InstanceType'] == instance_type]
-    return common.get_region_zones(df, use_spot)
+    df = _get_df()
+    df_filtered = df[df['InstanceType'] == instance_type]
+    return _call_or_default(
+        lambda: common.get_region_zones(df_filtered, use_spot), [])
 
 
 def list_accelerators(
-        gpus_only: bool,
-        name_filter: Optional[str],
-        region_filter: Optional[str],
-        quantity_filter: Optional[int],
-        case_sensitive: bool = True,
-        all_regions: bool = False,
-        require_price: bool = True) -> Dict[str, List[common.InstanceTypeInfo]]:
-    """Returns all instance types in Verda Cloud offering accelerators."""
-    del require_price  # Unused.
-    return common.list_accelerators_impl('Verda', _df, gpus_only, name_filter,
-                                         region_filter, quantity_filter,
-                                         case_sensitive, all_regions)
+    gpus_only: bool,
+    name_filter: Optional[str],
+    region_filter: Optional[str],
+    quantity_filter: Optional[int],
+    case_sensitive: bool = True,
+    all_regions: bool = False,
+    require_price: bool = True,
+) -> Dict[str, List[common.InstanceTypeInfo]]:
+    del require_price  # Unused: a catalog row exists only when priced.
+    return common.list_accelerators_impl(
+        'Verda',
+        _get_df(),
+        gpus_only,
+        name_filter,
+        region_filter,
+        quantity_filter,
+        case_sensitive,
+        all_regions,
+    )

@@ -1,387 +1,260 @@
-"""A script that fetches Verda Cloud instance types and pricing info.
+"""Fetch Verda instance types and emit a SkyPilot catalog CSV.
 
-This script takes about 1 minute to finish.
+One row per IN-STOCK (instance_type, location) pair the lane can rent,
+built from the join of three authenticated endpoints (all measured from
+the OpenAPI spec at https://api.verda.com, reviewed 2026-11-16):
+
+* ``GET /v1/instance-availability`` — the ONLY stock source: which
+  instance-type codes are in stock per location code. The spec warns
+  that a price does NOT mean availability, so a type's rows exist ONLY
+  where its code appears in a location's ``availabilities``.
+* ``GET /v1/instance-types`` — per-type specs and the AUTHORITATIVE
+  ``location_prices`` (per-location ``price_per_hour`` and
+  ``spot_price`` STRINGS). The deprecated top-level price fields are
+  NEVER read.
+* ``GET /v1/locations`` — location code -> NAME mapping.
+
+Rules the join enforces:
+
+* **Currency: USD rows only.** The runner's budget caps are USD, so a
+  type whose ``currency`` is not ``usd`` is skipped ENTIRELY (all its
+  locations) — non-usd rows would poison every budget comparison. The
+  loud skip is recorded in ``skipped``; the live probe will confirm what
+  our account returns once credentials exist.
+* **Stock without a price is skipped, never fabricated.** A type in
+  stock at a location whose ``location_prices`` has no entry for that
+  code is skipped with a reason recorded in ``skipped``.
+* **Region column is the location NAME** (``"Finland 1"``) — the lane's
+  convention: the catalog's Region is what the user sees and the cloud
+  module filters by; the provisioner maps the name back to the location
+  code via ``GET /v1/locations`` at launch.
+* **InstanceType is the Verda code** (``1H100.80S.22V``); AcceleratorName
+  is derived from ``model`` (``"H100"`` -> ``H100``).
+* **Spot is REAL on this API**: ``spot_price`` per location is emitted
+  in SpotPrice (unlike vast, this provider genuinely has a spot tier).
+
+The fetcher FAILS CLOSED on missing credentials: unlike quantacloud's
+public catalog endpoints, every Verda endpoint needs the OAuth2 token,
+so an unauthenticated fetch must raise, never emit an empty catalog that
+would read as "no capacity".
 """
 
+from __future__ import annotations
+
+import argparse
 import csv
 import json
-import logging
 import os
-import re
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
-import requests
+from sky.adaptors import verda as verda_api
+from sky.catalog.data_fetchers import fetch_latitude
 
-from sky import sky_logging
+CSV_COLUMNS = [
+    'InstanceType',
+    'AcceleratorName',
+    'AcceleratorCount',
+    'vCPUs',
+    'MemoryGiB',
+    'Price',
+    'Region',
+    'GpuInfo',
+    'SpotPrice',
+]
 
-logger = sky_logging.init_logger('fetch_verda')
+# The OS image the provisioner deploys (measured from GET /v1/images
+# examples; ubuntu-22.04-cuda-12.4-docker-style slug). Only used by the
+# provisioner, kept here so the lane's deploy knobs live in one module.
+DEFAULT_IMAGE = 'ubuntu-24.04-cuda-12.8-open-docker'
 
 
-def _get_oauth_token(base_url: str, client_id: str, client_secret: str) -> str:
-    """Get OAuth access token using client credentials.
+class VerdaCatalogError(RuntimeError):
+    """Raised when the fetcher cannot run or the payload is unusable."""
 
-    Args:
-        base_url: Base URL for the API
-        client_id: Client ID for authentication
-        client_secret: Client secret for authentication
 
-    Returns:
-        str: Access token
+def normalise_accelerator(model: Optional[str]) -> str:
+    """The accelerator token from the type's GPU ``model``.
+
+    The provider's ``model`` ("H100") is already the platform-style
+    token; unmapped/empty models pass through uppercased so an
+    unrecognized GPU stays visible instead of silently vanishing.
     """
+    token = str(model or '').strip().upper()
+    return token
 
-    token_url = f'{base_url}/oauth2/token'
-    payload = {
-        'grant_type': 'client_credentials',
-        'client_id': client_id,
-        'client_secret': client_secret,
+
+def location_price(type_row: Dict[str, Any],
+                   location_code: str) -> Optional[Tuple[float, float]]:
+    """(on-demand, spot) price at ``location_code`` from
+    ``location_prices`` ONLY — the deprecated top-level price fields are
+    never read (spec: "Deprecated: read location_prices")."""
+    for price_row in type_row.get('location_prices') or []:
+        if not isinstance(price_row, dict):
+            continue
+        if str(price_row.get('location_code') or '') != location_code:
+            continue
+        on_demand = _as_float(price_row.get('price_per_hour'))
+        spot = _as_float(price_row.get('spot_price'))
+        if on_demand is None:
+            return None  # unpriceable row: never quote as free
+        return on_demand, spot if spot is not None else on_demand
+    return None
+
+
+def _as_float(raw: Any) -> Optional[float]:
+    """Parse the provider's STRING prices ("2.90"); None when unusable."""
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+    return None
+
+
+def _type_row(type_row: Dict[str, Any], region_name: str, use_spot: bool,
+              price: float, spot_price: float) -> List[Any]:
+    gpu = type_row.get('gpu') or {}
+    gpu_count = int(gpu.get('number_of_gpus') or 0)
+    cpu = type_row.get('cpu') or {}
+    memory = type_row.get('memory') or {}
+    gpu_memory = type_row.get('gpu_memory') or {}
+    accelerator = normalise_accelerator(type_row.get('model'))
+    # GpuInfo must be the 'Gpus'-wrapped shape common.py's DeviceMemoryGiB
+    # pass reads; fetch_latitude._gpu_info_str is the ONE canonical
+    # builder (an unwrapped dict raises an UNCAUGHT KeyError there — the
+    # Prime lane hit this live 2026-10-07, fork #39).
+    gpu_info = fetch_latitude._gpu_info_str(accelerator, gpu_count,
+                                            gpu_memory.get('size_in_gigabytes'))
+    row_price = spot_price if use_spot else price
+    return [
+        str(type_row.get('instance_type') or ''),
+        accelerator,
+        gpu_count,
+        float(cpu.get('number_of_cores') or 0),
+        float(memory.get('size_in_gigabytes') or 0),
+        row_price,
+        region_name,
+        gpu_info,
+        spot_price,  # the location's spot price; the API HAS a spot tier
+    ]
+
+
+def rows_and_skips(
+    instance_types: List[Dict[str, Any]],
+    locations: List[Dict[str, Any]],
+    availability: List[Dict[str, Any]],
+) -> Tuple[List[List[Any]], Dict[str, List[str]]]:
+    """Materialize ``iter_rows`` into (rows, skip-reasons) for writing."""
+    rows: List[List[Any]] = []
+    skips: Dict[str, List[str]] = {}
+    code_to_name = {
+        str(loc.get('code')): str(loc.get('name') or loc.get('code'))
+        for loc in locations
+        if isinstance(loc, dict) and loc.get('code')
     }
-    headers = {'Content-type': 'application/json'}
-
-    response = requests.post(token_url,
-                             json=payload,
-                             headers=headers,
-                             timeout=30)
-    response.raise_for_status()
-
-    token_data = response.json()
-    return token_data['access_token']
-
-
-def _fetch_instance_types(base_url: str, token: str) -> List[Dict]:
-    """Fetch all instance types from the API.
-
-    Args:
-        base_url: Base URL for the API
-        token: OAuth access token
-
-    Returns:
-        List[Dict]: List of instance type dictionaries
-    """
-    url = f'{base_url}/instance-types'
-    headers = {'Authorization': f'Bearer {token}'}
-
-    response = requests.get(url, headers=headers, timeout=30)
-    response.raise_for_status()
-
-    return response.json()
-
-
-def _fetch_instance_availability(base_url: str,
-                                 token: str,
-                                 is_spot: bool = False) -> List[Dict]:
-    """Fetch instance availability for different regions.
-
-    Args:
-        base_url: Base URL for the API
-        token: OAuth access token
-        is_spot: Whether to fetch spot availability (True) or on-demand (False)
-
-    Returns:
-        List[Dict]: Availability with location_code and availabilities
-    """
-    url = f'{base_url}/instance-availability'
-    headers = {'Authorization': f'Bearer {token}'}
-    params = {'is_spot': 'true' if is_spot else 'false'}
-
-    response = requests.get(url, headers=headers, params=params, timeout=30)
-    response.raise_for_status()
-
-    return response.json()
-
-
-def _build_availability_map(
-        base_url: str, token: str) -> Dict[str, Dict[str, Tuple[bool, bool]]]:
-    """Build a map of instance types to regions and their availability."""
-    availability_map: Dict[str, Dict[str, Tuple[bool, bool]]] = {}
-
-    # Fetch on-demand availability
-    on_demand_availability = _fetch_instance_availability(base_url,
-                                                          token,
-                                                          is_spot=False)
-    for location_data in on_demand_availability:
-        location_code = location_data.get('location_code', '')
-        availabilities = location_data.get('availabilities', [])
-        for instance_type in availabilities:
-            if instance_type not in availability_map:
-                availability_map[instance_type] = {}
-            if location_code not in availability_map[instance_type]:
-                availability_map[instance_type][location_code] = (False, False)
-            availability_map[instance_type][location_code] = (
-                True,
-                availability_map[instance_type][location_code][1],
-            )
-
-    # Fetch spot availability
-    spot_availability = _fetch_instance_availability(base_url,
-                                                     token,
-                                                     is_spot=True)
-    for location_data in spot_availability:
-        location_code = location_data.get('location_code', '')
-        availabilities = location_data.get('availabilities', [])
-        for instance_type in availabilities:
-            if instance_type not in availability_map:
-                availability_map[instance_type] = {}
-            if location_code not in availability_map[instance_type]:
-                availability_map[instance_type][location_code] = (False, False)
-            availability_map[instance_type][location_code] = (
-                availability_map[instance_type][location_code][0],
-                True,
-            )
-
-    return availability_map
-
-
-def _extract_gpu_model(instance: Dict) -> str:
-    """Extract GPU model from instance attributes or description.
-
-    Args:
-        instance: Instance type dictionary from Verda API
-
-    Returns:
-        str: GPU model name or empty string
-    """
-    # Try to get model from instance dictionary
-    if 'model' in instance and instance['model']:
-        return instance['model']
-
-    # Fall back to extracting from GPU description
-    if ('gpu' in instance and instance['gpu'] and
-            'description' in instance['gpu']):
-        gpu_desc = instance['gpu'].get('description', '')
-        # Extract model name (e.g., "RTX A6000" from "1x NVIDIA RTX A6000 48GB")
-        match = re.search(r'(?:NVIDIA\s+)?([A-Z0-9]+\s+[A-Z0-9]+|[A-Z0-9]+)',
-                          gpu_desc)
-        if match:
-            return match.group(1).strip()
-
-    return ''
-
-
-def _format_accelerator_name(gpu_model: str, gpu_memory_gb: float) -> str:
-    """Format accelerator name for catalog format.
-
-    Only A100 models need memory suffix (40GB/80GB) since there are two types.
-    Other GPU models should not include memory in the name.
-    Also drop Tesla- prefix for Tesla GPUs,
-    as SkyPilot assumes all Tesla GPUs are named as "V100"
-    """
-    if not gpu_model:
-        return ''
-
-    # Normalize GPU model name for catalog format
-    accelerator_name = gpu_model.replace(' ', '-')
-
-    # No need of "Tesla-" prefix for Tesla GPUs,
-    # as SkyPilot assumes all Tesla GPUs are named as "V100"
-    if accelerator_name.startswith('Tesla-'):
-        accelerator_name = accelerator_name.replace('Tesla-', '')
-
-    # Only A100 needs suffix if it 80GB, or else it is assumed it is 40GB
-    if accelerator_name.startswith('A100-'):
-        # Check if memory is already in the name
-        if gpu_memory_gb == 40:
-            accelerator_name = 'A100'
-        elif gpu_memory_gb == 80:
-            accelerator_name = 'A100-80GB'
-        else:
-            raise ValueError(f'Unsupported A100 memory: {gpu_memory_gb}')
-
-    if gpu_model != accelerator_name:
-        print(f'Accelerator name: {gpu_model} -> {accelerator_name}')
-    return accelerator_name
-
-
-def _build_gpu_info(accelerator_name: str, num_gpus: int,
-                    gpu_memory_gb: float) -> str:
-    """Build GpuInfo JSON string.
-
-    Args:
-        accelerator_name: Formatted accelerator name
-        num_gpus: Number of GPUs
-        gpu_memory_gb: GPU memory per GPU in GB
-
-    Returns:
-        str: JSON string for GpuInfo field
-    """
-    if num_gpus <= 0 or not accelerator_name or gpu_memory_gb <= 0:
-        return ''
-
-    total_gpu_memory_mib = gpu_memory_gb * 1024
-    gpu_memory_mib = int(total_gpu_memory_mib / num_gpus)
-    gpu_info_dict = {
-        'Gpus': [{
-            'Name': accelerator_name,
-            'Count': num_gpus,
-            'MemoryInfo': {
-                'SizeInMiB': gpu_memory_mib
-            },
-        }],
-        'TotalGpuMemoryInMiB': total_gpu_memory_mib,
+    type_by_code = {
+        str(t.get('instance_type')): t
+        for t in instance_types
+        if isinstance(t, dict) and t.get('instance_type')
     }
-    # Convert to JSON string (csv.writer will handle proper escaping)
-    return json.dumps(gpu_info_dict)
-
-
-def create_catalog(output_path: str) -> None:
-    """Create Verda Cloud catalog by fetching data from API.
-
-    Args:
-        output_path: Path to output CSV file
-    """
-
-    # Get authentication credentials
-    client_id: Optional[str] = None
-    client_secret: Optional[str] = None
-    base_url: Optional[str] = None
-
-    config_file_path = os.path.expanduser('~/.verda/config.json')
-    if os.path.exists(config_file_path):
-        with open(config_file_path, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-            client_id = config.get('client_id', client_id)
-            client_secret = config.get('client_secret', client_secret)
-            base_url = config.get('base_url', base_url)
-
-    client_id = os.environ.get('VERDA_CLIENT_ID', client_id)
-    client_secret = os.environ.get('VERDA_CLIENT_SECRET', client_secret)
-    base_url = os.environ.get('VERDA_BASE_URL', base_url)
-
-    if not base_url:
-        base_url = 'https://api.verda.com/v1'
-
-    if not client_id or not client_secret:
-        raise Exception('Verda Cloud configuration not found. '
-                        'Please set VERDA_CLIENT_ID and VERDA_CLIENT_SECRET '
-                        'environment variables or create ~/.verda/config.json.')
-
-    # Get OAuth token
-    logger.info('Authenticating with Verda Cloud API...')
-    token = _get_oauth_token(base_url, client_id, client_secret)
-
-    # Fetch instance types
-    logger.info('Fetching instance types...')
-    instance_types = _fetch_instance_types(base_url, token)
-    logger.info(f'Fetched {len(instance_types)} instance types')
-
-    # Fetch availability information
-    logger.info('Fetching instance availability...')
-    availability_map = _build_availability_map(base_url, token)
-    logger.info(
-        f'Fetched availability for {len(availability_map)} instance types')
-
-    # Create output directory if needed
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    # Create CSV file
-    logger.info(f'Writing catalog to {output_path}')
-    with open(output_path, 'w', encoding='utf-8') as f:
-        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
-
-        # Write header
-        writer.writerow([
-            'InstanceType',
-            'UpstreamCloudId',
-            'vCPUs',
-            'MemoryGiB',
-            'AcceleratorName',
-            'AcceleratorCount',
-            'GpuInfo',
-            'Region',
-            'Price',
-            'SpotPrice',
-        ])
-
-        for instance in instance_types:
-            try:
-                # Extract data from instance dictionary
-                instance_type_id = instance.get('instance_type', '')
-                cpu_data = instance.get('cpu', {})
-                memory_data = instance.get('memory', {})
-                gpu_data = instance.get('gpu', {})
-                gpu_memory_data = instance.get('gpu_memory', {})
-
-                vcpus = (float(cpu_data.get('number_of_cores', 0))
-                         if cpu_data else 0)
-                memory_gib = (float(memory_data.get('size_in_gigabytes', 0))
-                              if memory_data else 0)
-                price = float(instance.get('price_per_hour', 0))
-                # Get spot price if available, otherwise use regular price
-                spot_price_raw = instance.get('spot_price') or instance.get(
-                    'spot_price_per_hour')
-                spot_price = float(spot_price_raw) if spot_price_raw else price
-
-                # GPU information
-                num_gpus = gpu_data.get('number_of_gpus', 0) if gpu_data else 0
-                gpu_memory_gb = (gpu_memory_data.get('size_in_gigabytes', 0)
-                                 if gpu_memory_data else 0)
-
-                # Extract and format GPU model
-                if num_gpus > 0:
-                    gpu_model = _extract_gpu_model(instance)
-                    accelerator_name = _format_accelerator_name(
-                        gpu_model, int(gpu_memory_gb / num_gpus))
-                    gpu_info = _build_gpu_info(accelerator_name, num_gpus,
-                                               gpu_memory_gb)
-                else:
-                    accelerator_name = ''
-                    gpu_info = ''
-
-                # Get available regions for this instance type
-                available_regions = availability_map.get(instance_type_id, {})
-
-                # Only include regions reported by the availability API
-                if not available_regions:
-                    continue
-
-                # Write row(s) for each available region
-                for region, availability_tuple in available_regions.items():
-                    on_demand_available, spot_available = availability_tuple
-
-                    effective_price = price if on_demand_available else ''
-                    effective_spot_price = (spot_price
-                                            if spot_available else '')
-
-                    writer.writerow([
-                        instance_type_id,
-                        instance_type_id,
-                        vcpus,
-                        memory_gib,
-                        accelerator_name,
-                        float(num_gpus) if num_gpus > 0 else '',
-                        gpu_info,
-                        region,
-                        effective_price,
-                        effective_spot_price,
-                    ])
-            except Exception as e:  # pylint: disable=broad-except
-                instance_type_id = instance.get('instance_type', 'unknown')
-                logger.warning(
-                    f'Error processing instance type {instance_type_id}: {e}')
+    # Currency gate first: non-usd types are skipped wholesale. Their
+    # in-stock codes must not also be double-reported as "missing from
+    # instance-types" below.
+    currency_skipped: set = set()
+    for code, type_row in list(type_by_code.items()):
+        if str(type_row.get('currency') or 'usd') != 'usd':
+            skips.setdefault(code, []).append(
+                f'non-usd currency {type_row.get("currency")!r} — the '
+                'runner budget caps are USD; row skipped (loud by design)')
+            del type_by_code[code]
+            currency_skipped.add(code)
+    for avail_row in availability:
+        location_code = str(avail_row.get('location_code') or '')
+        if not location_code:
+            continue
+        region_name = code_to_name.get(location_code, location_code)
+        for code in avail_row.get('availabilities') or []:
+            code = str(code)
+            type_row = type_by_code.get(code)
+            if type_row is None:
+                if code not in currency_skipped:
+                    skips.setdefault(code, []).append(
+                        f'{location_code}: in stock but missing from '
+                        '/v1/instance-types')
                 continue
+            gpu = type_row.get('gpu') or {}
+            if int(gpu.get('number_of_gpus') or 0) < 1:
+                skips.setdefault(code,
+                                 []).append(f'{location_code}: CPU-only shape')
+                continue
+            prices = location_price(type_row, location_code)
+            if prices is None:
+                # In stock but unpriceable here: skip the row, record why.
+                skips.setdefault(code, []).append(
+                    f'{location_code}: in stock but no location_prices '
+                    'entry; refusing to fabricate a price')
+                continue
+            price, spot = prices
+            rows.append(
+                _type_row(type_row,
+                          region_name,
+                          use_spot=False,
+                          price=price,
+                          spot_price=spot))
+    return rows, skips
 
-    logger.info(f'Verda catalog saved to {output_path}')
-    logger.info(f'Processed {len(instance_types)} instance types')
+
+def fetch_catalog(
+    client: 'verda_api.VerdaClient'
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    return (client.list_instance_types(), client.list_locations(),
+            client.list_availability())
 
 
-def main() -> None:
-    """Write SkyPilot v8 catalog for Verda Cloud.
+def write_csv(rows: Iterable[List[Any]], out_path: str) -> int:
+    written = 0
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    with open(out_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.writer(handle)
+        writer.writerow(CSV_COLUMNS)
+        for row in rows:
+            writer.writerow(row)
+            written += 1
+    return written
 
-    This is authenticated API request, so you need Verda Cloud API
-    credentials configured, in ~/.verda/config.json or in environment variables
-    VERDA_CLIENT_ID and VERDA_CLIENT_SECRET.
 
-    Will write to ~/.sky/catalogs/v8/verda/vms.csv if no file name is provided.
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', default='verda/vms.csv')
+    parser.add_argument('--from-fixture',
+                        help='read a recorded payload instead of the network')
+    args = parser.parse_args(argv)
 
-    > python sky/catalog/data_fetchers/fetch_verda.py [<file-name>]
-    """
-    logging.basicConfig(level=logging.INFO,)
-    args = sys.argv[1:]
-    output_path = args[0] if args else '~/.sky/catalogs/v8/verda/vms.csv'
-    output_file = os.path.expanduser(output_path)
-    create_catalog(output_file)
-    logger.info('Done!')
+    if args.from_fixture:
+        with open(args.from_fixture, encoding='utf-8') as handle:
+            fixture = json.load(handle)
+        instance_types, locations, availability = (fixture['instance_types'],
+                                                   fixture['locations'],
+                                                   fixture['availability'])
+    else:
+        # FAIL CLOSED: every catalog endpoint needs the OAuth2 token, so
+        # missing credentials must raise here — never an empty catalog
+        # that would read as "no capacity" (the quantacloud public-lane
+        # difference).
+        from sky.provision.verda import utils
+        client = utils.client_from_env()
+        instance_types, locations, availability = fetch_catalog(client)
+
+    rows, skips = rows_and_skips(instance_types, locations, availability)
+    count = write_csv(rows, args.output)
+    for code, reasons in sorted(skips.items()):
+        print(f'skipped {code}: {"; ".join(reasons)}', file=sys.stderr)
+    print(f'wrote {count} rows to {args.output}')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
