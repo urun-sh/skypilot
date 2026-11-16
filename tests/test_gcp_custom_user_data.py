@@ -85,3 +85,17 @@ def test_resources_copy_preserves_custom_user_data():
     del skylet_constants
     vars_out = _make_vars(copied)
     assert 'echo bootfast-hello' in (vars_out.get('user_data') or '')
+
+
+def test_runtime_env_mount_is_provider_independent():
+    """The mount invocation must live in the SHARED setup composition, not a
+    per-cloud hook: every cloud template embeds uv_installation_commands, so
+    the prepended mount runs before the guards on EVERY provider sky
+    launches. gcp.custom_user_data stays as the GCP accelerator (mount at
+    BOOT overlaps VM boot); this line is the provider-independent guarantee."""
+    from sky.skylet import constants as skylet_constants
+
+    assert "/usr/local/sbin/urun-sky-runtime-env-mount" in (
+        skylet_constants.UV_INSTALLATION_COMMANDS)
+    assert "[ -x /usr/local/sbin/urun-sky-runtime-env-mount ]" in (
+        skylet_constants.UV_INSTALLATION_COMMANDS)

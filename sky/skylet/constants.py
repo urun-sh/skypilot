@@ -300,7 +300,19 @@ CONDA_INSTALLATION_COMMANDS = (
     '{ conda init && source ~/.bashrc; };'
     'fi;')
 
+# The urun boot-cut mount (2026-11-15): a launch may deliver
+# /usr/local/sbin/urun-sky-runtime-env-mount via its file_mounts (the
+# runner writes it for claims on the nydus runtime-env lane). Invoked here
+# — in the SHARED setup composition every cloud template embeds — so the
+# runtime env is mounted before the first guard below evaluates, on EVERY
+# provider sky launches, not just clouds with a user-data hook. Absent
+# script = no-op check; this line never runs on stock SkyPilot launches.
+_SKY_RUNTIME_ENV_MOUNT_CMD = (
+    '[ -x /usr/local/sbin/urun-sky-runtime-env-mount ] && '
+    '/usr/local/sbin/urun-sky-runtime-env-mount || true;')
+
 UV_INSTALLATION_COMMANDS = (
+    f'{_SKY_RUNTIME_ENV_MOUNT_CMD}'
     # Install uv for venv management and pip installation.
     f'{SKY_UV_INSTALL_CMD};'
     # Create a separate python environment for SkyPilot dependencies.
