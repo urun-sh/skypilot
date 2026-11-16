@@ -280,6 +280,39 @@ def get_default_instance_type(
                                                       max_hourly_cost)
 
 
+def list_instance_types_for_cpus_mem(
+        cpus: Optional[str] = None,
+        memory: Optional[str] = None,
+        disk_tier: Optional[resources_utils.DiskTier] = None,
+        local_disk: Optional[str] = None,
+        region: Optional[str] = None,
+        zone: Optional[str] = None,
+        use_spot: bool = False,
+        max_hourly_cost: Optional[float] = None) -> List[str]:
+    """Every AWS instance type satisfying the shape, cheapest first.
+
+    The LIST form of :func:`get_default_instance_type` (same family-prefix
+    and local-disk filters) -- the runner hands the whole ordered set to
+    SkyPilot as one any_of resources list, so a stockout on the cheapest
+    family fails over to the next inside a single launch call.
+    """
+    if cpus is None and memory is None:
+        cpus = f'{_DEFAULT_NUM_VCPUS}+'
+    if memory is None:
+        memory_gb_or_ratio = f'{_DEFAULT_MEMORY_CPU_RATIO}x'
+    else:
+        memory_gb_or_ratio = memory
+    instance_type_prefix = tuple(
+        f'{family}.' for family in _DEFAULT_INSTANCE_FAMILY)
+    df = _get_df()
+    df = df[df['InstanceType'].str.startswith(instance_type_prefix)]
+    df = common.filter_with_local_disk(df, local_disk)
+    return common.list_instance_types_for_cpus_mem_impl(df, cpus,
+                                                        memory_gb_or_ratio,
+                                                        region, zone, use_spot,
+                                                        max_hourly_cost)
+
+
 def get_accelerators_from_instance_type(
         instance_type: str) -> Optional[Dict[str, Union[int, float]]]:
     return common.get_accelerators_from_instance_type_impl(
