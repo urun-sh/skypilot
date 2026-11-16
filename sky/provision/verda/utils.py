@@ -61,7 +61,7 @@ def resolve_credentials() -> Optional[Tuple[str, str]]:
     if path.is_file():
         try:
             payload = json.loads(path.read_text(encoding='utf-8'))
-        except ValueError:
+        except ValueError as exc:
             raise verda_api.VerdaAuthError(
                 f'{path} is not valid JSON; expected '
                 '{"client_id": ..., "client_secret": ...}') from exc
