@@ -392,6 +392,40 @@ class TestWaitUntilActive(unittest.TestCase):
         with self.assertRaises(api.QuantacloudError):
             client.wait_until_active("d1", poll_interval_s=1)
 
+    def test_not_found_window_tolerated_until_visible(self):
+        # The read-after-write window (live receipt 2026-11-11, the
+        # e2e-qwen-rtx6000-quantacloud-01 launch): create returns 202 and
+        # the single-deployment GET lags server-side, so poll #1 404s
+        # while the just-created deployment is not yet readable. A 404
+        # inside the window is "not visible yet", never "gone" — the
+        # pre-fix poll crashed on it and the launch leaked a billing box.
+        transport = _Transport([
+            (404, _error("not_found", "Deployment not found")),
+            (200, json.dumps(_deployment("provisioning")).encode("utf-8")),
+            (200, json.dumps(_deployment("active")).encode("utf-8")),
+        ])
+        client = api.QuantacloudClient("gpu_live_k", transport=transport)
+        clock = _FakeClock()
+        deployment = client.wait_until_active("d1",
+                                              poll_interval_s=10,
+                                              sleep=clock.sleep,
+                                              now=clock.now)
+        self.assertEqual(deployment["status"], "active")
+
+    def test_not_found_fails_closed_at_deadline(self):
+        transport = _Transport([
+            (404, _error("not_found", "Deployment not found")),
+        ] * 50)
+        client = api.QuantacloudClient("gpu_live_k", transport=transport)
+        clock = _FakeClock()
+        with self.assertRaises(api.QuantacloudError) as ctx:
+            client.wait_until_active("d1",
+                                     timeout_s=25,
+                                     poll_interval_s=10,
+                                     sleep=clock.sleep,
+                                     now=clock.now)
+        self.assertIn("refusing to wait longer", str(ctx.exception))
+
 
 class TestFindOffers(unittest.TestCase):
 
