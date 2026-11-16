@@ -308,7 +308,9 @@ cloud_dependencies: Dict[str, List[str]] = {
     'ionet': [],
     'slurm': ['python-hostlist'],
     'yotta': [],  # No dependencies needed for Yotta
-    'verda': [],  # No dependencies needed for verda
+    # Verda talks to api.verda.com over urllib (OAuth2 client-credentials
+    # bearer token) from sky/adaptors/verda.py.
+    'verda': [],
 }
 
 # Calculate which clouds should be included in the [all] installation.

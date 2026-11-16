@@ -854,6 +854,7 @@ _EXPECTED_STOCK_MODES = {
     'packet': 'catalog',
     'massed': 'units',
     'ionet': 'in_stock',
+    'verda': 'in_stock',
 }
 
 

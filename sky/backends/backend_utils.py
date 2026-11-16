@@ -1490,6 +1490,11 @@ def _add_auth_to_cluster_config(cloud: clouds.Cloud, tmp_yaml_path: str):
             # generic configure_ssh_info path as Spheron/Latitude/
             # Quantacloud.
             clouds.IoNet,
+            # Verda registers its SSH key per-launch too (the provisioner
+            # matches key MATERIAL — the key list returns the material
+            # itself; see sky/provision/verda/instance.py), so it takes
+            # the same generic configure_ssh_info path.
+            clouds.Verda,
         )):
         config = auth.configure_ssh_info(config)
     elif isinstance(cloud, clouds.GCP):
@@ -1516,8 +1521,6 @@ def _add_auth_to_cluster_config(cloud: clouds.Cloud, tmp_yaml_path: str):
         config = auth.setup_seeweb_authentication(config)
     elif isinstance(cloud, clouds.Mithril):
         config = auth.setup_mithril_authentication(config)
-    elif isinstance(cloud, clouds.Verda):
-        config = auth.setup_verda_authentication(config)
     else:
         assert False, cloud
     yaml_utils.dump_yaml(tmp_yaml_path, config)
@@ -2970,8 +2973,8 @@ def _update_cluster_status(
 
     # All cases below are transitioning the cluster to non-UP states.
     launched_resources = handle.launched_resources.assert_launchable()
-    if (not node_statuses and launched_resources.cloud.STATUS_VERSION >=
-            clouds.StatusVersion.SKYPILOT):
+    if (not node_statuses and launched_resources.cloud.STATUS_VERSION
+            >= clouds.StatusVersion.SKYPILOT):
         # Note: launched_at is set during sky launch, even on an existing
         # cluster. This will catch the case where the cluster was terminated on
         # the cloud and restarted by sky launch.
@@ -3391,8 +3394,8 @@ def _must_refresh_cluster_status(
     # If cluster is AUTOSTOPPING, always refresh to check if it transitioned to STOPPED
     is_autostopping = record['status'] == status_lib.ClusterStatus.AUTOSTOPPING
     recently_refreshed = (record['status_updated_at'] is not None and
-                          time.time() - record['status_updated_at'] <
-                          CLUSTER_STATUS_CACHE_DURATION_SECONDS)
+                          time.time() - record['status_updated_at']
+                          < CLUSTER_STATUS_CACHE_DURATION_SECONDS)
     is_stale = (use_spot or has_autostop or
                 is_autostopping) and not recently_refreshed
 
