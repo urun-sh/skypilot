@@ -11,6 +11,7 @@ Whenever a new wheel is built, the old ones will be removed.
 The ray up yaml templates under sky/templates depend on the naming of the wheel.
 """
 import hashlib
+import json
 import os
 import pathlib
 import re
@@ -36,6 +37,44 @@ logger = sky_logging.init_logger(__name__)
 WHEEL_DIR = pathlib.Path(os.path.expanduser(backend_utils.SKY_REMOTE_PATH))
 _WHEEL_LOCK_PATH = WHEEL_DIR.parent / '.wheels_lock'
 SKY_PACKAGE_PATH = pathlib.Path(directory_utils.get_sky_dir())
+
+#: Boot-cut pointer (skc image build, r1000m 2026-11-16): when the server
+#: image was built with a PREBUILT SkyPilot wheel, the build drops this file
+#: INSIDE the installed sky package naming that wheel. build_sky_wheel()
+#: then serves the pointer immediately — no lock, no package walk, no copy:
+#: the VM side receives the SAME bytes the runtime-env mount already
+#: carries, so the VM's wheel install is a no-op. Absent pointer = today's
+#: behavior (dev/editable installs build as before).
+_PREBUILT_WHEEL_POINTER_PATH = pathlib.Path(
+    __file__).parent / '_prebuilt_wheel.json'
+#: The existence assert runs at most once per process (server boot).
+_PREBUILT_WHEEL_VERIFIED = False
+
+
+def _prebuilt_wheel() -> Optional[Tuple[pathlib.Path, str]]:
+    """The prebuilt wheel the image build left behind, or None.
+
+    At most ONE existence assert per process (server boot): a built image
+    whose pointed-at wheel was stripped must fail LOUDLY here, never
+    silently fall back to a per-launch build (that fallback is the
+    ~10-launches-per-minute serialization this exists to delete).
+    """
+    global _PREBUILT_WHEEL_VERIFIED
+    if not _PREBUILT_WHEEL_POINTER_PATH.exists():
+        return None
+    pointer = json.loads(_PREBUILT_WHEEL_POINTER_PATH.read_text())
+    wheel_path = pathlib.Path(pointer['wheel_path'])
+    if not _PREBUILT_WHEEL_VERIFIED:
+        if not wheel_path.exists():
+            raise RuntimeError(
+                'The image build wrote a prebuilt-wheel pointer '
+                f'({_PREBUILT_WHEEL_POINTER_PATH}) naming {wheel_path}, but '
+                'that wheel does not exist — the image is broken. Refusing '
+                'to fall back to a per-launch wheel build (that fallback '
+                'serialized ~920 concurrent launches at ~10/min).')
+        _PREBUILT_WHEEL_VERIFIED = True
+    return wheel_path, pointer['wheel_hash']
+
 
 # NOTE: keep the same as setup.py's setuptools.setup(name=..., ...).
 _PACKAGE_WHEEL_NAME = 'skypilot'
@@ -234,6 +273,13 @@ def build_sky_wheel() -> Tuple[pathlib.Path, str]:
         is guaranteed unique per wheel content hash.
         - wheel_hash: The wheel content hash.
     """
+
+    # Boot-cut pointer fast path: the image build's wheel is authoritative.
+    # No lock, no package walk, no copy — and no VM-side install either
+    # (the VM receives the same bytes the runtime-env mount carries).
+    prebuilt = _prebuilt_wheel()
+    if prebuilt is not None:
+        return prebuilt
 
     def _get_latest_modification_time(path: pathlib.Path) -> Optional[float]:
         max_time = -1.

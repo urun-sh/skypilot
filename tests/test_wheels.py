@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -211,3 +212,122 @@ def test_wheel_build_reproducible():
             'pip wheel subprocess environment in _build_sky_wheel().')
     finally:
         shutil.rmtree(wheel_utils.WHEEL_DIR, ignore_errors=True)
+
+
+def _counting_filelock_factory(counter):
+    """A filelock.FileLock stand-in that counts acquisitions of the wheel
+    lock (path-keyed, so unrelated locks in the same module stay free)."""
+    import threading
+
+    class _CountingLock:
+        # Real mutual exclusion, not just counting: the fake must preserve
+        # the lock's blocking semantics or a double-checked slow path would
+        # run concurrently for a reason the REAL lock would have prevented.
+        _gate = threading.Lock()
+
+        def __init__(self, lock_path):
+            self._path = str(lock_path)
+
+        def __enter__(self):
+            _CountingLock._gate.acquire()
+            if self._path == str(wheel_utils._WHEEL_LOCK_PATH):
+                counter['enter'] += 1
+            return self
+
+        def __exit__(self, *args):
+            _CountingLock._gate.release()
+            return False
+
+        def acquire(self, *args, **kwargs):
+            return self.__enter__() or True
+
+        def release(self):
+            self.__exit__()
+
+    class _FileLockModule:
+        FileLock = _CountingLock
+        Timeout = getattr(wheel_utils.filelock, 'Timeout', Exception)
+
+    return _FileLockModule
+
+
+def test_prebuilt_pointer_serves_with_no_lock_and_no_walk(
+        tmp_path, monkeypatch):
+    """With the image-build pointer present, build_sky_wheel serves it
+    immediately: N concurrent launches acquire the wheel lock 0 times and
+    NEVER walk the sky package (r1000m ruling: the wheel is stable for the
+    server's whole life and already lives in the R2 runtime mount)."""
+    import threading
+
+    wheel_dir = tmp_path / 'sky-wheel'
+    wheel_dir.mkdir(parents=True)
+    wheel = wheel_dir / 'skypilot-0.13.0-py3-none-any.whl'
+    wheel.write_bytes(b'prebuilt-wheel-bytes')
+    pointer = tmp_path / '_prebuilt_wheel.json'
+    pointer.write_text(
+        json.dumps({
+            'wheel_path': str(wheel),
+            'wheel_hash': 'a' * 32,
+        }))
+    monkeypatch.setattr(wheel_utils, '_PREBUILT_WHEEL_POINTER_PATH', pointer)
+    monkeypatch.setattr(wheel_utils, '_PREBUILT_WHEEL_VERIFIED', False)
+    counter = {'enter': 0}
+    monkeypatch.setattr(wheel_utils, 'filelock',
+                        _counting_filelock_factory(counter))
+
+    # The nested freshness walk is uncachable on this branch; detect ANY
+    # walk by counting os.walk calls (os.walk is the only filesystem scan
+    # the non-pointer path performs — any count means the pointer fast path
+    # was skipped). A counter, not a raiser: os.walk is process-global and
+    # a raiser breaks unrelated plugin threads mid-collection.
+    walks = {'count': 0}
+    _real_walk = os.walk
+
+    def _counting_walk(*args, **kwargs):
+        walks['count'] += 1
+        return _real_walk(*args, **kwargs)
+
+    monkeypatch.setattr(wheel_utils.os, 'walk', _counting_walk)
+
+    n_threads = 16
+    barrier = threading.Barrier(n_threads)
+    results = []
+    errors = []
+
+    def runner():
+        try:
+            barrier.wait(timeout=30)
+            results.append(wheel_utils.build_sky_wheel())
+        except Exception as e:  # noqa: BLE001 - the assertions are the check
+            errors.append(e)
+
+    threads = [threading.Thread(target=runner) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not errors, errors
+    assert results == [(wheel, 'a' * 32)] * n_threads
+    assert counter['enter'] == 0, (
+        'the pointer fast path must not acquire the wheel lock at all')
+    assert walks['count'] == 0, (
+        'the pointer fast path must never walk the sky package')
+
+
+def test_prebuilt_pointer_missing_wheel_fails_loud(tmp_path, monkeypatch):
+    """A built image whose pointed-at wheel was stripped must fail LOUDLY on
+    the first call, never silently fall back to a per-launch build."""
+    wheel_dir = tmp_path / 'sky-wheel'
+    wheel_dir.mkdir(parents=True)
+    pointer = tmp_path / '_prebuilt_wheel.json'
+    pointer.write_text(
+        json.dumps({
+            'wheel_path': str(wheel_dir / 'gone.whl'),
+            'wheel_hash': 'b' * 32,
+        }))
+    monkeypatch.setattr(wheel_utils, '_PREBUILT_WHEEL_POINTER_PATH', pointer)
+    monkeypatch.setattr(wheel_utils, '_PREBUILT_WHEEL_VERIFIED', False)
+
+    with pytest.raises(RuntimeError, match='prebuilt-wheel pointer'):
+        wheel_utils.build_sky_wheel()
