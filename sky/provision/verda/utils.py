@@ -64,7 +64,7 @@ def resolve_credentials() -> Optional[Tuple[str, str]]:
         except ValueError:
             raise verda_api.VerdaAuthError(
                 f'{path} is not valid JSON; expected '
-                '{"client_id": ..., "client_secret": ...}')
+                '{"client_id": ..., "client_secret": ...}') from exc
         if isinstance(payload, dict):
             client_id = str(payload.get('client_id') or '').strip()
             client_secret = str(payload.get('client_secret') or '').strip()

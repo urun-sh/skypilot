@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import logging
 import os
 import tempfile
 import time
@@ -389,7 +388,9 @@ def get_cluster_info(
                                   head_instance_id=None,
                                   provider_name=PROVIDER_NAME)
 
-    ip = client.public_ip(instance)
+    # A None ip is narrowed to '' the quantacloud way (str(x or '')): a
+    # live-but-unaddressed box must not be a TypeError in reconcile.
+    ip = client.public_ip(instance) or ''
     stored_user = (state.get(cluster_name_on_cloud) or {}).get('ssh_user')
     return common.ClusterInfo(
         instances={

@@ -63,7 +63,7 @@ def _load_df() -> 'pd.DataFrame':
             'by sky.catalog.data_fetchers.fetch_verda (requires '
             'VERDA_CLIENT_ID/VERDA_CLIENT_SECRET; the controller primes '
             'it at startup). Refusing to report an empty catalog, which '
-            "would read as 'no capacity' rather than 'not configured'."
+            'would read as "no capacity" rather than "not configured".'
         ) from exc
     df = df[df['InstanceType'].notna()]
     if 'AcceleratorName' in df.columns:

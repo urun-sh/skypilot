@@ -24,7 +24,6 @@ grounded in the Verda API (OpenAPI spec reviewed 2026-11-16):
 
 from __future__ import annotations
 
-import os
 import typing
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -291,7 +290,7 @@ class Verda(clouds.Cloud):
             'instance_type': resources.instance_type,
             'custom_resources': custom_resources,
             'region': region.name,
-            'use_spot': resources.use_spot,
+            'use_spot': str(resources.use_spot),
         }
 
     def _get_feasible_launchable_resources(

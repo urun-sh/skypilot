@@ -46,10 +46,10 @@ import csv
 import json
 import os
 import sys
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from sky.adaptors import verda as verda_api
 from sky.catalog.data_fetchers import fetch_latitude
+from sky.provision.verda import utils
 
 CSV_COLUMNS = [
     'InstanceType',
@@ -126,6 +126,10 @@ def _type_row(type_row: Dict[str, Any], region_name: str, use_spot: bool,
     # pass reads; fetch_latitude._gpu_info_str is the ONE canonical
     # builder (an unwrapped dict raises an UNCAUGHT KeyError there — the
     # Prime lane hit this live 2026-10-07, fork #39).
+    # pylint: disable=protected-access
+    # The same access the sibling fetchers make (see fetch_packet.py:
+    # _gpu_info_str is the ONE canonical GpuInfo builder; the vet tier
+    # flagged a drifting inline copy on the quantacloud carry).
     gpu_info = fetch_latitude._gpu_info_str(accelerator, gpu_count,
                                             gpu_memory.get('size_in_gigabytes'))
     row_price = spot_price if use_spot else price
@@ -164,10 +168,10 @@ def rows_and_skips(
     # in-stock codes must not also be double-reported as "missing from
     # instance-types" below.
     currency_skipped: set = set()
-    for code, type_row in list(type_by_code.items()):
-        if str(type_row.get('currency') or 'usd') != 'usd':
+    for code, row in list(type_by_code.items()):
+        if str(row.get('currency') or 'usd') != 'usd':
             skips.setdefault(code, []).append(
-                f'non-usd currency {type_row.get("currency")!r} — the '
+                f'non-usd currency {row.get("currency")!r} — the '
                 'runner budget caps are USD; row skipped (loud by design)')
             del type_by_code[code]
             currency_skipped.add(code)
@@ -208,7 +212,7 @@ def rows_and_skips(
 
 
 def fetch_catalog(
-    client: 'verda_api.VerdaClient'
+    client: 'utils.VerdaClient'
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     return (client.list_instance_types(), client.list_locations(),
             client.list_availability())
@@ -243,8 +247,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         # FAIL CLOSED: every catalog endpoint needs the OAuth2 token, so
         # missing credentials must raise here — never an empty catalog
         # that would read as "no capacity" (the quantacloud public-lane
-        # difference).
-        from sky.provision.verda import utils
+        # difference). The utils import is hoisted to module top like
+        # the vast/mithril twins (fetch_vast.py).
         client = utils.client_from_env()
         instance_types, locations, availability = fetch_catalog(client)
 
