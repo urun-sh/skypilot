@@ -340,6 +340,10 @@ class Verda(clouds.Cloud):
             memory=resources.memory,
             region=resources.region,
             zone=resources.zone,
+            # The cap MUST reach the catalog: it filters by price ONLY
+            # when the cap is set, so omitting it surfaces over-cap
+            # offerings as feasible (CodeRabbit PR #103).
+            max_hourly_cost=resources.max_hourly_cost,
         )
         if instance_list is None:
             return resources_utils.FeasibleResources([], fuzzy_candidate_list,

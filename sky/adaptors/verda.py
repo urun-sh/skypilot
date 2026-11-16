@@ -22,7 +22,7 @@ verbatim from it):
   unauthorized_request, insufficient_funds, forbidden_action, not_found,
   conflict, server_error, service_unavailable``. The envelope is
   preserved into the raised error verbatim.
-* **403 ``insufficient_funds`` is a CONFIG error, not capacity** — the
+* **402 ``insufficient_funds`` is a CONFIG error, not capacity** — the
   same lesson as QuantaCloud's 402: a lane that mistakes a billing
   failure for a stockout hunts forever.
 * **The instance-availability list is the ONLY stock source.** The
@@ -124,7 +124,7 @@ class VerdaAuthError(VerdaError):
 
 
 class VerdaInsufficientFundsError(VerdaError):
-    """403 insufficient_funds — the project balance cannot cover the
+    """402 insufficient_funds — the project balance cannot cover the
     spend. A CONFIG/billing failure, never a capacity signal."""
 
     def __init__(self, message: str, code: str = 'insufficient_funds'):
@@ -239,7 +239,10 @@ class VerdaClient:
                 f'{where}: HTTP {status} ({code}). Check '
                 f'{CLIENT_ID_ENV}/{CLIENT_SECRET_ENV} (or rotate them in '
                 'the Verda console).')
-        if status == 403 and code == 'insufficient_funds':
+        # Spec error table: insufficient_funds -> HTTP 402 (spec reviewed
+        # 2026-11-16). Match on the CODE, not the status alone, so a 402
+        # (or any drift) still classifies as billing, never a stockout.
+        if code == 'insufficient_funds':
             raise VerdaInsufficientFundsError(f'{where}: {code}: {message}')
         if status == 404 or code == 'not_found':
             raise VerdaNotFoundError(f'{where}: not found ({message})')
@@ -257,17 +260,18 @@ class VerdaClient:
                   path: str,
                   *,
                   token: Optional[str],
-                  body: Optional[Dict[str, Any]] = None) -> Any:
-        """One HTTP round trip with NO auth retry (used by the token
-        mint itself, which is public)."""
+                  body: Optional[Dict[str, Any]] = None,
+                  params: Optional[Dict[str, Any]] = None) -> Any:
         url = f'{self._base_url}{path}'
+        if params:
+            url = f'{url}?{urllib.parse.urlencode(params)}'
         headers = {
             'User-Agent': USER_AGENT,
             'Accept': 'application/json',
         }
-        payload = None
         if token is not None:
             headers['Authorization'] = f'Bearer {token}'
+        payload = None
         if body is not None:
             payload = json.dumps(body).encode('utf-8')
             headers['Content-Type'] = 'application/json'
@@ -312,13 +316,15 @@ class VerdaClient:
     def _call(self,
               method: str,
               path: str,
-              body: Optional[Dict[str, Any]] = None) -> Any:
+              body: Optional[Dict[str, Any]] = None,
+              params: Optional[Dict[str, Any]] = None) -> Any:
         """One authenticated call; a 401 re-mints the token exactly once."""
         try:
             return self._raw_call(method,
                                   path,
                                   token=self._access_token(),
-                                  body=body)
+                                  body=body,
+                                  params=params)
         except VerdaAuthError:
             # The cached token may have lapsed between calls: force a
             # re-mint and retry exactly once (a second 401 is a real
@@ -327,7 +333,8 @@ class VerdaClient:
             return self._raw_call(method,
                                   path,
                                   token=self._mint_token(),
-                                  body=body)
+                                  body=body,
+                                  params=params)
 
     # -- account ----------------------------------------------------------
 
@@ -361,13 +368,22 @@ class VerdaClient:
                              f'{type(payload).__name__}')
         return [row for row in payload if isinstance(row, dict)]
 
-    def list_availability(self) -> List[Dict[str, Any]]:
-        """GET /v1/instance-availability -> per-location in-stock codes.
+    def list_availability(self, is_spot: bool = False) -> List[Dict[str, Any]]:
+        """GET /v1/instance-availability[?is_spot=...] -> per-location
+        in-stock codes for ONE tier.
 
-        The ONLY stock source: a type is rentable in a location iff its
-        code appears in that location's ``availabilities`` list.
+        The endpoint's ``is_spot`` query parameter is a STRING
+        ('true'/'false', default 'false' — spec reviewed 2026-11-16):
+        ONE call establishes ONLY that tier's stock, so on-demand and
+        spot must be fetched separately (CodeRabbit PR #103: the single
+        default fetch established only on-demand stock while rows
+        carried SpotPrice). The ONLY stock source: a type is rentable
+        in a location iff its code appears in that tier's
+        ``availabilities`` list.
         """
-        payload = self._call('GET', '/v1/instance-availability')
+        payload = self._call('GET',
+                             '/v1/instance-availability',
+                             params={'is_spot': str(bool(is_spot)).lower()})
         if not isinstance(payload, list):
             raise VerdaError('GET /v1/instance-availability: expected an '
                              f'array, got {type(payload).__name__}')
@@ -438,7 +454,14 @@ class VerdaClient:
             'location_code': location_code,
             'is_spot': is_spot,
         }
-        payload = self._call('POST', '/v1/instances', body=body) or {}
+        payload = self._call('POST', '/v1/instances', body=body)
+        # SPEC SHAPE (reviewed 2026-11-16): POST /v1/instances answers
+        # HTTP 202 with the NEW INSTANCE'S UUID as a bare JSON STRING
+        # ({"202": {"description": "Instance ID"}}) — NOT an instance
+        # object. A dict response (if the API ever ships one) is still
+        # accepted for forward compatibility.
+        if isinstance(payload, str) and payload.strip():
+            return {'id': payload.strip()}
         if not isinstance(payload, dict) or not payload.get('id'):
             raise VerdaError(f'POST /v1/instances returned no id: {payload!r}')
         return payload

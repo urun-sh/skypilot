@@ -46,7 +46,8 @@ import csv
 import json
 import os
 import sys
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import tempfile
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from sky.catalog.data_fetchers import fetch_latitude
 from sky.provision.verda import utils
@@ -84,8 +85,9 @@ def normalise_accelerator(model: Optional[str]) -> str:
     return token
 
 
-def location_price(type_row: Dict[str, Any],
-                   location_code: str) -> Optional[Tuple[float, float]]:
+def location_price(
+        type_row: Dict[str, Any],
+        location_code: str) -> Optional[Tuple[float, Optional[float]]]:
     """(on-demand, spot) price at ``location_code`` from
     ``location_prices`` ONLY — the deprecated top-level price fields are
     never read (spec: "Deprecated: read location_prices")."""
@@ -98,7 +100,7 @@ def location_price(type_row: Dict[str, Any],
         spot = _as_float(price_row.get('spot_price'))
         if on_demand is None:
             return None  # unpriceable row: never quote as free
-        return on_demand, spot if spot is not None else on_demand
+        return on_demand, spot  # spot may be None: never fabricate it
     return None
 
 
@@ -114,8 +116,9 @@ def _as_float(raw: Any) -> Optional[float]:
     return None
 
 
-def _type_row(type_row: Dict[str, Any], region_name: str, use_spot: bool,
-              price: float, spot_price: float) -> List[Any]:
+def _type_row(type_row: Dict[str, Any], region_name: str,
+              on_demand_price: Optional[Union[float, str]],
+              spot_price: Optional[Union[float, str]]) -> List[Any]:
     gpu = type_row.get('gpu') or {}
     gpu_count = int(gpu.get('number_of_gpus') or 0)
     cpu = type_row.get('cpu') or {}
@@ -132,17 +135,18 @@ def _type_row(type_row: Dict[str, Any], region_name: str, use_spot: bool,
     # flagged a drifting inline copy on the quantacloud carry).
     gpu_info = fetch_latitude._gpu_info_str(accelerator, gpu_count,
                                             gpu_memory.get('size_in_gigabytes'))
-    row_price = spot_price if use_spot else price
+    # A tier's price is set ONLY where that tier reported stock; the
+    # other tier's cell stays EMPTY (never the other tier's price).
     return [
         str(type_row.get('instance_type') or ''),
         accelerator,
         gpu_count,
         float(cpu.get('number_of_cores') or 0),
         float(memory.get('size_in_gigabytes') or 0),
-        row_price,
+        on_demand_price if on_demand_price is not None else '',
         region_name,
         gpu_info,
-        spot_price,  # the location's spot price; the API HAS a spot tier
+        spot_price if spot_price is not None else '',
     ]
 
 
@@ -150,8 +154,17 @@ def rows_and_skips(
     instance_types: List[Dict[str, Any]],
     locations: List[Dict[str, Any]],
     availability: List[Dict[str, Any]],
+    availability_spot: List[Dict[str, Any]],
 ) -> Tuple[List[List[Any]], Dict[str, List[str]]]:
-    """Materialize ``iter_rows`` into (rows, skip-reasons) for writing."""
+    """Materialize the tier-aware join into (rows, skip-reasons).
+
+    ``availability`` is the ON-DEMAND tier's stock (is_spot=false) and
+    ``availability_spot`` the SPOT tier's (is_spot=true): the endpoint
+    checks one tier per call, so a pair is priced per tier ONLY where
+    that tier's list reports it in stock (CodeRabbit PR #103: the
+    single default fetch established only on-demand stock while rows
+    carried SpotPrice).
+    """
     rows: List[List[Any]] = []
     skips: Dict[str, List[str]] = {}
     code_to_name = {
@@ -175,58 +188,99 @@ def rows_and_skips(
                 'runner budget caps are USD; row skipped (loud by design)')
             del type_by_code[code]
             currency_skipped.add(code)
-    for avail_row in availability:
-        location_code = str(avail_row.get('location_code') or '')
-        if not location_code:
-            continue
+
+    def _avail_pairs(availability_rows: List[Dict[str, Any]]) -> set:
+        pairs = set()
+        for avail_row in availability_rows:
+            location_code = str(avail_row.get('location_code') or '')
+            if not location_code:
+                continue
+            for code in avail_row.get('availabilities') or []:
+                pairs.add((location_code, str(code)))
+        return pairs
+
+    on_demand_pairs = _avail_pairs(availability)
+    spot_pairs = _avail_pairs(availability_spot)
+    # Union of both tiers' in-stock pairs; region name comes from the
+    # location code.
+    pairs = sorted(on_demand_pairs | spot_pairs)
+    for location_code, code in pairs:
         region_name = code_to_name.get(location_code, location_code)
-        for code in avail_row.get('availabilities') or []:
-            code = str(code)
-            type_row = type_by_code.get(code)
-            if type_row is None:
-                if code not in currency_skipped:
-                    skips.setdefault(code, []).append(
-                        f'{location_code}: in stock but missing from '
-                        '/v1/instance-types')
-                continue
-            gpu = type_row.get('gpu') or {}
-            if int(gpu.get('number_of_gpus') or 0) < 1:
-                skips.setdefault(code,
-                                 []).append(f'{location_code}: CPU-only shape')
-                continue
-            prices = location_price(type_row, location_code)
-            if prices is None:
-                # In stock but unpriceable here: skip the row, record why.
+        type_row = type_by_code.get(code)
+        if type_row is None:
+            if code not in currency_skipped:
                 skips.setdefault(code, []).append(
-                    f'{location_code}: in stock but no location_prices '
-                    'entry; refusing to fabricate a price')
-                continue
-            price, spot = prices
-            rows.append(
-                _type_row(type_row,
-                          region_name,
-                          use_spot=False,
-                          price=price,
-                          spot_price=spot))
+                    f'{location_code}: in stock but missing from '
+                    '/v1/instance-types')
+            continue
+        gpu = type_row.get('gpu') or {}
+        if int(gpu.get('number_of_gpus') or 0) < 1:
+            skips.setdefault(code,
+                             []).append(f'{location_code}: CPU-only shape')
+            continue
+        prices = location_price(type_row, location_code)
+        if prices is None:
+            # In stock but unpriceable here: skip the row, record why.
+            skips.setdefault(code, []).append(
+                f'{location_code}: in stock but no location_prices '
+                'entry; refusing to fabricate a price')
+            continue
+        price, spot = prices
+        # Price a tier ONLY where that tier reports stock; a tier
+        # without stock gets an EMPTY cell (never the other tier's
+        # price: quoting spot stock as on-demand — or vice versa — is
+        # exactly the bug class this join exists to prevent).
+        on_demand_price = price if (location_code,
+                                    code) in on_demand_pairs else ''
+        spot_price = spot if (location_code, code) in spot_pairs else ''
+        if on_demand_price == '' and spot_price == '':
+            # Unreachable (every pair came from a tier list) but kept
+            # fail-closed: never emit a row with NO price at all.
+            skips.setdefault(
+                code,
+                []).append(f'{location_code}: no tier stock for either price')
+            continue
+        rows.append(
+            _type_row(type_row,
+                      region_name,
+                      on_demand_price=on_demand_price,
+                      spot_price=spot_price))
     return rows, skips
 
 
 def fetch_catalog(
     client: 'utils.VerdaClient'
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]],
+           List[Dict[str, Any]]]:
+    """(instance_types, locations, on-demand availability, spot
+    availability): ONE tier per availability call (see
+    ``VerdaClient.list_availability``)."""
     return (client.list_instance_types(), client.list_locations(),
-            client.list_availability())
+            client.list_availability(), client.list_availability(is_spot=True))
 
 
 def write_csv(rows: Iterable[List[Any]], out_path: str) -> int:
+    """Write the catalog CSV ATOMICALLY (tempfile + os.replace): the
+    catalog reader (catalog/common.py) takes NO lock against this
+    writer, so a plain 'w' truncate would expose an empty/partial
+    snapshot to a concurrent lookup — the fetch_ornn twin's pattern
+    (CodeRabbit PR #103)."""
     written = 0
     os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
-    with open(out_path, 'w', newline='', encoding='utf-8') as handle:
-        writer = csv.writer(handle)
-        writer.writerow(CSV_COLUMNS)
-        for row in rows:
-            writer.writerow(row)
-            written += 1
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(out_path) or '.',
+                                    prefix='.verda-catalog-',
+                                    suffix='.csv')
+    try:
+        with os.fdopen(fd, 'w', newline='', encoding='utf-8') as handle:
+            writer = csv.writer(handle)
+            writer.writerow(CSV_COLUMNS)
+            for row in rows:
+                writer.writerow(row)
+                written += 1
+        os.replace(tmp_path, out_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
     return written
 
 
@@ -243,6 +297,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         instance_types, locations, availability = (fixture['instance_types'],
                                                    fixture['locations'],
                                                    fixture['availability'])
+        availability_spot = fixture.get('availability_spot', [])
     else:
         # FAIL CLOSED: every catalog endpoint needs the OAuth2 token, so
         # missing credentials must raise here — never an empty catalog
@@ -250,9 +305,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         # difference). The utils import is hoisted to module top like
         # the vast/mithril twins (fetch_vast.py).
         client = utils.client_from_env()
-        instance_types, locations, availability = fetch_catalog(client)
+        instance_types, locations, availability, availability_spot = (
+            fetch_catalog(client))
 
-    rows, skips = rows_and_skips(instance_types, locations, availability)
+    rows, skips = rows_and_skips(instance_types, locations, availability,
+                                 availability_spot)
     count = write_csv(rows, args.output)
     for code, reasons in sorted(skips.items()):
         print(f'skipped {code}: {"; ".join(reasons)}', file=sys.stderr)

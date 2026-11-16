@@ -130,7 +130,9 @@ class TestAuth(unittest.TestCase):
         ])
         client = api.VerdaClient('cid', 'csecret', transport=transport)
         client.list_locations()
-        # Force the cached token past its expiry.
+        # Force the cached token past its expiry. pylint: disable=protected-access
+        # (White-box: the token cache is private state; forcing its
+        # expiry is the only way to exercise the re-mint branch.)
         client._token = (client._token[0], time.monotonic() - 1)
         client.list_locations()
         self.assertEqual(
@@ -146,6 +148,9 @@ class TestErrors(unittest.TestCase):
     def test_401_is_auth_error(self):
         # The client re-mints once on 401; a SECOND 401 raises AuthError.
         client = self._client(401, _error('unauthorized_request', 'nope'))
+        # pylint: disable=protected-access
+        # White-box transport scripting: pushing the re-mint responses is
+        # the only way to script the client's private retry sequence.
         client._transport.push(_token_response())
         client._transport.push((401, _error('unauthorized_request',
                                             'still nope')))
@@ -185,6 +190,8 @@ class TestErrors(unittest.TestCase):
 
     def test_no_secret_leak_in_errors(self):
         client = self._client(401, _error('unauthorized_request', 'x'))
+        # pylint: disable=protected-access
+        # White-box transport scripting (see test_401_is_auth_error).
         client._transport.push(_token_response())
         client._transport.push((401, _error('unauthorized_request', 'x')))
         with self.assertRaises(api.VerdaAuthError) as ctx:
@@ -264,10 +271,8 @@ class TestInstances(unittest.TestCase):
     def test_create_instance_posts_deploy_dto(self):
         transport = _Transport([
             _token_response(),
-            (200, _json({
-                'id': 'inst-1',
-                'status': 'provisioning'
-            })),
+            # SPEC SHAPE: 202 with the bare instance UUID STRING.
+            (202, _json('69c9ef8b-bcb6-4bdd-af41-5358d2cd3c4b')),
         ])
         client = api.VerdaClient('cid', 'csecret', transport=transport)
         instance = client.create_instance(
@@ -277,7 +282,7 @@ class TestInstances(unittest.TestCase):
             ssh_key_ids=['k1'],
             location_code='FIN-01',
             is_spot=True)
-        self.assertEqual(instance['id'], 'inst-1')
+        self.assertEqual(instance['id'], '69c9ef8b-bcb6-4bdd-af41-5358d2cd3c4b')
         method, url, _, payload = transport.calls[1]
         self.assertEqual(method, 'POST')
         self.assertTrue(url.endswith('/v1/instances'))
@@ -290,6 +295,35 @@ class TestInstances(unittest.TestCase):
                 'location_code': 'FIN-01',
                 'is_spot': True,
             })
+
+    def test_create_instance_object_response_still_accepted(self):
+        # Forward compatibility: a dict response (if the API ever ships
+        # one) normalizes through the same guard.
+        transport = _Transport([
+            _token_response(),
+            (200, _json({
+                'id': 'inst-1',
+                'status': 'provisioning'
+            })),
+        ])
+        client = api.VerdaClient('cid', 'csecret', transport=transport)
+        self.assertEqual(
+            client.create_instance(instance_type='1H100.80S.22V',
+                                   image='img',
+                                   hostname='h',
+                                   ssh_key_ids=['k1'],
+                                   location_code='FIN-01')['id'], 'inst-1')
+
+    def test_availability_is_spot_param_tier_fetch(self):
+        # ONE call checks ONE tier: is_spot=true must reach the wire as
+        # the STRING 'true' (the spec's param is a string).
+        transport = _Transport(
+            [_token_response(), (200, _json([])), (200, _json([]))])
+        client = api.VerdaClient('cid', 'csecret', transport=transport)
+        client.list_availability()
+        client.list_availability(is_spot=True)
+        self.assertIn('is_spot=false', transport.calls[1][1])
+        self.assertIn('is_spot=true', transport.calls[2][1])
 
     def test_delete_posts_action_dto(self):
         transport = _Transport([_token_response(), (202, _json({}))])

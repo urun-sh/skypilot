@@ -275,8 +275,13 @@ def run_instances(
                 'a Verda instance without a real public key is '
                 'unreachable')
 
+        # The template renders `Preemptible: {{use_spot}}` into
+        # node_config (the vast #92 lesson: reading only provider_config
+        # or a use_spot key that the template never writes deploys spot
+        # requests as ON-DEMAND). Preemptible is checked FIRST: it is
+        # the rendered truth; the legacy keys stay as fallbacks.
         use_spot = bool(
-            node_config.get('use_spot') or
+            node_config.get('Preemptible') or node_config.get('use_spot') or
             (config.provider_config or {}).get('use_spot'))
         ssh_key_id = client.ensure_ssh_key(utils.SSH_KEY_NAME, public_key)
         location_code = _location_code_for_region(client, region)
@@ -291,10 +296,46 @@ def run_instances(
         instance_id = str(instance['id'])
         created = [instance_id]
 
+        # Persist the ID BEFORE waiting for readiness (CodeRabbit PR
+        # #103): a wait timeout must not orphan a billing VM with no
+        # identity mapping — teardown and later launches all resolve
+        # through this file.
+        try:
+            with _state_lock():
+                state = _load_state()
+                state[cluster_name_on_cloud] = {
+                    'instance_id': instance_id,
+                    'region': region,
+                    'ssh_user': SSH_USER,
+                    'instance_type': str(
+                        (config.node_config or {}).get('InstanceType') or ''),
+                }
+                _save_state(state)
+        except BaseException as exc:
+            # The identity save failed: attempt cleanup so the box
+            # cannot bill untethered; report its ID either way.
+            try:
+                client.delete_instance(instance_id)
+            except utils.VerdaError:
+                raise utils.VerdaError(
+                    f'created instance {instance_id} but could not '
+                    f'persist its identity mapping ({exc}) AND cleanup '
+                    'failed; the instance is live and MUST be deleted '
+                    'manually — note the id above') from exc
+            raise utils.VerdaError(
+                f'created instance {instance_id} but could not persist '
+                f'its identity mapping ({exc}); deleted the instance to '
+                'avoid an untethered billing box') from exc
+
     # Readiness is `status == running` (ip is non-null only then); the
-    # poll fails closed on terminal failures and on the deadline.
+    # poll fails closed on terminal failures and on the deadline. A
+    # wait failure here KEEPS the mapping (teardown can resolve the
+    # box and the next launch refuses a foreign-box guess instead of
+    # stranding it).
     instance = client.wait_until_running(instance_id)
 
+    # Re-record with the measured instance state (the entry written at
+    # create is the same shape; this refresh keeps a single save point).
     with _state_lock():
         state = _load_state()
         state[cluster_name_on_cloud] = {
@@ -332,6 +373,33 @@ def stop_instances(**kwargs) -> None:
         'a billing box in an unknown state. Use teardown.')
 
 
+def _resolve_id_by_hostname(client: 'utils.VerdaClient',
+                            cluster_name_on_cloud: str) -> Optional[str]:
+    """The id of the LIVE instance whose HOSTNAME equals the cluster's
+    cloud name, or None.
+
+    The deploy sets hostname = cluster_name_on_cloud (see
+    run_instances), so a matching live instance is OURS by
+    construction — the cluster-head fallback for autodown teardown
+    (CodeRabbit PR #103): the head has no identity mapping, but it
+    CAN list instances. None or MULTIPLE matches resolve to None (the
+    caller's refusal path decides); ambiguity is never guessed.
+    """
+    matches = [
+        str(i.get('id'))
+        for i in client.list_instances()
+        if _is_live(i) and str(i.get('hostname') or '') == cluster_name_on_cloud
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise utils.VerdaError(
+            f'{len(matches)} live instances share hostname '
+            f'{cluster_name_on_cloud!r} ({matches}); refusing to guess '
+            'which is ours — operator decides')
+    return None
+
+
 def terminate_instances(
     cluster_name_on_cloud: str,
     provider_config: Optional[Dict[str, Any]] = None,
@@ -345,6 +413,14 @@ def terminate_instances(
     client = _client()
     state = _load_state()
     instance_id = _mapped_id(state, cluster_name_on_cloud)
+    if instance_id is None:
+        # AUTODOWN runs terminate on the CLUSTER HEAD (sky/skylet/
+        # events.py), which does not carry the launcher's
+        # ~/.sky/verda-clusters.json (only ~/.verda credentials are
+        # mounted). Fall back to the cluster-side data the head DOES
+        # have: the deploy sets hostname = cluster_name_on_cloud, so a
+        # live instance whose HOSTNAME matches is ours by construction.
+        instance_id = _resolve_id_by_hostname(client, cluster_name_on_cloud)
     if instance_id is None:
         # Unmapped: an identity we cannot resolve must never destroy by
         # guess. Report the project's live instances for the operator.

@@ -52,6 +52,15 @@ _cache = None
 def _load_df() -> 'pd.DataFrame':
     """Read and clean the catalog CSV. Caller applies the stat stamp."""
     try:
+        # Check the LOCAL file BEFORE the lazy loader: common.read_catalog
+        # returns a LazyDataFrame whose read happens at first INDEXING —
+        # a missing local CSV would silently DOWNLOAD the hosted catalog
+        # there, substituting hosted data for the locally refreshed
+        # stock catalog and bypassing the fail-loud contract below
+        # (CodeRabbit PR #103). catalog_stat resolves the local path and
+        # returns None when the file is missing.
+        if common.catalog_stat(_CATALOG_PATH) is None:
+            raise FileNotFoundError(_CATALOG_PATH)
         df = common.read_catalog(_CATALOG_PATH)
     except FileNotFoundError as exc:
         # FAIL LOUD. An empty frame here is indistinguishable from
@@ -88,7 +97,11 @@ def _get_df() -> 'pd.DataFrame':
 
 def _is_not_found_error(err: ValueError) -> bool:
     msg = str(err).lower()
-    return 'not found' in msg or 'not supported' in msg
+    # 'No instance type {code} found.' is the actual absence message the
+    # shared CPU/memory and accelerator helpers raise (catalog/common);
+    # 'not found'/'not supported' cover the older message shapes.
+    return ('not found' in msg or 'not supported' in msg or
+            'no instance type' in msg)
 
 
 def _call_or_default(func, default):
