@@ -626,7 +626,11 @@ def get_api_server_status_response(
                                               timeout=2.5)
         except requests.exceptions.Timeout:
             if time_out_try_count == RETRY_COUNT_ON_TIMEOUT:
-                return None
+                # The server is alive but slow: raise instead of returning
+                # None so callers can distinguish this from "not running"
+                # (a refused connection) and never enter the
+                # server-creation path.
+                raise exceptions.ApiServerTimeoutError(server_url) from None
             time_out_try_count += 1
             continue
         except requests.exceptions.ConnectionError:
@@ -1105,6 +1109,26 @@ def get_skypilot_version_on_disk() -> str:
         raise RuntimeError('Unable to find version string.')
 
 
+# Bounded, lock-free retries for an alive-but-slow API server before giving
+# up. Tuned so a transiently overloaded server can recover without any
+# client entering the server-creation path.
+_API_SERVER_SLOW_HEALTH_RETRIES = 2
+_API_SERVER_SLOW_HEALTH_RETRY_INTERVAL_S = 1.0
+
+
+def _retry_slow_api_server_health(endpoint: str) -> ApiServerStatus:
+    """Retry a health probe against an alive-but-slow server, lock-free."""
+    for _ in range(_API_SERVER_SLOW_HEALTH_RETRIES):
+        time.sleep(_API_SERVER_SLOW_HEALTH_RETRY_INTERVAL_S)
+        try:
+            status, _ = check_server_healthy(endpoint)
+            return status
+        except exceptions.ApiServerTimeoutError:
+            continue
+    with ux_utils.print_exception_no_traceback():
+        raise exceptions.ApiServerTimeoutError(endpoint)
+
+
 def check_server_healthy_or_start_fn(deploy: bool = False,
                                      host: str = '127.0.0.1',
                                      foreground: bool = False,
@@ -1113,15 +1137,19 @@ def check_server_healthy_or_start_fn(deploy: bool = False,
                                      enable_basic_auth: bool = False):
     # This function will set remote api version and remote version
     # on the current thread's ContextVars.
-    api_server_status = None
     # Probe on the same address family as --host; an IPv6-only server
     # isn't visible on the 127.0.0.1 default and would be double-started.
     endpoint = get_local_server_dial_url(host)
     try:
         api_server_status, _ = check_server_healthy(endpoint)
-        if api_server_status == ApiServerStatus.NEEDS_AUTH:
-            with ux_utils.print_exception_no_traceback():
-                raise exceptions.ApiServerAuthenticationError(endpoint)
+    except exceptions.ApiServerTimeoutError:
+        # The server accepted the connection but could not answer in time:
+        # it is alive but overloaded. It must NOT take the creation lock:
+        # concurrent clients would serialize behind it, each holding it for
+        # the full re-probe (incident r1000n: ~240 runner children wedged
+        # on API_SERVER_CREATION_LOCK_PATH for 8-10 min each). Retry a
+        # bounded number of times without the lock instead.
+        api_server_status = _retry_slow_api_server_health(endpoint)
     except exceptions.ApiServerConnectionError as exc:
         if not is_api_server_local(endpoint):
             with ux_utils.print_exception_no_traceback():
@@ -1138,10 +1166,19 @@ def check_server_healthy_or_start_fn(deploy: bool = False,
             # Check again if server is already running. Other processes may
             # have started the server while we were waiting for the lock.
             get_api_server_status_response.cache_clear()  # type: ignore
-            api_server_info = get_api_server_status(endpoint)
+            try:
+                api_server_info = get_api_server_status(endpoint)
+            except exceptions.ApiServerTimeoutError:
+                # Something is listening but too slow to answer: do not
+                # start a second server on top of it.
+                return
             if api_server_info.status == ApiServerStatus.UNHEALTHY:
                 _start_api_server(deploy, host, foreground, metrics,
                                   metrics_port, enable_basic_auth)
+            return
+    if api_server_status == ApiServerStatus.NEEDS_AUTH:
+        with ux_utils.print_exception_no_traceback():
+            raise exceptions.ApiServerAuthenticationError(endpoint)
 
 
 def check_server_healthy_or_start(func: Callable[P, T]) -> Callable[P, T]:

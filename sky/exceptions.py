@@ -623,6 +623,25 @@ class ApiServerConnectionError(RuntimeError):
             f'Try: curl {server_url}/api/health')
 
 
+class ApiServerTimeoutError(ApiServerConnectionError):
+    """Raised when the API server is alive but too slow to answer.
+
+    Distinct from ApiServerConnectionError (server not running): a
+    timeout means the server accepted the connection but could not
+    respond within the probe timeout, i.e. it is running but overloaded.
+    Clients must NOT treat this as "server missing" (e.g. by entering the
+    server-creation path); subclasses ApiServerConnectionError so broad
+    handlers keep working.
+    """
+
+    def __init__(self, server_url: str):
+        RuntimeError.__init__(
+            self,
+            f'SkyPilot API server at {server_url} is running but too slow to '
+            f'answer health checks (probable overload). Not attempting to '
+            f'start a new server; retry later or reduce load on the server.')
+
+
 class ApiServerAuthenticationError(RuntimeError):
     """Raised when authentication is required for the API server."""
 

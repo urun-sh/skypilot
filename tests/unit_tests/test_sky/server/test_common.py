@@ -1,6 +1,7 @@
 """Unit tests for the SkyPilot API server common module."""
 from http.cookiejar import Cookie
 from http.cookiejar import MozillaCookieJar
+import concurrent.futures
 import os
 import pathlib
 import sys
@@ -822,3 +823,82 @@ def test_redact_url_password_bad_port_is_returned_unchanged():
     """
     for url in ('http://user:pw@host:notaport', 'http://user:pw@host:99999'):
         assert common.redact_url_password(url) == url
+
+
+@mock.patch('sky.server.common._start_api_server')
+@mock.patch('sky.server.common.make_authenticated_request')
+@mock.patch('sky.server.common.is_api_server_local', return_value=True)
+@mock.patch('sky.server.common.get_server_url',
+            return_value='http://127.0.0.1:1111')
+def test_slow_api_server_never_takes_creation_lock(
+        unused_mock_server_url, unused_mock_is_local, mock_make_request,
+        mock_start_server):
+    """An alive-but-slow server must never serialize clients on the
+    server-creation lock.
+
+    A health probe that times out (ReadTimeout) means the server is
+    RUNNING but overloaded: callers must retry lock-free and fail with a
+    clear error, never enter the creation-lock/start path. Otherwise N
+    concurrent clients each hold the lock for the full re-probe and
+    wedge every launch (incident r1000n: 240 runner children serialized
+    on API_SERVER_CREATION_LOCK_PATH against a slow-but-alive server).
+    """
+    # The health endpoint answers slower than the probe timeout, on every
+    # attempt (simulates a loaded-but-alive server).
+    mock_make_request.side_effect = requests.exceptions.ReadTimeout()
+    lock_paths = []
+    fake_lock_cls = mock.MagicMock()
+    fake_lock_cls.side_effect = lambda path: (
+        lock_paths.append(path), mock.MagicMock())[1]
+
+    common.get_api_server_status_response.cache_clear()
+    try:
+        with mock.patch('sky.server.common.filelock.FileLock',
+                        fake_lock_cls), \
+             mock.patch('sky.server.common.time.sleep'), \
+             concurrent.futures.ThreadPoolExecutor(
+                 max_workers=16) as pool:
+            futures = [
+                pool.submit(common.check_server_healthy_or_start_fn)
+                for _ in range(16)
+            ]
+            # On pre-fix code the class does not exist and callers raise
+            # ApiServerConnectionError; either way the lock assertions
+            # below are what must fail.
+            timeout_error = getattr(exceptions, 'ApiServerTimeoutError',
+                                    None) or exceptions.ApiServerConnectionError
+            for future in futures:
+                with pytest.raises(timeout_error):
+                    future.result()
+
+        assert fake_lock_cls.call_count == 0, (
+            f'creation lock acquired {fake_lock_cls.call_count} times '
+            f'for an alive-but-slow server')
+        mock_start_server.assert_not_called()
+    finally:
+        common.get_api_server_status_response.cache_clear()
+
+
+@mock.patch('sky.server.common._start_api_server')
+@mock.patch('sky.server.common.make_authenticated_request')
+@mock.patch('sky.server.common.is_api_server_local', return_value=True)
+@mock.patch('sky.server.common.get_server_url',
+            return_value='http://127.0.0.1:1111')
+def test_refused_api_server_starts_exactly_once(
+        unused_mock_server_url, unused_mock_is_local, mock_make_request,
+        mock_start_server):
+    """Existing behaviour: a refused connection (server not running)
+    takes the creation lock and exactly one starter runs."""
+    mock_make_request.side_effect = requests.exceptions.ConnectionError()
+    fake_lock_cls = mock.MagicMock()
+
+    common.get_api_server_status_response.cache_clear()
+    try:
+        with mock.patch('sky.server.common.filelock.FileLock',
+                        fake_lock_cls):
+            common.check_server_healthy_or_start_fn()
+
+        assert fake_lock_cls.call_count == 1
+        mock_start_server.assert_called_once()
+    finally:
+        common.get_api_server_status_response.cache_clear()
