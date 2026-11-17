@@ -12,6 +12,7 @@ import json
 import os
 import pickle
 import re
+import threading
 import time
 import typing
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
@@ -406,6 +407,18 @@ _db_manager = db_utils.DatabaseManager(
     'state', create_table, post_init_fn=lambda _: _sqlite_supports_returning())
 initialize_and_get_db = _db_manager.get_engine
 
+# In-process cache of user ids this process has already persisted. The API
+# server upserts the user on EVERY request (INSERT OR IGNORE INTO users +
+# an UPDATE on the existing row) — under the 1000-concurrent-launch ramp
+# those per-request writes turned the state DB's file lock into a convoy
+# ("database is locked", launches stalling >60 s — prod twins
+# 2026-11-17). The mapping is display-only and stable per id (id is a hash
+# of the username), so a process-lifetime cache skips the repeat writes
+# entirely. Process-lifetime: an out-of-band row deletion goes unnoticed
+# until restart — acceptable for a display mapping.
+_KNOWN_USER_IDS: Set[str] = set()
+_known_users_lock = threading.Lock()
+
 
 @metrics_lib.time_me
 def add_or_update_user(
@@ -421,6 +434,11 @@ def add_or_update_user(
     """
     if user.name is None:
         return (False, user) if return_user else False
+    with _known_users_lock:
+        if user.id in _KNOWN_USER_IDS:
+            # Already persisted by this process; skip the per-request
+            # INSERT OR IGNORE upsert + UPDATE entirely.
+            return (False, user) if return_user else False
     engine = _db_manager.get_engine()
     # Set created_at if not already set
     created_at = user.created_at
@@ -468,6 +486,13 @@ def add_or_update_user(
             else:
                 # Without RETURNING, use rowcount.
                 was_inserted = result.rowcount > 0
+
+            # The row for this id now exists in the DB (just inserted, or
+            # already there) — cache it so repeat per-request upserts
+            # short-circuit. The duplicate-name early return above does NOT
+            # reach this line, so an un-persisted id is never cached.
+            with _known_users_lock:
+                _KNOWN_USER_IDS.add(user.id)
 
             if not was_inserted:
                 # User existed, so update it (but don't update created_at)
