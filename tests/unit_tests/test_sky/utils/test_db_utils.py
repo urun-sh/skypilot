@@ -186,8 +186,13 @@ class TestGetEngine:
                            match='db_name must be provided for SQLite'):
             db_utils.get_engine(db_name=None)
 
-    def test_postgres_sync_engine_creation_with_nullpool(self, monkeypatch):
-        """Test Postgres sync engine with NullPool when max_connections=0."""
+    def test_postgres_sync_engine_default_queuepool_when_unsized(
+            self, monkeypatch):
+        """Without set_max_connections(), the sync engine defaults to a real
+        QueuePool (default sizing), NOT NullPool: the request store's async
+        path runs this engine in worker threads, and connect-per-op made a
+        1000-concurrent request storm pay a full connection setup per insert
+        (opentofu-core#832 load proof)."""
         monkeypatch.setenv('IS_SKYPILOT_SERVER', 'true')
         monkeypatch.setenv('SKYPILOT_DB_CONNECTION_URI',
                            'postgresql://user:pass@localhost/db')
@@ -202,6 +207,34 @@ class TestGetEngine:
             mock_create.assert_called_once()
             call_args = mock_create.call_args
             assert call_args[0][0] == 'postgresql://user:pass@localhost/db'
+            assert call_args[1]['poolclass'] == sqlalchemy.pool.QueuePool
+            assert call_args[1]['pool_size'] == db_utils._DEFAULT_DB_POOL_SIZE
+            assert call_args[1]['max_overflow'] == (
+                db_utils._DEFAULT_DB_POOL_OVERFLOW)
+            assert engine == mock_engine
+
+    def test_postgres_sync_engine_nullpool_for_direct_with_pooler(
+            self, monkeypatch):
+        """The direct engine uses NullPool when a pooler is configured (it
+        only serves brief advisory-lock holds; a reuse pool would pin one
+        direct backend per process for the process's whole life)."""
+        monkeypatch.setenv('IS_SKYPILOT_SERVER', 'true')
+        monkeypatch.setenv('SKYPILOT_DB_CONNECTION_URI',
+                           'postgresql://user:pass@localhost/db')
+        monkeypatch.setenv('SKYPILOT_DB_POOL_CONNECTION_URI',
+                           'postgresql://user:pass@pooler:6432/db')
+        db_utils.set_max_connections(0)
+
+        with mock.patch('sqlalchemy.create_engine') as mock_create:
+            mock_engine = mock.MagicMock()
+            mock_create.return_value = mock_engine
+
+            engine = db_utils.get_engine(db_name='ignored', direct=True)
+
+            mock_create.assert_called_once()
+            call_args = mock_create.call_args
+            assert call_args[0][0].startswith(
+                'postgresql://user:pass@pooler:6432')
             assert call_args[1]['poolclass'] == sqlalchemy.NullPool
             assert engine == mock_engine
 
