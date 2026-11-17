@@ -595,6 +595,14 @@ def create_table(cursor, conn):
         if not common_utils.is_wsl():
             try:
                 cursor.execute('PRAGMA journal_mode=WAL')
+                # WAL + synchronous=NORMAL: writes sync at checkpoint
+                # boundaries instead of per-commit fsync. Durability
+                # contract: a process crash still replays the WAL (the
+                # request store is recoverable state — a crashed write is
+                # re-drivable), only an OS/power loss may lose the last
+                # transactions. Cuts per-commit fsync latency, which under
+                # the 1000-writer storm dominates each write's lock hold.
+                cursor.execute('PRAGMA synchronous=NORMAL')
             except sqlite3.OperationalError as e:
                 if 'database is locked' not in str(e):
                     raise
@@ -649,6 +657,16 @@ def create_table(cursor, conn):
 
 _DB: Optional[Union[db_utils.PostgresConn, db_utils.SQLiteConn]] = None
 _init_db_lock = threading.Lock()
+# In-process write gate for the sqlite request store. SQLite serializes
+# writers at the file-lock level with a 60 s busy timeout; under a
+# 1000-writer storm every waiter pays the OS-level lock churn and waits
+# pile up into minutes-long stalls ("database is locked", launches
+# stalling >60 s — prod twins 2026-11-17). A single in-process gate turns
+# that convoy into a fast FIFO: waiters queue on this lock (µs) and each
+# write is sub-millisecond under WAL, so the queue drains at op rate with
+# bounded wait times and zero lock errors. The aiosqlite async path is
+# already single-connection serialized and needs no gate.
+_REQUEST_DB_WRITE_LOCK = threading.Lock()
 
 
 def _init_db_within_lock():
@@ -1202,7 +1220,7 @@ def _add_or_update_request_no_lock(request: Request):
     if sky_logging.logging_enabled(logger, sky_logging.DEBUG):
         logger.debug(f'Start adding or updating request {request.request_id}')
     try:
-        with _DB.conn:
+        with _REQUEST_DB_WRITE_LOCK, _DB.conn:
             cursor = _DB.conn.cursor()
             cursor.execute(_add_or_update_request_sql, request.to_row())
     finally:
