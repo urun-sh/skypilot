@@ -54,12 +54,24 @@ def test_kill_process_daemon_reaps_launcher() -> None:
     finally:
         child.kill()
         child.wait()
+        # Token comparison, not a joined-string substring: '--parent-pid 1234'
+        # as a substring would also match an unrelated daemon launched with
+        # '--parent-pid 12345' and kill it (CodeRabbit on #107). The daemon
+        # script receives --parent-pid/--proc-pid as separate argv tokens.
+        parent_token = str(os.getpid())
+        child_token = str(child.pid)
         for proc in psutil.process_iter(['cmdline']):
             try:
-                cmd = ' '.join(proc.info['cmdline'] or [])
-                if ('subprocess_daemon.py' in cmd
-                        and f'--parent-pid {os.getpid()}' in cmd):
+                args = proc.info['cmdline'] or []
+                if 'subprocess_daemon.py' not in args:
+                    continue
+
+                def _value_after(flag: str) -> str:
+                    return args[args.index(flag) + 1]
+
+                if (_value_after('--parent-pid') == parent_token and
+                        _value_after('--proc-pid') == child_token):
                     proc.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied,
-                    psutil.ZombieProcess):
+                    psutil.ZombieProcess, ValueError, IndexError):
                 continue
