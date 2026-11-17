@@ -234,12 +234,65 @@ def _sync_phase():
                wall)
 
 
+def _state_phase():
+    """N threads upserting the SAME user into the state DB (per-request
+    user upsert shape — executor.py does this for every request)."""
+    # pylint: disable=import-outside-toplevel
+    from sky import global_user_state, models
+    results = {'write_us': [], 'errors': Counter()}
+    lock = threading.Lock()
+
+    def writer(wid: int):
+        t0 = time.perf_counter()
+        try:
+            global_user_state.add_or_update_user(
+                models.User(id='loaduser', name='loaduser'))
+            dt = (time.perf_counter() - t0) * 1e6
+            with lock:
+                results['write_us'].append(dt)
+        except Exception as e:  # pylint: disable=broad-except
+            with lock:
+                results['errors'][type(e).__name__ + ': ' +
+                                 str(e)[:120]] += 1
+
+    print(f'STATE STORM (users upsert): writers={args.sync_writers}')
+    threads = [
+        threading.Thread(target=writer, args=(w,), daemon=True)
+        for w in range(args.sync_writers)
+    ]
+    t0 = time.perf_counter()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=args.phase_timeout)
+    wall = time.perf_counter() - t0
+    alive = sum(1 for t in threads if t.is_alive())
+    if alive:
+        results['errors'][f'threads still running after phase timeout '
+                          f'({alive})'] += 1
+    print(f'  state: wall={wall:.2f}s writes={len(results["write_us"])}/'
+          f'{args.sync_writers}')
+    if results['write_us']:
+        samples = results['write_us']
+        print(f'    write: p50={_pct(samples, 50):.0f}us '
+              f'p95={_pct(samples, 95):.0f}us '
+              f'p99={_pct(samples, 99):.0f}us '
+              f'throughput={len(samples)/wall:.0f}/s')
+    if results['errors']:
+        print('    ERRORS:')
+        for err, n in results['errors'].most_common():
+            print(f'      {n:5d}  {err}')
+    else:
+        print('    ERRORS: none')
+
+
 async def main():
     # pylint: disable=protected-access
     requests_mod._ensure_db_initialized()
     print(f'backend={requests_mod._DB.__class__.__name__}')
     await _async_phase()
     _sync_phase()
+    _state_phase()
 
 
 if __name__ == '__main__':
