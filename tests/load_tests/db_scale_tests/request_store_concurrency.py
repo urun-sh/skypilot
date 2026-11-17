@@ -106,6 +106,7 @@ def _summarize(name, ins, rds, errors, total_ops, total_reads, wall):
     for op, samples in (('insert', ins), ('read', rds)):
         if samples:
             print(f'    {op}: p50={_pct(samples, 50):.0f}us '
+                  f'p95={_pct(samples, 95):.0f}us '
                   f'p99={_pct(samples, 99):.0f}us '
                   f'max={max(samples):.0f}us '
                   f'throughput={len(samples)/wall:.0f}/s')

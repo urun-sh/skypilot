@@ -801,6 +801,16 @@ def _pooler_configured() -> bool:
 # database would otherwise hang the caller for the OS default.
 _NO_POOL_CONNECT_TIMEOUT_SECONDS = 10
 
+# Default QueuePool sizing when set_max_connections() was never called
+# (lazy-started servers, clients, tests). A pool, not NullPool: the
+# request-store's async path runs the sync engine in worker threads, so a
+# fresh connection per op turned every insert into a full connection
+# setup under the 1000-concurrent-launch ramp (opentofu-core#832 load
+# proof). Sized to fit a db.t4g.micro's ~110 max_connections with the
+# server's explicit sizing still overriding.
+_DEFAULT_DB_POOL_SIZE = 10
+_DEFAULT_DB_POOL_OVERFLOW = 20
+
 
 @typing.overload
 def get_engine(db_name: Optional[str],
@@ -887,28 +897,41 @@ def get_engine(
                             'postgresql+asyncpg://',
                             poolclass=sqlalchemy.NullPool,
                             async_creator=_make_asyncpg_creator(conn_string)))
-                elif _max_connections == 0 or (direct and _pooler_configured()):
-                    # NullPool: no persistent connections. Used when no pool
-                    # size is configured, and — crucially — for the direct
-                    # engine when a pooler IS configured. The direct engine
-                    # then only serves brief advisory-lock holds and one-time
-                    # startup migrations; a reuse pool (QueuePool) would pin
-                    # one idle direct backend per process for the process's
-                    # whole life, defeating the pooling (each process would
-                    # keep a direct connection on top of its pooled one). With
-                    # NullPool the direct path opens a connection only while a
-                    # lock or migration actively needs it and closes it after.
+                elif direct and _pooler_configured():
+                    # NullPool for the direct engine when a pooler IS
+                    # configured: it only serves brief advisory-lock holds
+                    # and one-time startup migrations; a reuse pool
+                    # (QueuePool) would pin one idle direct backend per
+                    # process for the process's whole life, defeating the
+                    # pooling (each process would keep a direct connection
+                    # on top of its pooled one). With NullPool the direct
+                    # path opens a connection only while a lock or
+                    # migration actively needs it and closes it after.
                     _postgres_engine_cache[cache_key] = (
                         sqlalchemy.create_engine(conn_string,
                                                  poolclass=sqlalchemy.NullPool))
                 else:
-                    # Sync engines can safely use QueuePool for connection reuse
+                    # Sync engines can safely use QueuePool for connection
+                    # reuse. DEFAULT POOL when set_max_connections() was
+                    # never called (lazy-started servers, clients, tests):
+                    # a real QueuePool instead of NullPool — connect-per-op
+                    # made a 1000-concurrent request storm pay a full
+                    # connection setup per insert (opentofu-core#832 load
+                    # proof: p50 insert 6.5 s, 5 inserts/s). The API server
+                    # still sizes the pool explicitly via
+                    # set_max_connections() (sky/server/uvicorn.py).
+                    if _max_connections > 0:
+                        pool_size = _max_connections
+                        max_overflow = max(0, 5 - _max_connections)
+                    else:
+                        pool_size = _DEFAULT_DB_POOL_SIZE
+                        max_overflow = _DEFAULT_DB_POOL_OVERFLOW
                     _postgres_engine_cache[cache_key] = (
                         sqlalchemy.create_engine(
                             conn_string,
                             poolclass=sqlalchemy.pool.QueuePool,
-                            pool_size=_max_connections,
-                            max_overflow=max(0, 5 - _max_connections),
+                            pool_size=pool_size,
+                            max_overflow=max_overflow,
                             pool_pre_ping=True,
                             pool_recycle=1800))
             engine = _postgres_engine_cache[cache_key]
