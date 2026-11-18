@@ -503,10 +503,16 @@ class TestProvisioner(_StateIsolated):
     def test_unmapped_live_deployment_refuses_to_guess(self):
         # Deployments have no name: an unmapped live box is someone's (a
         # console experiment or a lost state file) — never a silent adopt.
+        # NoClusterLaunchedError (not QuantacloudError): nothing of OURS was
+        # launched, so the provisioner skips teardown and the failover walk
+        # continues to the next candidate instead of aborting with
+        # StopFailoverError (lax 2026-11-18: 104/120 launches in 30 min
+        # died on this refusal before GCP was ever tried).
+        from sky import exceptions as sky_exceptions
         stub = _StubClient(deployments=[
             _deployment_row("dep_foreign", "active"),
         ])
-        with self.assertRaises(provision.utils.QuantacloudError) as ctx:
+        with self.assertRaises(sky_exceptions.NoClusterLaunchedError) as ctx:
             self._run(stub, self._config_ready())
         self.assertIn("refusing to guess", str(ctx.exception))
         self.assertIn("dep_foreign", str(ctx.exception))
@@ -553,6 +559,72 @@ class TestProvisioner(_StateIsolated):
                                return_value=empty):
             provision.terminate_instances("sky-qc-abc")  # no raise
         self.assertEqual(empty.stopped, [])
+
+    def test_create_proceeds_when_the_live_deployment_is_ours(self):
+        # lax 2026-11-18: worker #102's SERVING deployment (mapped to its own
+        # cluster in the store) made every OTHER quantacloud launch refuse at
+        # create with "1 live deployment(s) exist on the account", and the
+        # teardown's identical refusal aborted the whole failover with
+        # StopFailoverError before the next candidate was tried. A live
+        # deployment the store attributes to ANOTHER cluster is ours and
+        # must never block a create.
+        stub = _StubClient(
+            deployments=[_deployment_row("dep_ours", "active")],
+            offers=[_offer()])
+        with open(provision._STATE_PATH, "w") as handle:
+            json.dump({"sky-qc-other": {"deployment_id": "dep_ours"}},
+                      handle)
+        record = self._run(stub, self._config_ready())
+        self.assertEqual(record.created_instance_ids, ["dep_new"])
+        self.assertEqual(len(stub.created), 1)
+
+    def test_create_records_identity_before_the_readiness_wait(self):
+        # The identity must be on disk the moment the deployment exists: a
+        # wait failure raises into the provisioner's teardown path, and an
+        # unrecorded box there is an unattributable live deployment every
+        # later operation refuses to touch.
+        stub = _StubClient(offers=[_offer()])
+
+        def _explode(deployment_id):
+            raise provision.utils.QuantacloudError("wait deadline")
+
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
+                               return_value=stub), \
+             mock.patch.object(stub, "wait_until_active",
+                               side_effect=_explode):
+            with self.assertRaises(provision.utils.QuantacloudError):
+                self._run(stub, self._config_ready())
+        state = json.load(open(provision._STATE_PATH))
+        self.assertEqual(state["sky-qc-abc"]["deployment_id"], "dep_new")
+
+        # ...and the recorded identity makes the teardown a real teardown,
+        # not a refusal: the box is ours and gets stopped.
+        stub2 = _StubClient(deployments=[
+            _deployment_row("dep_new", "active")
+        ])
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
+                               return_value=stub2):
+            provision.terminate_instances("sky-qc-abc")
+        self.assertEqual(stub2.stopped, ["dep_new"])
+
+    def test_terminate_noop_when_every_live_deployment_is_mapped(self):
+        # The failed attempt never created a deployment, and the account's
+        # live deployments all belong to other clusters: teardown is a no-op
+        # SUCCESS so SkyPilot's failover continues to the next candidate
+        # instead of aborting with StopFailoverError.
+        stub = _StubClient(deployments=[
+            _deployment_row("dep_ours", "active"),
+        ])
+        with open(provision._STATE_PATH, "w") as handle:
+            json.dump({"sky-qc-other": {"deployment_id": "dep_ours"}},
+                      handle)
+        with mock.patch.object(provision.utils,
+                               "client_from_env",
+                               return_value=stub):
+            provision.terminate_instances("sky-qc-abc")  # no raise
+        self.assertEqual(stub.stopped, [])
 
     def test_query_maps_status_and_tolerates_unknown_slugs(self):
         stub = _StubClient(deployments=[

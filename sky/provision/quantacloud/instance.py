@@ -38,10 +38,11 @@ import os
 import tempfile
 import time
 import typing
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from filelock import FileLock
 
+from sky import exceptions as sky_exceptions
 from sky import sky_logging
 from sky.provision import common
 from sky.provision.quantacloud import utils
@@ -206,6 +207,37 @@ def _mapped_id(state: Dict[str, Dict[str, Any]],
     return str(deployment_id) if deployment_id else None
 
 
+def _mapped_deployment_ids(state: Dict[str, Dict[str, Any]]) -> Set[str]:
+    """Every deployment id the identity store attributes to SOME cluster."""
+    mapped = set()
+    for entry in state.values():
+        if isinstance(entry, dict):
+            deployment_id = entry.get('deployment_id')
+            if deployment_id:
+                mapped.add(str(deployment_id))
+    return mapped
+
+
+def _unmapped_live_ids(client: 'utils.QuantacloudClient',
+                       state: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Live deployment ids the identity store cannot attribute to ANY cluster.
+
+    A live deployment mapped to another cluster name is OURS — a concurrent
+    launch's serving box — and must never block a new create nor abort a
+    failover teardown (lax 2026-11-18: one serving worker's deployment made
+    every other quantacloud launch refuse pre-create, and the teardown's
+    identical refusal then aborted the whole failover with
+    StopFailoverError before the next candidate was ever tried). Only an
+    UNMAPPED live deployment is unattributable — a console experiment or a
+    lost state file — and keeps the fail-loud refusal.
+    """
+    mapped = _mapped_deployment_ids(state)
+    return [
+        str(d.get('id')) for d in client.list_deployments()
+        if _is_live(d) and str(d.get('id')) not in mapped
+    ]
+
+
 # -- provisioning ----------------------------------------------------------
 
 
@@ -248,18 +280,28 @@ def run_instances(
 
     created: List[str] = []
     if deployment_id is None:
-        # No mapping: is the account holding someone else's box? A live
-        # deployment we cannot attribute is a guess — refuse it (a
-        # console experiment or a lost state file; the operator decides).
-        live_others = [d for d in client.list_deployments() if _is_live(d)]
-        if live_others:
-            ids = [str(d.get('id')) for d in live_others]
-            raise utils.QuantacloudError(
+        # No mapping: is the account holding a box the identity store cannot
+        # attribute at all? A live deployment mapped to ANOTHER cluster name
+        # is ours (a concurrent launch's serving box) and must never block
+        # this create; only an UNMAPPED live deployment is a guess — refuse
+        # it (a console experiment or a lost state file; the operator
+        # decides). Re-read the store first: the stale-mapping cleanups
+        # above may have forgotten an entry after the top-of-function load.
+        foreign = _unmapped_live_ids(client, _load_state())
+        if foreign:
+            # NoClusterLaunchedError, not QuantacloudError: nothing under
+            # THIS identity exists — the create was refused before any
+            # deployment was made — so the provisioner skips its teardown
+            # (which would otherwise refuse identically, retry 3x, and
+            # abort the whole failover with StopFailoverError) and the
+            # launch proceeds to the next candidate. The refusal text
+            # still surfaces as the launch's failure reason.
+            raise sky_exceptions.NoClusterLaunchedError(
                 f'cluster {cluster_name_on_cloud!r} has no recorded '
-                f'deployment, but {len(live_others)} live deployment(s) '
-                f'exist on the account ({ids}); refusing to guess which is '
-                'ours — terminate the foreign box from the console or '
-                'restore the state file, then relaunch')
+                f'deployment, but {len(foreign)} unattributed live '
+                f'deployment(s) exist on the account ({foreign}); refusing '
+                'to guess which is ours — terminate the foreign box from '
+                'the console or restore the state file, then relaunch')
 
         node_config = config.node_config
         token = node_config.get('InstanceType')
@@ -310,25 +352,39 @@ def run_instances(
                                               ssh_key_ids=[ssh_key_id])
         deployment_id = str(deployment['id'])
         created = [deployment_id]
+        # Record the identity BEFORE the readiness wait, not after: a wait
+        # failure or deadline raises into the provisioner's teardown path,
+        # and an unrecorded box there is exactly the unattributable live
+        # deployment every later operation then refuses to touch. The
+        # provider-reported SSH user lands after `active` below.
+        with _state_lock():
+            state = _load_state()
+            state[cluster_name_on_cloud] = {
+                'deployment_id': deployment_id,
+                'region': region,
+                'ssh_user': SSH_USER,
+                'instance_type': str(
+                    (config.node_config or {}).get('InstanceType') or ''),
+            }
+            _save_state(state)
 
     # Readiness is `status == active` (connection info, including the
     # SSH user, is non-null only then); the poll fails closed on
     # failed/interrupted and on the deadline.
     deployment = client.wait_until_active(deployment_id)
 
-    # Record the identity + the provider-reported SSH user for every later
-    # operation (query/cluster-info/terminate) — deployments have no name
-    # field to find them by (see module docstring).
+    # Record the provider-reported SSH user for every later operation
+    # (query/cluster-info/terminate) — deployments have no name field to
+    # find them by (see module docstring). Guarded so a concurrent writer
+    # that replaced OUR mapping is never clobbered.
     with _state_lock():
         state = _load_state()
-        state[cluster_name_on_cloud] = {
-            'deployment_id': deployment_id,
-            'region': region,
-            'ssh_user': client.ssh_user(deployment) or SSH_USER,
-            'instance_type': str(
-                (config.node_config or {}).get('InstanceType') or ''),
-        }
-        _save_state(state)
+        entry = state.get(cluster_name_on_cloud)
+        if isinstance(entry, dict) and str(
+                entry.get('deployment_id')) == deployment_id:
+            entry['ssh_user'] = client.ssh_user(deployment) or SSH_USER
+            state[cluster_name_on_cloud] = entry
+            _save_state(state)
 
     return common.ProvisionRecord(
         provider_name=PROVIDER_NAME,
@@ -388,18 +444,22 @@ def terminate_instances(
     state = _load_state()
     deployment_id = _mapped_id(state, cluster_name_on_cloud)
     if deployment_id is None:
-        # Unmapped: an identity we cannot resolve must never destroy by
-        # guess. Report the account's live deployments for the operator.
-        live = [
-            str(d.get('id')) for d in client.list_deployments() if _is_live(d)
-        ]
-        if not live:
-            return  # nothing anywhere: already torn down
+        # Unmapped: only an identity the store cannot attribute to ANY
+        # cluster is a guess worth refusing. When every live deployment is
+        # mapped to some OTHER cluster, nothing under THIS identity exists
+        # — the failed attempt never created a deployment (create-time
+        # guard, pre-create refusal) — so tearing down is a no-op success.
+        # Raising here turned that no-op into a StopFailoverError and
+        # aborted the whole failover walk (lax 2026-11-18): every launch
+        # died on its first candidate before the next provider was tried.
+        live_unmapped = _unmapped_live_ids(client, state)
+        if not live_unmapped:
+            return  # nothing of ours anywhere: already torn down
         raise utils.QuantacloudError(
             f'no recorded deployment for cluster {cluster_name_on_cloud!r}; '
-            f'live deployments on the account: {live}. refusing to guess '
-            'which is ours — operator decides (console teardown or '
-            'state-file restore)')
+            f'unattributed live deployments on the account: '
+            f'{live_unmapped}. refusing to guess which is ours — operator '
+            'decides (console teardown or state-file restore)')
     # stop_deployment is idempotent (404 / cannot-stop validation errors
     # are success inside the client).
     client.stop_deployment(deployment_id)
