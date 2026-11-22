@@ -638,3 +638,37 @@ class TestIsReservationBound:
             zone='us-central1-a',
             filter='name=my-dense-res',
         )
+
+
+def test_gcp_l4_list_accelerators_offers_every_g2_host_size():
+    """URUN (dev sea2, 2026-11-21): `_get_host_instance_type` collapsed the
+    L4:1 bundle to the zone's CHEAPEST matching g2 host (`Price.idxmin()`),
+    so `list_accelerators('L4', 1)` surfaced exactly one instance type
+    (`g2-standard-4`). The skypilot-controller planner pins l4:1 to
+    `g2-standard-8` (urun-sh/skypilot-controller#1048 — g2-standard-4's
+    16 GB host can never satisfy the node scheduler's 16 GiB/unit boot
+    gate), and the token intersection refused every candidate with
+    "catalog offers g2-standard-4": the l4:1 class never minted. Google
+    sells the whole g2 family for L4:1 — every matching host size must
+    surface, priced, per zone."""
+    result = gcp_catalog.list_accelerators(
+        gpus_only=True,
+        name_filter='^L4$',
+        quantity_filter=1,
+        require_price=True,
+    )
+    l4_rows = result['L4']
+    instance_types = {info.instance_type for info in l4_rows}
+    for expected in (
+            'g2-standard-4',
+            'g2-standard-8',
+            'g2-standard-12',
+            'g2-standard-16',
+            'g2-standard-32',
+    ):
+        assert expected in instance_types, (
+            f'{expected} missing from L4:1 offerings: {sorted(instance_types)}'
+        )
+    # Every surfaced row carries a finite combined price (host + accelerator).
+    for info in l4_rows:
+        assert info.price is not None and info.price > 0, info

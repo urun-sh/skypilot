@@ -551,6 +551,41 @@ def list_accelerators(
         row = df.loc[df['Price'].idxmin()]
         return row['InstanceType']
 
+    def _get_host_instance_types(acc_name: str, acc_count: int, region: str,
+                                 zone: str) -> List[Optional[str]]:
+        """EVERY host VM size in this zone that carries this accelerator —
+        not just the cheapest one.
+
+        The single-size variant above (idxmin) collapses a bundled family to
+        one box: GCP's L4:1 is offered on the whole g2-standard-{4,8,12,16,32}
+        family (skypilot-controller#1048 pins l4:1 to g2-standard-8 because
+        the -4's 16 GB host cannot host the node scheduler), and collapsing
+        made `list_accelerators('L4', 1)` surface exactly one instance type,
+        so a token intersection against it refused every other size in the
+        family ("catalog offers g2-standard-4") while the SKU itself is
+        priced and sold in the same vms.csv. """
+
+        df = _df[(_df['Region'].str.lower() == region.lower()) &
+                 (_df['AvailabilityZone'].str.lower() == zone.lower()) &
+                 (_df['InstanceType'].notna())]
+        if acc_name in _ACC_INSTANCE_TYPE_DICTS:
+            instance_types = _ACC_INSTANCE_TYPE_DICTS[acc_name][acc_count]
+            df = df[df['InstanceType'].isin(instance_types)]
+        else:
+            if acc_name not in _NUM_ACC_TO_NUM_CPU:
+                acc_name = 'DEFAULT'
+
+            cpus = _NUM_ACC_TO_NUM_CPU[acc_name][acc_count]
+            # The memory size should be at least 4x the requested number of
+            # vCPUs to be consistent with all other clouds.
+            memory = cpus * _DEFAULT_GPU_MEMORY_CPU_RATIO
+            df = df[df['InstanceType'].str.startswith(_DEFAULT_HOST_VM_FAMILY)]
+            df = df[(df['vCPUs'] >= cpus) & (df['MemoryGiB'] >= memory)]
+        df = df.dropna(subset=['Price'])
+        if df.empty:
+            return []
+        return sorted(df['InstanceType'].unique())
+
     acc_host_df = _df
     tpu_df = None
     # If price information is not required, we do not need to fetch the host VM
@@ -586,13 +621,19 @@ def list_accelerators(
             acc_host_df = acc_host_df.drop(
                 columns=['InstanceType', 'vCPUs', 'MemoryGiB'])
             # Fetch the host VM information for each accelerator in its region
-            # and zone.
+            # and zone. One accelerator row per MATCHING HOST SIZE (not just
+            # the cheapest): GCP bundles a GPU family over several host sizes
+            # (L4:1 -> g2-standard-4/8/12/16/32), and collapsing to the
+            # cheapest hid every other size from `list_accelerators` — which
+            # is the ground truth the skypilot-controller's SKU planner
+            # resolves pinned tokens against (skypilot-controller#1049).
             acc_host_df['InstanceType'] = acc_host_df.apply(
-                lambda x: _get_host_instance_type(x['AcceleratorName'],
-                                                  x['AcceleratorCount'],
-                                                  region=x['Region'],
-                                                  zone=x['AvailabilityZone']),
+                lambda x: _get_host_instance_types(x['AcceleratorName'],
+                                                   x['AcceleratorCount'],
+                                                   region=x['Region'],
+                                                   zone=x['AvailabilityZone']),
                 axis=1)
+            acc_host_df = acc_host_df.explode('InstanceType')
             acc_host_df.dropna(subset=['InstanceType', 'Price'], inplace=True)
             # Combine the price of the host VM and the GPU.
             acc_host_df = pd.merge(
