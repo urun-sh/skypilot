@@ -679,7 +679,25 @@ class QuantacloudClient:
         deadline = now() + timeout_s
         last_status: Optional[str] = None
         while True:
-            deployment = self.get_deployment(deployment_id)
+            try:
+                deployment = self.get_deployment(deployment_id)
+            except QuantacloudNotFoundError:
+                # The read-after-write window (live receipt 2026-11-11,
+                # the e2e-qwen-rtx6000-quantacloud-01 launch): create
+                # returns 202 — accepted, asynchronous — and the
+                # single-deployment GET lags the create server-side, so
+                # poll #1 404'd while the box activated two minutes
+                # later. A 404 inside the poll window is "not visible
+                # yet", never "gone"; the deadline below still fails
+                # closed. The massed lane's wait_until_booted carries
+                # the same tolerance (its ENG-595 round).
+                if now() >= deadline:
+                    raise QuantacloudError(
+                        f'deployment {deployment_id} not found after '
+                        f'{timeout_s:.0f}s; refusing to wait longer'
+                    ) from None
+                sleep(poll_interval_s)
+                continue
             status = self.deployment_status(deployment)
             if status:
                 last_status = status

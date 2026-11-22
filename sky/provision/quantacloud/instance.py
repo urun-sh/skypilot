@@ -206,6 +206,36 @@ def _mapped_id(state: Dict[str, Dict[str, Any]],
     return str(deployment_id) if deployment_id else None
 
 
+def _record_identity(cluster_name_on_cloud: str,
+                     deployment_id: str,
+                     region: str,
+                     ssh_user: str,
+                     instance_type: str) -> None:
+    """Write the cluster-identity mapping under the state lock.
+
+    Deployments carry no name/label/tag (see module docstring), so this
+    mapping IS the cluster's identity. Called at CREATE time — the
+    moment the provider returns the id — and again once ``active`` (the
+    provider-reported ssh_user replaces the documented fallback): every
+    identity-bearing operation (query, cluster info, terminate, and the
+    failover teardown after a failed poll) resolves through it, and a
+    record written only after ``active`` is a record that does not exist
+    exactly when a failed poll's teardown needs it (the 2026-11-11
+    live receipt: poll #1 crashed inside the read-after-write window,
+    the box activated two minutes later, and it leaked billing until
+    the operator restored the file by hand).
+    """
+    with _state_lock():
+        state = _load_state()
+        state[cluster_name_on_cloud] = {
+            'deployment_id': deployment_id,
+            'region': region,
+            'ssh_user': ssh_user,
+            'instance_type': instance_type,
+        }
+        _save_state(state)
+
+
 # -- provisioning ----------------------------------------------------------
 
 
@@ -310,25 +340,40 @@ def run_instances(
                                               ssh_key_ids=[ssh_key_id])
         deployment_id = str(deployment['id'])
         created = [deployment_id]
+        # RECORD AT CREATE (live receipt 2026-11-11, the
+        # e2e-qwen-rtx6000-quantacloud-01 leak): the poll below can fail
+        # — inside the read-after-write window, on failed/interrupted,
+        # or at the deadline — and the failover teardown then terminates
+        # BY MAPPING. A mapping written only after `active` is a mapping
+        # that does not exist exactly when teardown needs it: the box
+        # leaks, billing unattributed, and the teardown refusal
+        # escalates to StopFailoverError. The id goes in the moment the
+        # provider returns it; the ssh_user is the documented fallback
+        # until the post-active refresh below.
+        _record_identity(cluster_name_on_cloud=cluster_name_on_cloud,
+                         deployment_id=deployment_id,
+                         region=region,
+                         ssh_user=SSH_USER,
+                         instance_type=str(
+                             (config.node_config or {}).get(
+                                 'InstanceType') or ''))
 
     # Readiness is `status == active` (connection info, including the
     # SSH user, is non-null only then); the poll fails closed on
-    # failed/interrupted and on the deadline.
+    # failed/interrupted and on the deadline, and tolerates the
+    # read-after-write window's 404s (see the adapter's
+    # wait_until_active — never fatal on poll #1).
     deployment = client.wait_until_active(deployment_id)
 
-    # Record the identity + the provider-reported SSH user for every later
-    # operation (query/cluster-info/terminate) — deployments have no name
-    # field to find them by (see module docstring).
-    with _state_lock():
-        state = _load_state()
-        state[cluster_name_on_cloud] = {
-            'deployment_id': deployment_id,
-            'region': region,
-            'ssh_user': client.ssh_user(deployment) or SSH_USER,
-            'instance_type': str(
-                (config.node_config or {}).get('InstanceType') or ''),
-        }
-        _save_state(state)
+    # Refresh with the provider-reported SSH user once active (the
+    # create-time record above carries the documented fallback).
+    _record_identity(cluster_name_on_cloud=cluster_name_on_cloud,
+                     deployment_id=deployment_id,
+                     region=region,
+                     ssh_user=client.ssh_user(deployment) or SSH_USER,
+                     instance_type=str(
+                         (config.node_config or {}).get(
+                             'InstanceType') or ''))
 
     return common.ProvisionRecord(
         provider_name=PROVIDER_NAME,
